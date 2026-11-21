@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>Outlaws</title><style>
+:root { color-scheme: dark; font: 16px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; background:#754730; color:#ffedcb; --ink:#3c291b; --paper:#f1d8ad; --display:Rockwell,Georgia,serif; }
+* {box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:radial-gradient(ellipse at 50% 30%,#97623f 0%,#774a32 58%,#613b2b 100%)}
+main{width:min(100%,340px);text-align:center} .eyebrow{font:700 13px var(--display);text-transform:uppercase;letter-spacing:.17em;color:#ffda87;margin:0 0 8px;text-shadow:1px 2px #422719}
+h1{font:700 27px/1.2 var(--display);letter-spacing:-.035em;margin:0 0 8px} .intro{color:#bdb3a1;font-size:14px;margin:0 0 16px}
+.drop{--dash:#95612d;--drop-paper:#f1d8ad;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:14px 16px;min-height:168px;background:var(--drop-paper);color:var(--ink);cursor:pointer;overflow:clip}
+.drop::before{content:'';position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(90deg,var(--dash) 0 18px,transparent 18px 28px) left top/100% 4px repeat-x,repeating-linear-gradient(90deg,var(--dash) 0 18px,transparent 18px 28px) left bottom/100% 4px repeat-x,repeating-linear-gradient(180deg,var(--dash) 0 18px,transparent 18px 28px) left top/4px 100% repeat-y,repeating-linear-gradient(180deg,var(--dash) 0 18px,transparent 18px 28px) right top/4px 100% repeat-y}
+.drop:hover,.drop.hover{--drop-paper:#f8e5c1;--dash:#75421e}.drop-title{font:700 23px var(--display);letter-spacing:-.025em}.drop-formats{font-size:13px;color:#715332}
+button{font:700 14px/1.4 ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.045em;cursor:pointer;padding:10px 16px;width:100%;border:3px solid;border-color:#f4ce8c #75421e #54301a #dfae67;border-radius:0;background:repeating-linear-gradient(0deg,#fff1 0 1px,transparent 1px 3px),#c68e43;color:#382212;box-shadow:inset 1px 1px #ffe0a1,inset -1px -1px #a5662d,2px 3px #422719;text-shadow:1px 1px #efd09a}
+button:hover:not(:disabled){background-color:#dba454;border-top-color:#ffe1a1}button:active:not(:disabled){transform:translate(2px,2px);border-color:#68401f #d9ad68 #e9c587 #80512a;box-shadow:inset 2px 2px #845128;text-shadow:none}
+.choose{margin-top:10px;color:#ffe8b7;background-color:#925f3b;border-color:#c28d59 #4e2c1c #422719 #ae794c;box-shadow:inset 1px 1px #d8a568,inset -1px -1px #6f4228,2px 3px #422719;text-shadow:1px 2px #52301d}.choose:hover:not(:disabled){background-color:#a36e44;border-top-color:#e0ac70}
+.divider{display:flex;align-items:center;gap:12px;margin:12px 0;color:#e5c69e;font-size:12px}.divider:before,.divider:after{content:'';height:2px;flex:1;background:#b78150;box-shadow:0 1px #50301f}
+.note{font-size:12px;color:#e5c8a4;margin:10px 0 0} #status{font-size:13px;color:#ffdfac;margin:16px 0 0;overflow-wrap:anywhere;white-space:pre-line} #status:empty{display:none}
+progress{width:100%;height:4px;accent-color:#e4b361;margin-top:14px} [hidden]{display:none!important} button:disabled,.drop[aria-disabled=true]{opacity:.5;cursor:wait}
+:focus-visible{outline:3px solid #ffe3a2;outline-offset:4px}.drop:focus-visible{outline-color:#f1bf6a}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+.disc-symbol { display: block; position: relative; flex-shrink: 0; width: 76px; height: 76px; margin-bottom: 8px; perspective: 500px; pointer-events: none; }
+.disc-symbol svg { display: block; width: 100%; height: 100%; stroke: #89602a; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.disc-base { transform-origin: center; }
+.disc-replacement { position: absolute; inset: 0; opacity: 0; transform-origin: center; }
+.disc-metal { fill: #dca84d26; stroke: #89602a; }
+.disc-chip-metal { fill: #e2bd78; stroke: #89602a; }
+.disc-reflections { fill: #89602a; stroke: none; opacity: .55; }
+.disc-hole { fill: var(--drop-paper); stroke: #89602a; }
+.disc-hub { fill: none; stroke: #89602a; stroke-width: 1.6; }
+.disc-state-first, .disc-state-second { visibility: hidden; }
+.disc-spent .disc-state-intact { visibility: hidden; }
+.disc-spent .disc-state-first { visibility: visible; }
+.disc-second-spent .disc-state-intact, .disc-second-spent .disc-state-first { visibility: hidden; }
+.disc-second-spent .disc-state-second { visibility: visible; }
+.disc-fragment { position: absolute; inset: 0; transform-origin: 59px 26px; opacity: 0; }
+.disc-fragment-second { position: absolute; inset: 0; transform-origin: 17px 50px; opacity: 0; }
+.disc-spent .disc-fragment { opacity: 0; }
+.disc-shot-flash { position: absolute; inset: 0; opacity: 0; transform-origin: 59px 24px; }
+.disc-shot .disc-base { animation: disc-recoil 320ms ease-out, disc-yaw 1200ms linear both; }
+.disc-shot .disc-shot-flash { animation: disc-impact 320ms ease-out; }
+.disc-shot .disc-shot-flash-second { transform-origin: 17px 52px; animation-delay: 600ms; }
+.disc-shot .disc-fragment { animation: disc-chip-flight 650ms linear both; }
+.disc-shot .disc-fragment-second { animation: disc-chip-flight-second 650ms linear 600ms forwards; }
+.disc-shot .disc-state-intact { visibility: hidden; }
+.disc-shot .disc-state-first { animation: disc-first-state 600ms step-end forwards; }
+.disc-shot .disc-state-second { animation: disc-second-state 600ms step-end forwards; }
+.disc-resetting .disc-base { animation: disc-roll-out 650ms linear forwards, disc-hop 650ms linear forwards; }
+.disc-resetting .disc-replacement { animation: disc-new-arrival 1100ms linear 350ms forwards, disc-new-fall 1100ms linear 350ms forwards; }
+@keyframes disc-roll-out {
+  from { transform: translateX(0) rotate(0deg); }
+  to { transform: translateX(var(--shot-x)) rotate(1080deg); }
+}
+@keyframes disc-hop {
+  0% { translate: 0 0; animation-timing-function: ease-out; }
+  35% { translate: 0 -18px; animation-timing-function: ease-in; }
+  100% { translate: 0 12px; }
+}
+@keyframes disc-new-arrival {
+  0%, 40% { opacity: 1; transform: translateX(-72px) rotate(-147deg); animation-timing-function: cubic-bezier(.2, .7, .35, 1); }
+  100% { opacity: 1; transform: translateX(0) rotate(0deg); }
+}
+@keyframes disc-new-fall {
+  0% { translate: 0 -130px; animation-timing-function: cubic-bezier(.55, 0, 1, .45); }
+  40% { translate: 0 0; animation-timing-function: cubic-bezier(0, .55, .45, 1); }
+  55% { translate: 0 -10px; animation-timing-function: cubic-bezier(.55, 0, 1, .45); }
+  70% { translate: 0 0; animation-timing-function: cubic-bezier(0, .55, .45, 1); }
+  79% { translate: 0 -3px; animation-timing-function: cubic-bezier(.55, 0, 1, .45); }
+  88%, 100% { translate: 0 0; }
+}
+@keyframes disc-recoil {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  22% { transform: translate(-4px, 3px) rotate(-7deg); }
+  55% { transform: translate(1px, -1px) rotate(2deg); }
+}
+@keyframes disc-yaw {
+  /* The second hit interrupts this spin halfway through, at 600ms. */
+  from { rotate: y 0deg; }
+  to { rotate: y 720deg; }
+}
+@keyframes disc-first-state {
+  from { visibility: visible; }
+  to { visibility: hidden; }
+}
+@keyframes disc-second-state {
+  from { visibility: hidden; }
+  to { visibility: visible; }
+}
+@keyframes disc-impact {
+  0% { opacity: 0; transform: scale(.4); }
+  20% { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+@keyframes disc-chip-flight {
+  from { opacity: 1; transform: translate(0, 0) rotateY(0deg) rotateZ(0deg); }
+  99% { opacity: 1; }
+  to { opacity: 0; transform: translate(var(--shot-x), -60px) rotateY(720deg) rotateZ(-40deg); }
+}
+@keyframes disc-chip-flight-second {
+  from { opacity: 1; transform: translate(0, 0) rotateY(0deg) rotateZ(0deg); }
+  99% { opacity: 1; }
+  to { opacity: 0; transform: translate(calc(-1 * var(--shot-x)), 160px) rotateY(-720deg) rotateZ(40deg); }
+}
+</style></head><body><main>
+<p class="eyebrow">Outlaws for Mac</p>
+<div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose your Outlaws disc images">
+<span class="disc-symbol" aria-hidden="true">
+                <svg class="disc-base" viewBox="0 0 76 76" fill="none">
+                  <g class="disc-state-intact">
+                    <circle class="disc-metal" cx="38" cy="38" r="28"/>
+                  </g>
+                  <g class="disc-state-first">
+                    <path class="disc-metal" d="M52 14A28 28 0 1 0 66 38L60 35 62 28 54 29 55 21 48 22Z"/>
+                  </g>
+                  <g class="disc-state-second">
+                    <path class="disc-metal" d="M52 14A28 28 0 0 0 10 38L16 41 14 48 22 47 21 55 28 54 24 62A28 28 0 0 0 66 38L60 35 62 28 54 29 55 21 48 22Z"/>
+                  </g>
+                  <path class="disc-reflections" d="M15.4 25 22 17.4 30.8 29 28 32.8ZM24.4 15.7 27.6 14 34 27.4 31.8 28.4ZM48 43.2 60.4 51 53.4 58.4 46 44.5ZM43.5 47.5 45 46.5 51.5 60 48.4 61.8Z"/>
+                  <circle cx="38" cy="38" r="8.5" class="disc-hub"/>
+                  <circle cx="38" cy="38" r="4.25" class="disc-hole"/>
+                </svg>
+                <svg class="disc-replacement" viewBox="0 0 76 76" fill="none">
+                  <circle class="disc-metal" cx="38" cy="38" r="28"/>
+                  <path class="disc-reflections" d="M15.4 25 22 17.4 30.8 29 28 32.8ZM24.4 15.7 27.6 14 34 27.4 31.8 28.4ZM48 43.2 60.4 51 53.4 58.4 46 44.5ZM43.5 47.5 45 46.5 51.5 60 48.4 61.8Z"/>
+                  <circle cx="38" cy="38" r="8.5" class="disc-hub"/>
+                  <circle cx="38" cy="38" r="4.25" class="disc-hole"/>
+                </svg>
+                <span class="disc-fragment"><svg viewBox="0 0 76 76" fill="none"><path class="disc-chip-metal" d="M52 14A28 28 0 0 1 66 38L60 35 62 28 54 29 55 21 48 22Z"/></svg></span>
+                <span class="disc-fragment-second"><svg viewBox="0 0 76 76" fill="none"><path class="disc-chip-metal" d="M24 62A28 28 0 0 1 10 38L16 41 14 48 22 47 21 55 28 54Z"/></svg></span>
+                <svg class="disc-shot-flash" viewBox="0 0 76 76" fill="none"><path d="m59 13-1-8m8 11 6-6m-4 14 7-1M51 15l-5-5"/><path d="m59 17 3 4 5-1-3 5 2 5-5-2-4 3 1-6-4-3 5-1Z"/></svg>
+                <svg class="disc-shot-flash disc-shot-flash-second" viewBox="0 0 76 76" fill="none"><g transform="rotate(180 38 38)"><path d="m59 13-1-8m8 11 6-6m-4 14 7-1M51 15l-5-5"/><path d="m59 17 3 4 5-1-3 5 2 5-5-2-4 3 1-6-4-3 5-1Z"/></g></svg>
+              </span>
+              <span class="drop-title">Drop your discs here</span><span class="drop-formats">ISO · BIN · MDF</span></div>
+<button id="choose" class="choose">Choose files…</button>
+<div class="divider">or</div><button id="demo">Download Outlaws Demo</button>
+<p class="note" id="note">Free original demo · 14 MB</p><progress id="progress" hidden></progress><p id="status" role="status" aria-live="polite"></p>
+</main><script>
+'use strict';
+const drop=document.getElementById('drop'), demo=document.getElementById('demo'), choose=document.getElementById('choose'); let busy=false;
+function send(action){if(!busy)window.webkit.messageHandlers.installer.postMessage(action)}
+choose.onclick=()=>send('choose');drop.onclick=()=>send('choose');demo.onclick=()=>send('demo');
+drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();send('choose')}};
+window.installerState=(state)=>{busy=state.busy;choose.disabled=demo.disabled=busy;drop.setAttribute('aria-disabled',String(busy));document.getElementById('status').textContent=state.message;document.getElementById('progress').hidden=!busy;demo.textContent=state.demo?'Play Demo':'Download Outlaws Demo';document.getElementById('note').textContent=state.demo?'Your demo is installed. Add your discs to unlock the full game.':'Free original demo · 14 MB';};
+// Native drag handling reads file URLs directly; paths never cross the script bridge.
+window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
+function playDiscShot() {
+  if (busy || drop.classList.contains('disc-shot') || drop.classList.contains('disc-resetting') || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  drop.style.setProperty('--shot-x', `${drop.clientWidth / 2 + 48}px`);
+  drop.classList.remove('disc-spent', 'disc-second-spent');
+  drop.classList.add('disc-shot');
+}
+drop.addEventListener('pointerenter', playDiscShot);
+drop.addEventListener('focus', playDiscShot);
+drop.addEventListener('dragenter', playDiscShot);
+drop.addEventListener('animationend', event => {
+  if (event.animationName === 'disc-chip-flight') drop.classList.add('disc-spent');
+  if (event.animationName === 'disc-second-state') {
+    drop.classList.add('disc-second-spent', 'disc-resetting');
+  }
+  if (event.animationName === 'disc-new-arrival') {
+    drop.classList.remove('disc-shot', 'disc-resetting', 'disc-spent', 'disc-second-spent');
+  }
+});
+requestAnimationFrame(playDiscShot);</script></body></html>
