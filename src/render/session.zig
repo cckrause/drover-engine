@@ -784,6 +784,13 @@ pub const Session = struct {
                 context.animation_slot = animation.slot;
                 try context.fireInput(animation.playback, animation.costume, packet);
             } else try self.weapon_state.fireInput(&self.inventory, packet, self.animation_time);
+            // Throwing adds an actor and can move the actor tables; re-read them before moving.
+            runtime.pickups = self.pickup_slots;
+            runtime.removed = self.removed_actors;
+            runtime.actor_next_update = self.actor_next_update;
+            bodies = self.collisionActors();
+            bodies.runtime = &runtime;
+            bodies.allow_pickups = alive;
         }
         var rail_pending = PendingAudio{ .session = self, .effects = &effects };
         var rail_context: ?rail_audio.Context = if (audio) |sound| .{ .state = &self.rail_audio_state, .runtime = sound, .now = self.animation_time, .before = .{ .context = &rail_pending, .drain = PendingAudio.drain } } else null;

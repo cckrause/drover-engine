@@ -109,6 +109,8 @@ pub const Context = struct {
         switch (native) {
             .ground_object, .instant_ground_object, .ground_sheriff_star, .ground_vanishing_cream, .projectile_dispatch => {
                 if (index >= self.pickups.len) return error.MissingPickupState;
+                // A thrown knife still in flight has no pickup yet; touching it does nothing.
+                if (native == .projectile_dispatch and self.pickups[index] == null) return;
                 const pickup = &(self.pickups[index] orelse return error.MissingPickupState);
                 if (pickup.function != native) return error.InvalidPickupBinding;
                 self.removed[index] = try self.inventory.take(pickup, self.now_ms, self.effects);
