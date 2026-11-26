@@ -1,4 +1,5 @@
 const std = @import("std");
+const memory_profiles = @import("src/memory/profiles.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -15,9 +16,12 @@ pub fn build(b: *std.Build) void {
     });
 
     const options = b.addOptions();
+    const memory_profile = b.option(memory_profiles.Profile, "memory-profile", "Fixed shipping memory profile") orelse .original_pc;
+    options.addOption([]const u8, "memory_profile", @tagName(memory_profile));
     const mission = b.option(enum { hideout, town, train, canyon }, "mission", "Skip the menus and start this campaign mission");
     options.addOption(?[]const u8, "mission", if (mission) |selected| @tagName(selected) else null);
     engine.addOptions("build_options", options);
+    addMemoryChecks(b, target, optimize, options);
 
     const asset_installer = b.createModule(.{
         .root_source_file = b.path("modules/asset_installer/src/root.zig"),
@@ -51,6 +55,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     }) });
     const test_step = b.step("test", "Run the engine tests");
+    tests.root_module.addOptions("build_options", options);
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
     const installer_tests = b.addTest(.{ .root_module = asset_installer });
@@ -79,13 +84,14 @@ pub fn build(b: *std.Build) void {
     }
 
     // Audio goes through SDL's dummy device, so this needs no sound hardware.
-    const audio_tests = b.addTest(.{ .root_module = b.createModule(.{
+    const audio_tests = b.addTest(.{ .filters = filters, .root_module = b.createModule(.{
         .root_source_file = b.path("src/audio_host_tests.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     }) });
     addSdl(b, audio_tests.root_module, sdl_prefix);
+    audio_tests.root_module.addOptions("build_options", options);
     b.step("test-audio", "Play game audio through SDL's dummy device").dependOn(&b.addRunArtifact(audio_tests).step);
 
     const network_step = b.step("test-network", "Run two sessions against each other (opens local UDP ports)");
@@ -96,6 +102,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     }) });
     addEnet(b, network_tests.root_module);
+    network_tests.root_module.addOptions("build_options", options);
     network_step.dependOn(&b.addRunArtifact(network_tests).step);
 
     // A host and a joining game in one process; the engine tests its root
@@ -107,7 +114,26 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     }) });
     addEnet(b, join_tests.root_module);
+    join_tests.root_module.addOptions("build_options", options);
     network_step.dependOn(&b.addRunArtifact(join_tests).step);
+}
+
+fn addMemoryChecks(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: *std.Build.Step.Options) void {
+    const check = b.addObject(.{ .name = "memory-check", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/memory_check.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    check.root_module.addOptions("build_options", options);
+    b.step("check-memory", "Check the target's memory layout without SDL or execution").dependOn(&check.step);
+
+    const report = b.addExecutable(.{ .name = "memory-report", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/memory_report.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    report.root_module.addOptions("build_options", options);
+    b.step("memory-report", "Print the selected profile and target-sized storage accounting").dependOn(&b.addRunArtifact(report).step);
 }
 
 fn addSdl(b: *std.Build, module: *std.Build.Module, prefix: []const u8) void {

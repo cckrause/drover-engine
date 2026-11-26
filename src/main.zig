@@ -39,11 +39,71 @@ const network_lobby_platform = @import("platform/network_lobby.zig");
 const drivers = @import("platform/drivers.zig");
 const enet_driver = @import("platform/enet_driver.zig");
 const asset_installer = @import("platform/asset_installer.zig");
+const MemoryBudget = @import("platform/MemoryBudget.zig");
+const memory_hooks = @import("platform/memory_hooks.zig");
+const c_memory = @import("platform/c_memory.zig");
+const memory_limits = @import("memory/limits.zig");
 const c = platform.c;
+
+comptime {
+    _ = @import("memory/layout.zig");
+}
 
 const RestoredClock = struct { host_time: u32, engine_time: u32 };
 
 pub fn main(init: std.process.Init) !void {
+    const capacity = memory_limits.heap_bytes;
+    const backing = std.heap.page_allocator;
+    const memory = blk: {
+        const owner = try backing.create(MemoryBudget);
+        errdefer backing.destroy(owner);
+        // The budget only uses uncancelable futex operations from this static
+        // I/O instance; those remain valid for foreign threads at process exit.
+        owner.* = try MemoryBudget.init(backing, std.Io.Threaded.global_single_threaded.io(), capacity);
+        break :blk owner;
+    };
+
+    var release_reservation = true;
+    defer if (release_reservation) {
+        memory.deinit(backing);
+        backing.destroy(memory);
+    };
+
+    // Some SDL implementations retain process globals after SDL_Quit.
+    // Their callbacks and allocator owner must outlive library destructors.
+    const hooks = try memory_hooks.install(memory.allocator());
+    defer release_reservation = hooks.restore();
+
+    var runtime_io = std.Io.Threaded.init(memory.allocator(), .{
+        .argv0 = .init(init.minimal.args),
+        .environ = init.minimal.environ,
+    });
+    defer runtime_io.deinit();
+
+    var bounded = init;
+    bounded.gpa = memory.allocator();
+    bounded.io = runtime_io.io();
+
+    run(bounded, memory) catch |err| {
+        if (err == error.OutOfMemory or err == error.MemoryBudgetExceeded or c_memory.exhausted()) {
+            const state = memory.stats();
+            std.log.err("memory profile {s} exceeded: capacity {d} MiB, reserved {d} bytes, peak {d} bytes; fix residency or review the build profile", .{
+                @tagName(memory_limits.profile), state.capacity / (1024 * 1024), state.reserved, state.peak,
+            });
+            return error.MemoryBudgetExceeded;
+        }
+        return err;
+    };
+
+    try checkMemory(memory);
+}
+
+fn checkMemory(memory: *MemoryBudget) error{MemoryBudgetExceeded}!void {
+    try memory.check();
+    if (c_memory.exhausted()) return error.MemoryBudgetExceeded;
+}
+
+fn run(init: std.process.Init, memory: *MemoryBudget) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.skip();
     var data_path: []const u8 = title.current.default_data_path;
@@ -78,10 +138,16 @@ pub fn main(init: std.process.Init) !void {
             explicit_patch = true;
         } else if (std.mem.eql(u8, arg, "--installer")) {
             installer_requested = true;
+        } else if (std.mem.eql(u8, arg, "--memory-mib")) {
+            std.log.err("memory limits are selected at build time with -Dmemory-profile; runtime overrides are disabled", .{});
+            return error.MemoryBudgetIsBuildTime;
         } else if (std.mem.eql(u8, arg, "--help")) {
             std.debug.print("drover [--data DATA.LAB] [--patch none|1.1|2.0] [--snapshot frame.ppm] [--frames N]\n" ++
                 "        [--menu main|difficulty] [--headless [--start good|bad|ugly]]\n" ++
-                "        [--movie FILE.SAN [--headless --frames N]] [--installer]\n", .{});
+                "        [--movie FILE.SAN [--headless --frames N]] [--installer]\n" ++
+                "memory profile: {s}, {d} MiB heap (selected at build time)\n", .{
+                @tagName(memory_limits.profile), memory_limits.heap_bytes / (1024 * 1024),
+            });
             return;
         } else {
             std.log.err("unknown argument: {s}", .{arg});
@@ -218,6 +284,7 @@ pub fn main(init: std.process.Init) !void {
     var menu_requested = false;
 
     main_loop: while (running) {
+        try checkMemory(memory);
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event) != 0) {
             const now = c.SDL_GetTicks();

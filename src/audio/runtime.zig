@@ -49,7 +49,7 @@ pub const Runtime = struct {
     resource_flags: std.ArrayList(u32) = .empty,
     registrations: std.ArrayList(Registration) = .empty,
     registration_refs: std.ArrayList(struct { count: i32 = 1, active: bool = true, stop_all_instances: u32 = 0 }) = .empty,
-    instance_registrations: [200]?u32 = @splat(null),
+    instance_registrations: [sound.instance_count]?u32 = @splat(null),
     startup_registered: bool = false,
     doors_registered: bool = false,
     default_pickup_registration: ?u32 = null,

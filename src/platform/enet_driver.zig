@@ -18,6 +18,7 @@ const network_layer = @import("../network/network.zig");
 const router_module = @import("../network/router.zig");
 const Address = message.Address;
 const testing = std.testing;
+const c_memory = @import("c_memory.zig");
 
 pub const c = @cImport({
     @cInclude("enet.h");
@@ -541,8 +542,41 @@ pub fn listSessions(allocator: std.mem.Allocator, port: u16, wait_ms: u32) OpenE
 }
 
 fn start() OpenError!void {
-    if (open_sessions == 0 and c.enet_initialize() != 0) return error.CannotOpen;
+    if (open_sessions == 0) {
+        // Standalone driver callers keep libc allocation. The application
+        // installs its reservation before any session can be opened.
+        const bounded = c_memory.installed();
+        var callbacks: c.ENetCallbacks = std.mem.zeroes(c.ENetCallbacks);
+        callbacks.malloc = if (bounded) c_memory.malloc else std.c.malloc;
+        callbacks.free = if (bounded) c_memory.free else std.c.free;
+        callbacks.no_memory = if (bounded) c_memory.noMemory else abortOnNoMemory;
+        if (c.enet_initialize_with_callbacks(c.ENET_VERSION, &callbacks) != 0)
+            return error.CannotOpen;
+    }
     open_sessions += 1;
+}
+
+fn abortOnNoMemory() callconv(.c) void {
+    std.c.abort();
+}
+
+test "memory budget ENet callbacks release storage and report exhaustion" {
+    var budget = try @import("MemoryBudget.zig").init(testing.allocator, testing.io, 4 * 1024 * 1024);
+    defer budget.deinit(testing.allocator);
+    try c_memory.install(budget.allocator());
+    defer c_memory.uninstall();
+    {
+        var session = try Session.host(budget.allocator(), .{ .port = 0 });
+        defer session.close();
+        try testing.expect(c_memory.count() > 0);
+        const packet = c.enet_packet_create(null, 128, 0) orelse return error.OutOfMemory;
+        c.enet_packet_destroy(packet);
+        try testing.expect(c.enet_packet_create(null, 8 * 1024 * 1024, 0) == null);
+        try testing.expect(c_memory.exhausted());
+        try testing.expectError(error.MemoryBudgetExceeded, budget.check());
+    }
+    try testing.expectEqual(@as(usize, 0), c_memory.count());
+    try testing.expectEqual(@as(usize, 0), budget.stats().used);
 }
 
 fn stop() void {

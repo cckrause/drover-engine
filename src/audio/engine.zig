@@ -5,6 +5,10 @@
 //! without one is unplaced and is never spatialised.
 
 const std = @import("std");
+const limits = @import("../memory/limits.zig");
+
+pub const instance_count = limits.current.sound_instances;
+pub const voice_count = limits.current.sound_voices;
 
 pub const Flags = struct {
     pub const loop: u32 = 1;
@@ -59,13 +63,13 @@ pub const Voice = struct {
 pub const Spatial = struct { volume: i32, pan: i32 };
 
 pub const Engine = struct {
-    voices: [8]Voice = @splat(.{}),
+    voices: [voice_count]Voice = @splat(.{}),
     listener: Listener = .{},
     effects_volume: i32 = 127,
     speech_volume: i32 = 127,
     maximum_distance: f32 = 255,
     next_id: u32 = 0,
-    allocated: [200]bool = @splat(false),
+    allocated: [instance_count]bool = @splat(false),
     generation: u64 = 0,
     paused: bool = false,
 
@@ -83,9 +87,9 @@ pub const Engine = struct {
 
     pub fn allocateInstance(self: *Engine) ?u32 {
         var id = self.next_id;
-        for (0..199) |_| {
+        for (0..instance_count - 1) |_| {
             id += 1;
-            if (id >= 200) id = 1;
+            if (id >= instance_count) id = 1;
             if (!self.allocated[id] and self.find(id) == null) {
                 self.allocated[id] = true;
                 self.next_id = id;
@@ -96,7 +100,7 @@ pub const Engine = struct {
     }
 
     pub fn admit(self: *Engine, id: u32, asset: u32, sample_rate: u32, params: Params, now: u32) !?u32 {
-        if (id == 0 or id >= 200 or !self.allocated[id] or self.find(id) != null) return error.InvalidSoundInstance;
+        if (id == 0 or id >= instance_count or !self.allocated[id] or self.find(id) != null) return error.InvalidSoundInstance;
         try validate(params, sample_rate);
         const values = self.evaluate(params);
         if (values.volume < 1) {
@@ -126,7 +130,7 @@ pub const Engine = struct {
     }
 
     pub fn stop(self: *Engine, id: u32) void {
-        if (id != 0 and id < 200) self.allocated[id] = false;
+        if (id != 0 and id < instance_count) self.allocated[id] = false;
         if (self.find(id)) |voice| voice.* = .{};
     }
 
@@ -473,6 +477,18 @@ test "driver lifecycle drops inaudible starts but retains distant looping voices
     try std.testing.expect(engine.find(audible).?.playing);
     engine.complete(audible);
     try std.testing.expect(engine.find(audible) == null);
+}
+
+test "memory budget sound instance pool rejects exhaustion and reuses retired slots" {
+    var engine: Engine = .{};
+    for (1..instance_count) |expected| {
+        try std.testing.expectEqual(@as(?u32, @intCast(expected)), engine.allocateInstance());
+    }
+    try std.testing.expect(engine.allocateInstance() == null);
+    engine.stop(17);
+    try std.testing.expectEqual(@as(?u32, 17), engine.allocateInstance());
+    try std.testing.expect(engine.allocateInstance() == null);
+    for (engine.allocated[1..]) |allocated| try std.testing.expect(allocated);
 }
 
 test "instance ids rotate and generation distinguishes reused buffers" {

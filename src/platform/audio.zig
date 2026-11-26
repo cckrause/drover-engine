@@ -9,6 +9,7 @@ const std = @import("std");
 const c = @import("sdl.zig").c;
 const Runtime = @import("../audio/runtime.zig").Runtime;
 const asset = @import("../audio/asset.zig");
+const sound = @import("../audio/engine.zig");
 const mix = @import("audio_mix.zig");
 
 pub const Device = struct {
@@ -16,7 +17,7 @@ pub const Device = struct {
     id: c.SDL_AudioDeviceID = 0,
     frequency: c_int = 44100,
     cache: std.AutoHashMap(u64, []f32),
-    voices: [8]Voice = @splat(.{}),
+    voices: [sound.voice_count]Voice = @splat(.{}),
     music: mix.Buffer = .{},
     music_samples: ?[]f32 = null,
     music_generation: u64 = 0,
