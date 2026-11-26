@@ -360,3 +360,74 @@ test "collision check: only the doorway and its twin are recorded as crossed" {
         if (!crossed) try std.testing.expectEqual(@as(u32, 0), wall.last_collision_check);
     };
 }
+
+test "path check: an open doorway is clear and a solid wall is not" {
+    var rooms: TwoRooms = undefined;
+    try rooms.init();
+    defer rooms.deinit();
+    const from = point(.{ 5, 0, 5 });
+    var through_door = point(.{ 15, 0, 5 });
+    try std.testing.expect(try collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, 1, from, &through_door));
+    try std.testing.expectEqualSlices(u32, &bitPattern(point(.{ 15, 0, 5 })), &bitPattern(through_door));
+    var into_wall = point(.{ 5, 0, 15 });
+    try std.testing.expect(!try collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, 1, from, &into_wall));
+    try std.testing.expectEqualSlices(u32, &bitPattern(point(.{ 5, 0, 15 })), &bitPattern(into_wall));
+}
+
+test "path check: a radius of 0 counts as clear without walking, as in the original" {
+    var rooms: TwoRooms = undefined;
+    try rooms.init();
+    defer rooms.deinit();
+    var into_wall = point(.{ 5, 0, 15 });
+    try std.testing.expect(try collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, 0, point(.{ 5, 0, 5 }), &into_wall));
+    try std.testing.expectEqual(@as(u32, 0), rooms.scene.collision_check.*);
+}
+
+test "path check: numbers that aren't real are refused before anything is touched" {
+    var rooms: TwoRooms = undefined;
+    try rooms.init();
+    defer rooms.deinit();
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    const Case = struct { height: f32 = 6, radius: f32 = 1, from: level_module.Vec3 = point(.{ 5, 0, 5 }), to: level_module.Vec3 = point(.{ 15, 0, 5 }) };
+    const cases = [_]Case{
+        .{ .height = nan },
+        .{ .height = inf },
+        .{ .radius = nan },
+        .{ .radius = -inf },
+        .{ .from = point(.{ nan, 0, 5 }) },
+        .{ .from = point(.{ 5, inf, 5 }) },
+        .{ .to = point(.{ 15, 0, nan }) },
+        .{ .to = point(.{ -inf, 0, 5 }) },
+    };
+    for (cases) |case| {
+        var to = case.to;
+        try std.testing.expectError(error.InvalidPlayerCollision, collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, case.height, case.radius, case.from, &to));
+        try std.testing.expectEqualSlices(u32, &bitPattern(case.to), &bitPattern(to));
+    }
+    try std.testing.expectEqual(@as(u32, 0), rooms.scene.collision_check.*);
+}
+
+test "path check: the smallest shipped radius over the longest check fits, anything smaller is refused" {
+    var rooms: TwoRooms = undefined;
+    try rooms.init();
+    defer rooms.deinit();
+    const from = point(.{ 5, 0, 5 });
+    const smallest_shipped_radius: f32 = 0.035714287;
+    var to = point(.{ 15, 0, 5 });
+    try std.testing.expect(try collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, smallest_shipped_radius, from, &to));
+    try std.testing.expect(rooms.scene.collision_check.* != 0);
+    const checks_before = rooms.scene.collision_check.*;
+    try std.testing.expectError(error.UnsupportedPathCheck, collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, smallest_shipped_radius / 2, from, &to));
+    try std.testing.expectEqualSlices(u32, &bitPattern(point(.{ 15, 0, 5 })), &bitPattern(to));
+    try std.testing.expectEqual(checks_before, rooms.scene.collision_check.*);
+}
+
+test "path check: a radius too small for a 32-bit step count counts as clear, as in the original" {
+    var rooms: TwoRooms = undefined;
+    try rooms.init();
+    defer rooms.deinit();
+    var into_wall = point(.{ 5, 0, 15 });
+    try std.testing.expect(try collision.pathClear(&rooms.level, &rooms.scene, .{ .entries = &.{} }, 0, 6, 1e-30, point(.{ 5, 0, 5 }), &into_wall));
+    try std.testing.expectEqual(@as(u32, 0), rooms.scene.collision_check.*);
+}

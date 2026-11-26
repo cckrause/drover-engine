@@ -676,13 +676,24 @@ pub fn resolveWithOptions(level: *const level_module.Level, scene: *const scene_
     return context.result(result);
 }
 
+/// The most steps a path check may take. The longest check the game makes is
+/// 10 units (a network player update), and the smallest collision radius in
+/// the shipped data is half a bullet-hole sprite, 0.0357; that is 281 steps.
+pub const max_path_check_steps = 281;
+
+/// A radius of 0 counts as clear without walking, as in the original: the step
+/// count comes out negative. So does a radius so small the step count doesn't
+/// fit in 32 bits. Anything that would take more than `max_path_check_steps`
+/// is refused.
 pub fn pathClear(level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, height: f32, radius: f32, from: Vec3, to: *Vec3) !bool {
     if (sector >= level.sectors.len) return error.InvalidPlayerCollision;
+    for ([_]f32{ height, radius, from.x, from.y, from.z, to.x, to.y, to.z }) |value| if (!std.math.isFinite(value)) return error.InvalidPlayerCollision;
     const difference = Vec3{ .x = f(@as(f64, to.x) - from.x), .y = f(@as(f64, to.y) - from.y), .z = f(@as(f64, to.z) - from.z) };
     if (@as(u32, @bitCast(difference.x)) & 0x7fffffff == 0 and @as(u32, @bitCast(difference.z)) & 0x7fffffff == 0) return true;
     const width = @abs(radius);
     const steps = fistp(f(@as(f64, length(difference.x, difference.z)) / width)) +% 1;
     if (steps <= 0) return true;
+    if (steps > max_path_check_steps) return error.UnsupportedPathCheck;
     const full_reciprocal = 1.0 / @as(f64, @floatFromInt(steps));
     const reciprocal = f(full_reciprocal);
     const increment = Vec3{ .x = f(full_reciprocal * difference.x), .y = f(@as(f64, reciprocal) * difference.y), .z = f(@as(f64, reciprocal) * difference.z) };

@@ -114,6 +114,7 @@ test {
     _ = @import("render/backends/software/walls.zig");
     _ = @import("render/backends/software/world.zig");
     _ = @import("render/session.zig");
+    _ = @import("render/network_actors.zig");
     _ = @import("render/texture_animation.zig");
     _ = @import("render/actor_links.zig");
     _ = @import("render/objects.zig");

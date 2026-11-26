@@ -345,6 +345,15 @@ fn remoteOf(session: anytype, index: usize) ?*RemotePlayer {
     return null;
 }
 
+/// A remote player's height and collision radius come from the sender, and
+/// path checks divide by the radius, so both have to be real numbers.
+fn remoteBody(value: message.ActorCreate) error{MalformedNetworkMessage}!struct { height: f32, radius: f32 } {
+    const height: f32 = @bitCast(value.word_3c);
+    const radius = @abs(@as(f32, @bitCast(value.word_94)));
+    if (!std.math.isFinite(height) or !std.math.isFinite(radius)) return error.MalformedNetworkMessage;
+    return .{ .height = height, .radius = radius };
+}
+
 fn createPlayer(session: anytype, value: message.ActorCreate) !void {
     const router = session.router;
     const client = message.client(value.number);
@@ -365,6 +374,7 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
     const position_value: level_module.Vec3 = .{ .x = @bitCast(value.position[0]), .y = @bitCast(value.position[1]), .z = @bitCast(value.position[2]) };
     for ([_]f32{ position_value.x, position_value.y, position_value.z }) |coordinate| if (!std.math.isFinite(coordinate)) return error.MalformedNetworkMessage;
     if (value.costume.len == 0) return error.MalformedNetworkMessage;
+    const body = try remoteBody(value);
     var actor: Actor = .{
         .sector = value.sector,
         .position = position_value,
@@ -375,8 +385,8 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
         .secondary_flags = value.entity,
         .scale_x = 1,
         .scale_y = 1,
-        .height = @bitCast(value.word_3c),
-        .collision_radius = @abs(@as(f32, @bitCast(value.word_94))),
+        .height = body.height,
+        .collision_radius = body.radius,
         .eye_height = @bitCast(value.word_74),
         .head_angles = .{ @bitCast(value.short_70), @bitCast(value.short_72) },
         .velocity = .{ .x = @bitCast(value.words_7c[0]), .y = @bitCast(value.words_7c[1]), .z = @bitCast(value.words_7c[2]) },
@@ -516,4 +526,21 @@ fn wayClear(session: anytype, effects: *inventory.Effects, index: usize, to: *[3
     session.player.contact_residue.invalidate();
     to.* = .{ target.x, target.y, target.z };
     return clear;
+}
+
+test "a remote player's height and radius must be real numbers" {
+    var value = std.mem.zeroInit(message.ActorCreate, .{ .costume = "JAMES.NWX", .logic = "", .item = "" });
+    value.word_3c = @bitCast(@as(f32, 6));
+    value.word_94 = @bitCast(@as(f32, -1.5));
+    const body = try remoteBody(value);
+    try std.testing.expectEqual(@as(f32, 6), body.height);
+    try std.testing.expectEqual(@as(f32, 1.5), body.radius);
+    for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) }) |bad| {
+        value.word_3c = @bitCast(bad);
+        try std.testing.expectError(error.MalformedNetworkMessage, remoteBody(value));
+        value.word_3c = @bitCast(@as(f32, 6));
+        value.word_94 = @bitCast(bad);
+        try std.testing.expectError(error.MalformedNetworkMessage, remoteBody(value));
+        value.word_94 = @bitCast(@as(f32, 1.5));
+    }
 }
