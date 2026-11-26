@@ -194,6 +194,8 @@ pub const Player = struct {
     }
 
     pub fn tickWithAudio(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32, audio: ?*player_audio.Context) !void {
+        // TODO: drop this parameter from `tick` and its callers; movement doesn't allocate anymore.
+        _ = allocator;
         if (!std.math.isFinite(seconds) or seconds < 0) return error.InvalidPlayerTick;
         if (seconds == 0) {
             self.contact_residue.invalidateProjection();
@@ -219,12 +221,12 @@ pub const Player = struct {
             context.state.* = sound_state;
             context.effects.shrinkRetainingCapacity(effect_count);
         };
-        try next.advance(allocator, level, scene, actors, angles, control, &next_look, seconds, audio);
+        try next.advance(level, scene, actors, angles, control, &next_look, seconds, audio);
         self.* = next;
         look.* = next_look;
     }
 
-    fn advance(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, dt: f32, audio: ?*player_audio.Context) !void {
+    fn advance(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, dt: f32, audio: ?*player_audio.Context) !void {
         if (self.sector >= level.sectors.len) return error.InvalidPlayerSector;
         if (scene.sectors[self.sector].flags & 0x10000000 == 0) self.flags &= ~@as(u32, 8);
         const rail = self.flags & 8 != 0;
@@ -507,7 +509,7 @@ pub const Player = struct {
         const body = store(@as(f64, self.head_height) + eye);
         if (crouch and body <= query_step) query_step = body;
         self.floor_cache = floor;
-        const resolved = try collision.resolveWithOptions(allocator, level, scene, actors, self.sector, old, &target, &velocity, body, if (rail) 2.9 else self.radius, query_step, &self.floor_cache, .{ .rail_mode = rail, .projection = &self.contact_residue.projection, .wall_memory = &self.wall_memory });
+        const resolved = try collision.resolveWithOptions(level, scene, actors, self.sector, old, &target, &velocity, body, if (rail) 2.9 else self.radius, query_step, &self.floor_cache, .{ .rail_mode = rail, .projection = &self.contact_residue.projection, .wall_memory = &self.wall_memory });
         self.sector = resolved.actor_sector;
         target.x = resolved.position.x;
         target.z = resolved.position.z;
@@ -925,7 +927,8 @@ test "player audio matches 539 frames and rolls back failed movement" {
     var level = std.mem.zeroInit(level_asset.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     var effects = inventory.Effects.init(a);
@@ -1089,7 +1092,8 @@ test "player integrator agrees across archived physics control sequences" {
     var level = std.mem.zeroInit(level_asset.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     const Chunk = struct { slots: []const [3]i16, count: usize };

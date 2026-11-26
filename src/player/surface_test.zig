@@ -194,6 +194,8 @@ test "dry surface contact damage sounds and death reports" {
         sector_states[0].velocity_present = config.conveyor[0] != 0 or config.conveyor[1] != 0 or config.conveyor[2] != 0;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &sector_states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         const spawn = level_module.Spawn{ .sector = 0, .position = .{ .x = config.position[0], .y = config.position[1], .z = config.position[2] }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
         var player = try movement.Player.init(&item, physics, spawn);
         player.velocity = .{ .x = config.velocity[0], .y = config.velocity[1], .z = config.velocity[2] };

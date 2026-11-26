@@ -512,7 +512,7 @@ fn wayClear(session: anytype, effects: *inventory.Effects, index: usize, to: *[3
     var context = enemy_session.context(session, session.allocator, null, null);
     context.actors.runtime = &runtime;
     var target: level_module.Vec3 = .{ .x = to[0], .y = to[1], .z = to[2] };
-    const clear = try collision.pathClear(session.allocator, &session.level, &session.scene, context.actors, actor.sector, actor.height, actor.collision_radius, actor.position, &target);
+    const clear = try collision.pathClear(&session.level, &session.scene, context.actors, actor.sector, actor.height, actor.collision_radius, actor.position, &target);
     session.player.contact_residue.invalidate();
     to.* = .{ target.x, target.y, target.z };
     return clear;

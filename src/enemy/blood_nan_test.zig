@@ -140,6 +140,8 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random: u32 = 0x742389ac;
         var particle = try blood.spawn(&costume, &random, 0, fromBits(case.position_bits), 1000);

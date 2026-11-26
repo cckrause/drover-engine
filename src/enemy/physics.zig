@@ -219,7 +219,7 @@ fn resolve(actor: *Actor, state: *State, config: Config, world: World, desired: 
     var velocity = state.velocity;
     var actors = world.actors;
     actors.allow_pickups = false;
-    const solved = try collision.resolveWithOptions(world.allocator, world.level, world.scene, actors, state.sector, old, desired, &velocity, actor.height, @abs(actor.collision_radius), config.step_height, &state.floor_cache, .{
+    const solved = try collision.resolveWithOptions(world.level, world.scene, actors, state.sector, old, desired, &velocity, actor.height, @abs(actor.collision_radius), config.step_height, &state.floor_cache, .{
         .exclude_source = actor.source_index,
         .drop_height = if (@abs(state.velocity.x) == 0 and @abs(state.velocity.z) == 0) config.drop_height else 0x1p31,
         .wall_block_mask = 0x2000,

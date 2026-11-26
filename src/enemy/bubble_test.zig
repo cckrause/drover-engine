@@ -101,6 +101,8 @@ test "bubble batches preserve RNG construction drift and ceiling flags" {
         state.flags &= ~config.clear_flags;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random = config.seed;
         _ = bubble.sound(&random, 0, point(config.position));

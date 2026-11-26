@@ -187,6 +187,8 @@ test "architecture changes match the reference's packers, scan, marks, sends and
     level.sectors = sectors;
     var scene: scene_module.Scene = undefined;
     scene.sectors = states;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     for (sectors, states, 0..) |sector, *state, i| {
         if (sector.floor.slope != null) state.floor_slope = try scene_module.Slope.initV111(&level, i, sector.floor, &angles);
         if (sector.ceiling.slope != null) state.ceiling_slope = try scene_module.Slope.initV111(&level, i, sector.ceiling, &angles);

@@ -96,6 +96,8 @@ test "player scheduler writes the later knife contact residue" {
         var sector_state = std.mem.zeroes(Scene.SectorState);
         var scene: Scene.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = point(case.player_config.position), .rotation = .{ .x = 0, .y = 0, .z = 0 } });
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
@@ -222,6 +224,8 @@ test "projectile movement damping model rotation and slopes match the reference"
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var actor: Actor = .{ .sector = 0, .position = point(input.position), .pitch = input.angles[0], .yaw = input.angles[1], .roll = input.angles[2], .flags = 0x8000004f, .secondary_flags = 0x420, .scale_x = 1, .scale_y = 1, .height = 2, .collision_radius = 1, .choreography = 0, .frame = 0, .angle_offset = 0 };
         var state: runtime.State = .{ .config = &config, .held = false, .velocity = point(input.velocity), .rotation = point(input.rotation), .descriptor = .{ .kind = .knife, .item = "", .owner = null, .origin = actor.position, .sector = 0, .pitch = 0, .yaw = 0, .damage = 0, .mass = 0, .rate = 0, .range = 0 } };

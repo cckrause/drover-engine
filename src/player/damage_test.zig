@@ -186,7 +186,8 @@ test "fall damage threshold health feedback and dead movement" {
     var level = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     const spawn: level_module.Spawn = .{ .sector = 0, .position = .{ .x = 0, .y = 0.01, .z = 0 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
@@ -355,7 +356,8 @@ test "solid ceiling crushing records and compressed player motion" {
     var level = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     var effects = inventory_module.Effects.init(a);
     for (fixture.value.movement_cases) |case| {

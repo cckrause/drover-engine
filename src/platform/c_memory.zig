@@ -13,7 +13,9 @@ const alignment: std.mem.Alignment = .@"16";
 
 pub fn install(allocator: Allocator) error{ForeignMemoryAlreadyInstalled}!void {
     if (active != null) return error.ForeignMemoryAlreadyInstalled;
+
     std.debug.assert(outstanding.load(.acquire) == 0);
+
     active = allocator;
     failed.store(false, .release);
 }
@@ -49,8 +51,10 @@ pub fn malloc(length: usize) callconv(.c) ?*anyopaque {
         noMemory();
         return null;
     };
+
     std.mem.bytesAsValue(usize, bytes[0..@sizeOf(usize)]).* = total;
     _ = outstanding.fetchAdd(1, .release);
+
     return bytes.ptr + header_bytes;
 }
 
@@ -60,16 +64,20 @@ pub fn calloc(count_items: usize, size: usize) callconv(.c) ?*anyopaque {
         return null;
     };
     const memory = malloc(length) orelse return null;
+
     @memset(@as([*]u8, @ptrCast(memory))[0..length], 0);
+
     return memory;
 }
 
 pub fn realloc(memory: ?*anyopaque, length: usize) callconv(.c) ?*anyopaque {
     const pointer = memory orelse return malloc(length);
+
     if (length == 0) {
         free(pointer);
         return null;
     }
+
     const total = std.math.add(usize, length, header_bytes) catch {
         noMemory();
         return null;
@@ -79,13 +87,17 @@ pub fn realloc(memory: ?*anyopaque, length: usize) callconv(.c) ?*anyopaque {
         noMemory();
         return null;
     };
+
     std.mem.bytesAsValue(usize, bytes[0..@sizeOf(usize)]).* = total;
+
     return bytes.ptr + header_bytes;
 }
 
 pub fn free(memory: ?*anyopaque) callconv(.c) void {
     const pointer = memory orelse return;
+
     active.?.free(allocation(pointer));
+
     const previous = outstanding.fetchSub(1, .release);
     std.debug.assert(previous > 0);
 }
@@ -93,8 +105,10 @@ pub fn free(memory: ?*anyopaque) callconv(.c) void {
 fn allocation(memory: *anyopaque) []align(16) u8 {
     const start: [*]align(16) u8 = @alignCast(@as([*]u8, @ptrCast(memory)) - header_bytes);
     const length = std.mem.bytesAsValue(usize, start[0..@sizeOf(usize)]).*;
+
     std.debug.assert(length >= header_bytes);
     std.debug.assert(active != null);
+
     return start[0..length];
 }
 

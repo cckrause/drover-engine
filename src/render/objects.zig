@@ -540,7 +540,8 @@ test "local player transform cache follows visible sector traversal" {
         level.sectors = &sectors;
         var states: [2]scene_module.SectorState = @splat(std.mem.zeroes(scene_module.SectorState));
         states[0].flags = if (case.water) 0x80 else 0;
-        const scene = scene_module.Scene{ .arena = undefined, .sectors = &states };
+        var collision_check: u32 = 0;
+        const scene = scene_module.Scene{ .arena = undefined, .sectors = &states, .collision_check = &collision_check };
         var links = try actor_links.Links.init(a, 2, 0);
         defer links.deinit();
         links.move(actor_links.player_id, @intFromBool(case.adjacent));
@@ -590,6 +591,8 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
     var sector_states: [4]scene_module.SectorState = @splat(std.mem.zeroes(scene_module.SectorState));
     var scene: scene_module.Scene = undefined;
     scene.sectors = &sector_states;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     var texels: [99]u8 = undefined;
     for (&texels, 0..) |*byte, i| byte.* = @truncate(i * 17);
     var cells = [_]nwx.Cell{.{ .width = 9, .height = 11, .flags = 0, .pixels = &texels }};

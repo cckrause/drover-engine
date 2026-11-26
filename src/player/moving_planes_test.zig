@@ -158,6 +158,8 @@ test "moving planes player transport jump and ceiling relative response" {
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var elevators = try classes(a, case.classes);
         var runtime: runtime_module.Context = .{ .inventory = &inventory, .pickups = &.{}, .removed = &.{}, .now_ms = 1000, .effects = &effects, .contact_state = &native, .inf = &elevators, .level = &level };
         var player = try movement.Player.init(&item, air, .{ .sector = 0, .position = point(config.position), .rotation = .{ .x = 0, .y = 0, .z = 0 } });
@@ -207,6 +209,8 @@ test "moving planes player transport jump and ceiling relative response" {
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var elevators = try classes(a, case.classes);
         var runtime: runtime_module.Context = .{ .inventory = &inventory, .pickups = &.{}, .removed = &.{}, .now_ms = 1000, .effects = &effects, .contact_state = &native, .inf = &elevators, .level = &level };
         const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{}, .runtime = &runtime } };

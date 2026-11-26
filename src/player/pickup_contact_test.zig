@@ -116,7 +116,7 @@ test "pickup contacts retain reference ordering bounds and slide filter changes"
             links.move(index, actor.sector);
             indices[index] = index;
         }
-        const result = try collision.resolve(std.testing.allocator, &level, &scene, .{
+        const result = try collision.resolve(&level, &scene, .{
             .entries = actors,
             .links = &links,
             .source_to_entry = indices,

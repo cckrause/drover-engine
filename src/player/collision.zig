@@ -240,9 +240,6 @@ const Context = struct {
     scene: *const scene_module.Scene,
     actors: Actors,
     options: Options,
-    offsets: []usize,
-    wall_seen: []bool,
-    sector_seen: []bool,
     actor_position: Vec3,
     actor_sector: usize,
     height: f32,
@@ -343,7 +340,7 @@ const Context = struct {
     }
 
     fn cross(self: *Context, start: usize, old: Vec3, point: *Vec3, delta: *Vec3, velocity: ?*Vec3) !?usize {
-        @memset(self.wall_seen, false);
+        self.scene.startCollisionCheck();
         var previous_distance: f32 = -0x1p31;
         var sector = start;
         var first = true;
@@ -384,7 +381,7 @@ const Context = struct {
         var distance: f32 = 0x1p31;
         const source = self.level.sectors[sector];
         for (source.walls, self.scene.sectors[sector].walls, 0..) |wall, state, index| {
-            if (self.wall_seen[self.offsets[sector] + index]) continue;
+            if (state.last_collision_check == self.scene.collision_check.*) continue;
             const hit = intersection(.{ .x = old.x, .z = old.z }, .{ .x = point.x, .z = point.z }, source.vertices[wall.v1], source.vertices[wall.v2]) orelse continue;
             if (old.x == hit.x and old.z == hit.z and 0 <= (@as(f64, point.x) - old.x) * state.direction.z - (@as(f64, point.z) - old.z) * state.direction.x) continue;
             const dx = @abs(f(hit.x - @as(f64, old.x)));
@@ -412,7 +409,7 @@ const Context = struct {
     }
 
     fn markWall(self: *Context, wall: Wall) void {
-        self.wall_seen[self.offsets[wall.sector] + wall.index] = true;
+        self.scene.sectors[wall.sector].walls[wall.index].last_collision_check = self.scene.collision_check.*;
     }
 
     fn fits(self: *const Context, sector: usize, point: Vec3) !bool {
@@ -442,7 +439,7 @@ const Context = struct {
         if (self.actors.runtime) |runtime| if (runtime.collision_diameter) |diameter| {
             diameter.* = f(@as(f64, q.radius) * 2.0);
         };
-        @memset(self.sector_seen, false);
+        self.scene.startCollisionCheck();
         self.last_wall = null;
         self.last_sector = null;
         self.contact.ceiling = 0x1p31;
@@ -487,7 +484,7 @@ const Context = struct {
         self.contact.floor = @max(self.contact.floor, limits.floor);
         self.contact.gap = @min(self.contact.gap, f(@as(f64, limits.ceiling) - limits.floor));
         if (self.contact.gap < q.height) return true;
-        self.sector_seen[sector] = true;
+        self.scene.sectors[sector].last_collision_check = self.scene.collision_check.*;
         for (self.level.sectors[sector].walls, self.scene.sectors[sector].walls, 0..) |wall, state, index| {
             self.last_wall = .{ .sector = sector, .index = index };
             const blocked = self.options.impassable_walls and state.flags & 0x800 != 0;
@@ -498,7 +495,7 @@ const Context = struct {
             if (state.flags & self.options.wall_block_mask != 0) return true;
             if (has_adjoin or has_double) {
                 var collision = false;
-                if (has_adjoin and !self.sector_seen[@intCast(wall.adjoin)]) collision = try self.geometrySector(q, @intCast(wall.adjoin));
+                if (has_adjoin and self.scene.sectors[@intCast(wall.adjoin)].last_collision_check != self.scene.collision_check.*) collision = try self.geometrySector(q, @intCast(wall.adjoin));
                 if (collision) {
                     if (has_double) collision = try self.geometrySector(q, @intCast(wall.dadjoin));
                     if (collision) return true;
@@ -611,19 +608,13 @@ const Context = struct {
     }
 };
 
-pub fn resolve(allocator: std.mem.Allocator, level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, old: Vec3, desired: *Vec3, velocity: *Vec3, height: f32, radius: f32, step_height: f32, floor_cache: *f32) !Result {
-    return resolveWithOptions(allocator, level, scene, actors, sector, old, desired, velocity, height, radius, step_height, floor_cache, .{});
+pub fn resolve(level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, old: Vec3, desired: *Vec3, velocity: *Vec3, height: f32, radius: f32, step_height: f32, floor_cache: *f32) !Result {
+    return resolveWithOptions(level, scene, actors, sector, old, desired, velocity, height, radius, step_height, floor_cache, .{});
 }
 
-pub fn resolveWithOptions(allocator: std.mem.Allocator, level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, old: Vec3, desired: *Vec3, velocity: *Vec3, height: f32, radius: f32, step_height: f32, floor_cache: *f32, options: Options) !Result {
+pub fn resolveWithOptions(level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, old: Vec3, desired: *Vec3, velocity: *Vec3, height: f32, radius: f32, step_height: f32, floor_cache: *f32, options: Options) !Result {
     if (sector >= level.sectors.len or radius <= 0 or !std.math.isFinite(radius)) return error.InvalidPlayerCollision;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const offsets = try a.alloc(usize, level.sectors.len + 1);
-    offsets[0] = 0;
-    for (level.sectors, 0..) |s, i| offsets[i + 1] = offsets[i] + s.walls.len;
-    var context = Context{ .level = level, .scene = scene, .actors = actors, .options = options, .offsets = offsets, .wall_seen = try a.alloc(bool, offsets[level.sectors.len]), .sector_seen = try a.alloc(bool, level.sectors.len), .actor_position = old, .actor_sector = sector, .height = height, .radius = radius, .step = step_height, .contact = .{ .floor = floor_cache.* } };
+    var context = Context{ .level = level, .scene = scene, .actors = actors, .options = options, .actor_position = old, .actor_sector = sector, .height = height, .radius = radius, .step = step_height, .contact = .{ .floor = floor_cache.* } };
     if (options.projection) |projection| if (projection.values()) |values| {
         context.contact.direction = values.direction;
         context.contact.origin = values.origin;
@@ -685,7 +676,7 @@ pub fn resolveWithOptions(allocator: std.mem.Allocator, level: *const level_modu
     return context.result(result);
 }
 
-pub fn pathClear(allocator: std.mem.Allocator, level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, height: f32, radius: f32, from: Vec3, to: *Vec3) !bool {
+pub fn pathClear(level: *const level_module.Level, scene: *const scene_module.Scene, actors: Actors, sector: usize, height: f32, radius: f32, from: Vec3, to: *Vec3) !bool {
     if (sector >= level.sectors.len) return error.InvalidPlayerCollision;
     const difference = Vec3{ .x = f(@as(f64, to.x) - from.x), .y = f(@as(f64, to.y) - from.y), .z = f(@as(f64, to.z) - from.z) };
     if (@as(u32, @bitCast(difference.x)) & 0x7fffffff == 0 and @as(u32, @bitCast(difference.z)) & 0x7fffffff == 0) return true;
@@ -695,13 +686,7 @@ pub fn pathClear(allocator: std.mem.Allocator, level: *const level_module.Level,
     const full_reciprocal = 1.0 / @as(f64, @floatFromInt(steps));
     const reciprocal = f(full_reciprocal);
     const increment = Vec3{ .x = f(full_reciprocal * difference.x), .y = f(@as(f64, reciprocal) * difference.y), .z = f(@as(f64, reciprocal) * difference.z) };
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const offsets = try a.alloc(usize, level.sectors.len + 1);
-    offsets[0] = 0;
-    for (level.sectors, 0..) |s, i| offsets[i + 1] = offsets[i] + s.walls.len;
-    var context = Context{ .level = level, .scene = scene, .actors = actors, .options = .{}, .offsets = offsets, .wall_seen = try a.alloc(bool, offsets[level.sectors.len]), .sector_seen = try a.alloc(bool, level.sectors.len), .actor_position = from, .actor_sector = sector, .height = height, .radius = width, .step = 3.0 };
+    var context = Context{ .level = level, .scene = scene, .actors = actors, .options = .{}, .actor_position = from, .actor_sector = sector, .height = height, .radius = width, .step = 3.0 };
     const saved = to.*;
     defer to.* = saved;
     var point = from;

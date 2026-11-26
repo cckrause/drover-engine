@@ -58,6 +58,8 @@ test "Sanchez constructor template dormant clock and message gate" {
     var sector_state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&sector_state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     var visibility = try occlusion.Cache.init(a, &level);
     defer visibility.deinit();
@@ -198,6 +200,8 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         var state = std.mem.zeroes(scene_module.SectorState);
         var blood_scene: scene_module.Scene = undefined;
         blood_scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        blood_scene.collision_check = &collision_check;
         const initial = case.initial;
         var particle: @import("../render/objects.zig").Actor = .{ .costume = &blood_costume, .sector = 0, .position = projectionPoint(initial.position_bits), .yaw = 0, .flags = initial.flags, .secondary_flags = 0, .height = @bitCast(initial.height_bits), .collision_radius = @bitCast(initial.radius_bits), .scale_x = @bitCast(initial.scale_bits[0]), .scale_y = @bitCast(initial.scale_bits[1]), .choreography = 0, .frame = 0, .angle_offset = 0 };
         var motion: blood.State = .{ .velocity = projectionPoint(initial.velocity_bits) };
@@ -273,6 +277,8 @@ test "hidden Sanchez selected taunt sound updates projection by actual admission
         var state = std.mem.zeroes(scene_module.SectorState);
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var cache = try occlusion.Cache.init(a, &level);
         var random = entry.random;
         var shared: controller.Shared = .{ .now = 1000 };

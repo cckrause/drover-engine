@@ -102,6 +102,8 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
     var state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     for (corpus.cases, 0..) |case, index| {
         errdefer std.debug.print("reference controller {s} case {d}: {s}/{x}\n", .{ path, index, case.name, case.difficulty });
@@ -284,6 +286,8 @@ fn compareStack(path: []const u8) !void {
         var sector_state = std.mem.zeroes(scene_module.SectorState);
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var cache = try occlusion.Cache.init(a, &level);
         var random = case.before.random;
         var shared: controller.Shared = .{ .now = 1000 };
@@ -368,6 +372,8 @@ test "enemy throw targeting matches the reference range perturbation and angles"
     var state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     var item = try Item.parse(a, try archive.find("BGY2BOOM.ITM", 0));
     defer item.deinit();
@@ -416,6 +422,8 @@ test "enemy impulses activation and hit results retain cached AI clock" {
     var state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     for (corpus.cases) |case| {
         var item = try Item.parse(a, try archive.find(try std.fmt.allocPrint(a, "{s}.ITM", .{case.name}), 0));
@@ -486,6 +494,8 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
     var state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     const Sink = struct {
         completed: u32 = 0,

@@ -29,6 +29,8 @@ test "secret discovery matches player ticks and one-shot ordering" {
     var sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
     var scene: scene_module.Scene = undefined;
     scene.sectors = &sectors;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     for (parsed.value.samples) |sample| {
         sectors[0].runtime_flags = sample.initial[0];
         var state = secrets.State{ .found = sample.initial[1] };

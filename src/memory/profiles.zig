@@ -18,12 +18,12 @@ pub fn get(profile: Profile) Limits {
         .original_pc => .{
             // Usable managed heap capacity; excludes process and host overhead.
             .heap_bytes = 64 * 1024 * 1024,
-            // CD1 OLWIN 0042d6b0: 6000 KiB and 0x2000 master pointers.
+            // The original game's default resource heap and handle count.
             .resource_bytes = 6000 * 1024,
             .resource_handles = 8192,
-            // OLWIN 0046f1f0 -> LECSMUSH Allocate (10001090).
+            // What the original asks for to stream a movie; not a cap on movie size.
             .movie_input_bytes = 1024 * 1024,
-            // OLWIN 00489b00's instance table; existing eight-voice mixer.
+            // Size of the original's playing-sound table; the mixer still has eight voices.
             .sound_instances = 200,
             .sound_voices = 8,
         },

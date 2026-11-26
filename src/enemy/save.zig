@@ -534,6 +534,8 @@ test "generator logic and enemy save bytes match the reference" {
     var sector_state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&sector_state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     const refs: References = .{ .actor_ids = &.{101}, .player_id = 102, .sector_count = 1, .node_count = 0 };
     for (fixture.enemies) |case| {

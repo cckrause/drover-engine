@@ -104,6 +104,8 @@ test "enemy damping movement and commit match the reference bits" {
     var state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
     const config = physics.Config{ .walk_speed = @bitCast(corpus.config.walk_speed_bits), .run_speed = @bitCast(corpus.config.run_speed_bits), .walk_chor = 1, .run_chor = 2, .step_height = 3, .drop_height = 15 };

@@ -1574,6 +1574,8 @@ test "breakable wall triggers and both-sided destruction match sequences" {
         level.sectors = &sectors;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &sector_states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var random: u32 = 0x742389ac;
         const angles = camera.Angles.init();
         var runtime = try Runtime.loadWithScene(a, &level, "INF 1.0\nITEMS 0\n", &random, &scene, &angles);
@@ -1638,6 +1640,8 @@ test "INF wall and sector bit messages match every flag bit" {
     sector_states[0].walls = &states;
     var scene: scene_module.Scene = undefined;
     scene.sectors = &sector_states;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{} };
     defer runtime.deinit();
     for (parsed.value.cases) |sample| {
@@ -1673,6 +1677,8 @@ test "INF trigger flag messages join the current FIFO without link filtering" {
     sector_states[0].walls = &states;
     var scene: scene_module.Scene = undefined;
     scene.sectors = &sector_states;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     var random: u32 = 0x742389ac;
     const angles = camera.Angles.init();
     var runtime = try Runtime.loadWithScene(a, &level,
@@ -2206,6 +2212,8 @@ test "INF reference Train floor and ceiling scrolling" {
         level.sectors = &sectors;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var world = geometry.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = &.{}, .collision_diameter = 0 };
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{} };
         defer runtime.deinit();
