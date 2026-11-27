@@ -11,6 +11,14 @@ const std = @import("std");
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
+const FixedList = @import("../util/fixed_list.zig").FixedList;
+
+/// User messages one server pass may hand to the level. The level frame
+/// turns each into an effect, and its effect list holds no more than this
+/// (`inventory.max_effects`), so a longer list could not be handed on.
+pub const max_user_messages = 256;
+pub const UserMessages = FixedList(i32, error{TooManyUserMessages});
+pub const UserMessageBuffer = [max_user_messages]i32;
 
 pub const CompletionGate = struct {
     last: u32 = 0,
@@ -87,7 +95,7 @@ pub const Context = struct {
     mode: u32 = 0,
     level_loaded: bool,
     allocator: std.mem.Allocator,
-    user_messages: *std.ArrayList(i32),
+    user_messages: *UserMessages,
     level: ?Level = null,
 };
 
@@ -224,7 +232,7 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
             },
             0x7e5 => {
                 if (bytes.len < message.words_size) return error.MalformedNetworkMessage;
-                try context.user_messages.append(context.allocator, @bitCast(message.get(bytes, message.word_offsets[1])));
+                try context.user_messages.append(@bitCast(message.get(bytes, message.word_offsets[1])));
             },
             0x3f4 => {
                 if (bytes.len < 0x14) return error.MalformedNetworkMessage;
@@ -299,7 +307,7 @@ fn rejectJoin(router: *Router, request: []const u8, address: *const message.Addr
 }
 
 test "server queue is emptied while the switch is off" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var request: [message.header_size]u8 = @splat(0);
@@ -312,12 +320,12 @@ test "server queue is emptied while the switch is off" {
 }
 
 test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var server: Server = .{};
-    var users: std.ArrayList(i32) = .empty;
-    defer users.deinit(std.testing.allocator);
+    var users_buffer: UserMessageBuffer = undefined;
+    var users = UserMessages.init(&users_buffer);
     const Hooks = struct {
         fn create(_: *anyopaque, _: message.HaveServerCreate) anyerror!void {
             return error.UnexpectedCreate;
@@ -348,12 +356,12 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
 }
 
 test "v1.1.1 Death Match start matches the reference server reply" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var server: Server = .{};
-    var users: std.ArrayList(i32) = .empty;
-    defer users.deinit(std.testing.allocator);
+    var users_buffer: UserMessageBuffer = undefined;
+    var users = UserMessages.init(&users_buffer);
     try addStartPosition(&router, @splat(101));
     try addStartPosition(&router, @splat(202));
     try requestStartPosition(&router, 0);

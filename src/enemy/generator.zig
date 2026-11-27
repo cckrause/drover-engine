@@ -13,13 +13,23 @@ const audio = @import("../audio/runtime.zig");
 const engine = @import("../audio/engine.zig");
 const enemy_session = @import("session.zig");
 const inventory = @import("../player/inventory.zig");
+const session_queues = @import("../render/session_queues.zig");
 
 pub const Kind = enum(u32) { item, enemy, point_sound, ambient_sound, indoor_sound };
 
-pub const Child = union(enum) {
-    actor: usize,
-    sound: struct { id: u32, generation: u64, completed: bool = false },
-};
+/// An actor a generator made, until the actor is removed.
+pub const ActorChild = struct { record: usize, source: usize };
+/// A sound a generator started, until it is found to have ended.
+pub const PlayingSound = struct { record: usize, id: u32, generation: u64 };
+
+/// Every generated actor belongs to one generator, so all of them together
+/// never outnumber the actors a session can hold.
+/// TODO: Use the session's actor slot capacity once actor slots are fixed.
+pub const max_actor_children = session_queues.actor_slots;
+/// A generated sound holds a sound instance until the next sound check sees
+/// it ended. Twice the pool leaves room for instances that end and start
+/// again before that check.
+pub const max_playing_sounds = 2 * engine.instance_count;
 
 pub const Record = struct {
     id: u32,
@@ -45,7 +55,9 @@ pub const Record = struct {
     los: bool = false,
     resource_volume: i8 = 127,
     sound_resource: ?struct { name: []const u8, priority: i8 = 1, flags: u32 = 0x10000, created_at: u32 } = null,
-    children: std.ArrayList(Child) = .empty,
+    /// Every sound this generator started, ended or not. The original never
+    /// drops them and a saved game lists each one, so only the count is kept.
+    sound_children: u32 = 0,
 
     pub fn init(a: std.mem.Allocator, item: *const Item, object: level.Object, sector: usize, now: u32, rng: *u32) !Record {
         const name = try item.stringValue("GENERATE") orelse return error.GeneratorMissingGeneratee;
@@ -109,6 +121,13 @@ pub const State = struct {
     deadline: u32 = 0,
     respawn_sound: bool = false,
     silent_instances: engine.Engine = .{},
+    // Plain arrays rather than lists borrowing a buffer, because a state is
+    // copied when it is saved and restored. Both keep the order children
+    // were made in.
+    actor_children: [max_actor_children]ActorChild = undefined,
+    actor_child_count: usize = 0,
+    playing_sounds: [max_playing_sounds]PlayingSound = undefined,
+    playing_sound_count: usize = 0,
 
     pub fn append(self: *State, a: std.mem.Allocator, item: *const Item, object: level.Object, sector: usize, now: u32, rng: *u32) !void {
         try self.records.append(a, try Record.init(a, item, object, sector, now, rng));
@@ -120,15 +139,64 @@ pub const State = struct {
         self.enabled = true;
     }
 
+    pub fn actorChildren(self: *const State) []const ActorChild {
+        return self.actor_children[0..self.actor_child_count];
+    }
+
+    pub fn addActorChild(self: *State, record: usize, source: usize) error{TooManyGeneratorActors}!void {
+        if (self.actor_child_count == max_actor_children) return error.TooManyGeneratorActors;
+        self.actor_children[self.actor_child_count] = .{ .record = record, .source = source };
+        self.actor_child_count += 1;
+    }
+
+    fn addPlayingSound(self: *State, sound: PlayingSound) error{TooManyGeneratorSounds}!void {
+        if (self.playing_sound_count == max_playing_sounds) return error.TooManyGeneratorSounds;
+        self.playing_sounds[self.playing_sound_count] = sound;
+        self.playing_sound_count += 1;
+    }
+
+    /// How many children a saved game lists for the generator at `index`.
+    pub fn childCount(self: *const State, index: usize) u32 {
+        const record = self.records.items[index];
+        if (@intFromEnum(record.kind) >= 2) return record.sound_children;
+        var count: u32 = 0;
+        for (self.actorChildren()) |child| count += @intFromBool(child.record == index);
+        return count;
+    }
+
+    /// Drops the children of a generator that is being removed and moves
+    /// the later generators' children down with their records.
+    fn forgetRecord(self: *State, index: usize) void {
+        var kept: usize = 0;
+        for (self.actorChildren()) |child| {
+            if (child.record == index) continue;
+            self.actor_children[kept] = .{ .record = if (child.record > index) child.record - 1 else child.record, .source = child.source };
+            kept += 1;
+        }
+        self.actor_child_count = kept;
+        kept = 0;
+        for (self.playing_sounds[0..self.playing_sound_count]) |sound| {
+            if (sound.record == index) continue;
+            self.playing_sounds[kept] = sound;
+            if (sound.record > index) self.playing_sounds[kept].record -= 1;
+            kept += 1;
+        }
+        self.playing_sound_count = kept;
+    }
+
     pub fn removed(self: *State, source: usize, now: u32, rng: *u32) void {
-        for (self.records.items) |*record| for (record.children.items, 0..) |child, index| {
-            if (child == .actor and child.actor == source) {
-                _ = record.children.orderedRemove(index);
-                record.live -%= 1;
-                if (record.kind == .item and record.live < record.maximum) record.reschedule(now, rng);
-                return;
-            }
-        };
+        // The first generator in list order that holds the actor gives it up.
+        var found: ?usize = null;
+        for (self.actorChildren(), 0..) |child, position| {
+            if (child.source != source) continue;
+            if (found == null or child.record < self.actor_children[found.?].record) found = position;
+        }
+        const position = found orelse return;
+        const record = &self.records.items[self.actor_children[position].record];
+        std.mem.copyForwards(ActorChild, self.actor_children[position .. self.actor_child_count - 1], self.actor_children[position + 1 .. self.actor_child_count]);
+        self.actor_child_count -= 1;
+        record.live -%= 1;
+        if (record.kind == .item and record.live < record.maximum) record.reschedule(now, rng);
     }
 };
 
@@ -149,6 +217,7 @@ pub fn removeSector(session: anytype, sector: usize) void {
         const record = &session.generators.records.items[index];
         if (record.sector == sector) {
             releaseRecordSound(session, record);
+            session.generators.forgetRecord(index);
             _ = session.generators.records.orderedRemove(index);
             if (index == 0) return;
         } else index += 1;
@@ -227,14 +296,16 @@ pub fn tick(session: anytype, allocator: std.mem.Allocator, effects: *inventory.
 
 pub fn updateSounds(session: anytype) void {
     const sound: *audio.Runtime = session.active_audio orelse return;
-    for (session.generators.records.items) |*record| for (record.children.items) |*child| {
-        if (child.* != .sound or child.sound.completed) continue;
-        const playing = if (sound.engine.find(child.sound.id)) |voice| voice.generation == child.sound.generation else false;
-        if (!playing) {
-            child.sound.completed = true;
-            record.live -%= 1;
-        }
-    };
+    const system = &session.generators;
+    var kept: usize = 0;
+    for (system.playing_sounds[0..system.playing_sound_count]) |child| {
+        const playing = if (sound.engine.find(child.id)) |voice| voice.generation == child.generation else false;
+        if (playing) {
+            system.playing_sounds[kept] = child;
+            kept += 1;
+        } else system.records.items[child.record].live -%= 1;
+    }
+    system.playing_sound_count = kept;
 }
 
 fn releaseRecordSound(session: anytype, record: *Record) void {
@@ -249,7 +320,7 @@ fn visible(session: anytype, record: Record, sector: usize, endpoint: level.Vec3
 fn generate(session: anytype, allocator: std.mem.Allocator, effects: *inventory.Effects, index: usize) !void {
     _ = allocator;
     const record = session.generators.records.items[index];
-    const a = session.arena.allocator();
+    const Child = union(enum) { actor: usize, sound: ?PlayingSound };
     const child: Child = switch (record.kind) {
         .item, .enemy => blk: {
             const network = session.game_type == 4 or session.game_type == 5;
@@ -302,13 +373,19 @@ fn generate(session: anytype, allocator: std.mem.Allocator, effects: *inventory.
                 instances.stop(instance_id);
                 break :admitted null;
             };
-            break :blk .{ .sound = if (handle) |id| .{ .id = id, .generation = sound.?.engine.find(id).?.generation } else .{ .id = 0, .generation = 0, .completed = true } };
+            break :blk .{ .sound = if (handle) |id| .{ .record = index, .id = id, .generation = sound.?.engine.find(id).?.generation } else null };
         },
     };
     const updated = &session.generators.records.items[index];
     updated.total +%= 1;
     updated.live +%= 1;
-    try updated.children.append(a, child);
+    switch (child) {
+        .actor => |source| try session.generators.addActorChild(index, source),
+        .sound => |playing| {
+            updated.sound_children +%= 1;
+            if (playing) |value| try session.generators.addPlayingSound(value);
+        },
+    }
 }
 
 test "generator sound release keeps sector iterator and close order" {
@@ -418,7 +495,7 @@ test "generator sound allocation and driver failure match the reference" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, system, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     for (fixture.value.cases) |case| {
         const name = try std.fmt.allocPrint(session.arena.allocator(), "{s}.ITM", .{case.name});
@@ -432,8 +509,8 @@ test "generator sound allocation and driver failure match the reference" {
         session.animation_time = 1000;
         session.scene.sectors[session.player.sector].flags = if (case.outside) 1 else 0;
         try session.generators.append(session.arena.allocator(), &item, object, 0, 1000, &session.contact_state.random);
-        var effects = inventory.Effects.init(a);
-        defer effects.deinit();
+        var effects_buffer: inventory.EffectBuffer = undefined;
+        var effects = inventory.Effects.init(&effects_buffer);
         for (case.frames) |expected| {
             try generate(session, a, &effects, 0);
             const record = session.generators.records.items[0];
@@ -446,4 +523,28 @@ test "generator sound allocation and driver failure match the reference" {
             try std.testing.expectEqual(expected.allocated, allocated);
         }
     }
+}
+
+test "generator children keep their order, follow removed generators and report when full" {
+    var state: State = .{};
+    defer state.records.deinit(std.testing.allocator);
+    const record: Record = .{ .id = 1, .generatee = "x", .position = .{ .x = 0, .y = 0, .z = 0 }, .sector = 0, .yaw = 0, .live = 2 };
+    for (0..3) |_| try state.records.append(std.testing.allocator, record);
+    state.records.items[2].kind = .ambient_sound;
+    state.records.items[2].sound_children = 7;
+    try state.addActorChild(1, 10);
+    try state.addActorChild(0, 11);
+    try state.addActorChild(1, 12);
+    try state.addActorChild(0, 10);
+    try std.testing.expectEqual(@as(u32, 2), state.childCount(0));
+    try std.testing.expectEqual(@as(u32, 7), state.childCount(2));
+    // The first generator in list order gives the actor up, not the first child.
+    var rng: u32 = 1;
+    state.removed(10, 0, &rng);
+    try std.testing.expectEqual(@as(i32, 1), state.records.items[0].live);
+    try std.testing.expectEqualSlices(ActorChild, &.{ .{ .record = 1, .source = 10 }, .{ .record = 0, .source = 11 }, .{ .record = 1, .source = 12 } }, state.actorChildren());
+    state.forgetRecord(0);
+    try std.testing.expectEqualSlices(ActorChild, &.{ .{ .record = 0, .source = 10 }, .{ .record = 0, .source = 12 } }, state.actorChildren());
+    state.actor_child_count = max_actor_children;
+    try std.testing.expectError(error.TooManyGeneratorActors, state.addActorChild(0, 1));
 }

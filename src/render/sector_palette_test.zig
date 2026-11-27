@@ -55,11 +55,11 @@ test "player sector changes switch palettes as the reference relinks do" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, io, path, archive, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), io, path, archive, &startup);
     defer session.deinit(a);
 
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         errdefer std.debug.print("sector palette case {s} {d}->{d} number={d} flags={x}\n", .{ case.routine, case.start, case.target, case.number, case.flags });
         try std.testing.expectEqual(case.target_palette, session.level.sectors[case.target].palette);
@@ -91,7 +91,7 @@ test "player sector changes switch palettes as the reference relinks do" {
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(@as(usize, 66), session.player.sector);
     try std.testing.expectEqual(@as(u8, 1), session.palette_index);
-    const under = try session.render(a, pixels, 0);
+    const under = try session.render(pixels, 0);
     try std.testing.expectEqualSlices(u32, system[0..16], under[0..16]);
     try std.testing.expectEqualSlices(u32, wet[16..], under[16..]);
 
@@ -101,7 +101,7 @@ test "player sector changes switch palettes as the reference relinks do" {
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(@as(usize, 70), session.player.sector);
     try std.testing.expectEqual(@as(u8, 0), session.palette_index);
-    const above = try session.render(a, pixels, 0);
+    const above = try session.render(pixels, 0);
     try std.testing.expectEqualSlices(u32, system[0..16], above[0..16]);
     try std.testing.expectEqualSlices(u32, dry[16..], above[16..]);
 }

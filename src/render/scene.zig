@@ -101,6 +101,7 @@ pub const WallState = struct {
     length: f32,
     angle: i16,
     direction: Vec2,
+    last_collision_check: u32 = 0,
 };
 
 pub const SectorState = struct {
@@ -114,6 +115,7 @@ pub const SectorState = struct {
     floor_slope: ?Slope,
     ceiling_slope: ?Slope,
     walls: []WallState,
+    last_collision_check: u32 = 0,
 
     pub fn validateSlopes(self: SectorState) !void {
         if ((self.flags & 0x40000000 != 0 and self.floor_slope == null) or
@@ -124,6 +126,9 @@ pub const SectorState = struct {
 pub const Scene = struct {
     arena: std.heap.ArenaAllocator,
     sectors: []SectorState,
+    /// A pointer so collision code can bump it through a read-only scene.
+    /// Copies of a scene share it.
+    collision_check: *u32,
 
     pub fn init(allocator: std.mem.Allocator, level: *const level_asset.Level, angles: *const camera.Angles) !Scene {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -175,7 +180,9 @@ pub const Scene = struct {
             }
             if (source.flags & 0x2000000 != 0) sector.runtime_flags |= 0x10000000;
         }
-        var result = Scene{ .arena = arena, .sectors = sectors };
+        const collision_check = try a.create(u32);
+        collision_check.* = 0;
+        var result = Scene{ .arena = arena, .sectors = sectors, .collision_check = collision_check };
         for (level.sectors, 0..) |source, sector_index| {
             const sector = &sectors[sector_index];
             for (source.walls, sector.walls) |wall, *state| {
@@ -233,6 +240,10 @@ pub const Scene = struct {
             }
         }
         return result;
+    }
+
+    pub fn startCollisionCheck(self: *const Scene) void {
+        self.collision_check.* +%= 1;
     }
 
     pub fn deinit(self: *Scene) void {
@@ -563,4 +574,14 @@ test "CD1 loader flags and runtime slope changes match the reference" {
         try std.testing.expectError(error.MissingSceneSlope, scene.prepareWall(&level, invalid.sector, invalid.wall));
         try std.testing.expectError(error.MissingSceneSlope, scene.refreshWallHeights(&level));
     }
+}
+
+test "collision check number goes up by one and wraps at the 32-bit limit" {
+    var collision_check: u32 = 41;
+    const scene = Scene{ .arena = undefined, .sectors = &.{}, .collision_check = &collision_check };
+    scene.startCollisionCheck();
+    try std.testing.expectEqual(@as(u32, 42), collision_check);
+    collision_check = std.math.maxInt(u32);
+    scene.startCollisionCheck();
+    try std.testing.expectEqual(@as(u32, 0), collision_check);
 }

@@ -21,13 +21,20 @@ const Actor = @import("../render/objects.zig").Actor;
 const player_source = @import("../player/shooting.zig").local_player;
 const object_numbers = @import("../render/object_numbers.zig");
 
+/// Writes every module. Lists and records that exist only while writing come
+/// from a scratch arena freed before returning, also on failure, so saving
+/// adds nothing to the level's storage.
+// TODO: Reserve this scratch at startup once actor slots have a fixed capacity.
 pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
-    try hydrateMap(session);
+    var scratch_arena = std.heap.ArenaAllocator.init(session.allocator);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
+    try hydrateMap(session, scratch);
     try session.bindAudio(audio);
     const previous_audio = session.active_audio;
     session.active_audio = audio;
     defer session.active_audio = previous_audio;
-    const ids = try actorIds(session);
+    const ids = try actorIds(session, scratch);
     for (modules.order) |entry| switch (entry.module) {
         .player => try player_module.writeInventory(&session.inventory, writer),
         .server => {
@@ -35,13 +42,13 @@ pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
             try writer.boolean(session.server_enabled);
         },
         .level => try level_save.write(session, writer, audio),
-        .gen => try enemy_save.writeGenWithAudio(writer, session.generators, ids, audio),
+        .gen => try enemy_save.writeGenWithAudio(writer, &session.generators, ids, audio),
         .db => {
             try writer.marker(0x426c6157, 1, 0);
             try writer.marker(0x42636553, 1, 0);
-            try writeActors(session, writer, audio);
+            try writeActors(session, scratch, writer, audio);
             try inf_save.writeDbm(writer);
-            try inf_save.writeClasses(writer, &session.inf, &session.texture_animations, &session.level, try infReferences(session, audio));
+            try inf_save.writeClasses(writer, &session.inf, &session.texture_animations, &session.level, try infReferences(session, scratch, audio));
         },
         .elevator => try inf_save.writeElevatorModule(writer, &session.inf),
         .logic => try enemy_save.writeLogic(writer, session.enemy_shared, session.sanchez_sites orelse &.{}),
@@ -50,6 +57,9 @@ pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
 }
 
 pub fn read(session: anytype, reader: *stream.Reader, audio: anytype) !void {
+    var scratch_arena = std.heap.ArenaAllocator.init(session.allocator);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
     try session.bindAudio(audio);
     const previous_audio = session.active_audio;
     session.active_audio = audio;
@@ -62,15 +72,15 @@ pub fn read(session: anytype, reader: *stream.Reader, audio: anytype) !void {
         },
         .level => session.saved_music = try level_save.read(session, reader, audio),
         .gen => {
-            session.generators = try enemy_save.readGenWithAudio(reader, session.arena.allocator(), session.level.sectors.len, try actorIds(session), audio);
+            session.generators = try enemy_save.readGenWithAudio(reader, session.arena.allocator(), session.level.sectors.len, try actorIds(session, scratch), audio);
             if (@hasField(@TypeOf(session.*), "actor_numbers")) try object_numbers.restoreGenerators(session);
         },
         .db => {
             try reader.marker(0x426c6157, 1, 0);
             try reader.marker(0x42636553, 1, 0);
-            try readActors(session, reader, audio);
+            try readActors(session, scratch, reader, audio);
             try inf_save.readDbm(reader);
-            try inf_save.readClasses(reader, &session.inf, &session.texture_animations, &session.level, &session.scene, try infReferences(session, audio));
+            try inf_save.readClasses(reader, &session.inf, &session.texture_animations, &session.level, &session.scene, try infReferences(session, scratch, audio));
             if (@hasField(@TypeOf(session.*), "actor_numbers")) try object_numbers.restoreLinks(session);
         },
         .elevator => try inf_save.readElevatorModule(reader, &session.inf),
@@ -82,34 +92,34 @@ pub fn read(session: anytype, reader: *stream.Reader, audio: anytype) !void {
     session.framebuffer_initialized = false;
 }
 
-fn hydrateMap(session: anytype) !void {
-    const visible = try session.arena.allocator().alloc(bool, session.level.sectors.len);
+fn hydrateMap(session: anytype, scratch: std.mem.Allocator) !void {
+    const visible = try scratch.alloc(bool, session.level.sectors.len);
     @memset(visible, true);
-    _ = try session.loadActors(session.allocator, visible, true);
+    _ = try session.loadActors(visible, true);
 }
 
-fn actorIds(session: anytype) ![]u32 {
-    const ids = try session.arena.allocator().alloc(u32, session.actor_slots.len);
+fn actorIds(session: anytype, scratch: std.mem.Allocator) ![]u32 {
+    const ids = try scratch.alloc(u32, session.actor_slots.len);
     for (ids, 0..) |*id, source| id.* = try session.savedActorId(source);
     return ids;
 }
 
-fn infReferences(session: anytype, audio: anytype) !inf_save.References {
-    const a = session.arena.allocator();
+fn infReferences(session: anytype, scratch: std.mem.Allocator, audio: anytype) !inf_save.References {
+    const a = scratch;
     const map = try a.alloc(u32, session.actor_slots.len);
     for (session.actor_slots, map) |slot, *id| id.* = if (slot) |actor| actor.object_id else 0xffffffff;
     const generators = try a.alloc(u32, session.generators.records.items.len);
     for (session.generators.records.items, generators) |record, *id| id.* = record.id;
-    return .{ .actor_ids = try actorIds(session), .actor_map_ids = map, .generator_ids = generators, .audio = audio };
+    return .{ .actor_ids = try actorIds(session, scratch), .actor_map_ids = map, .generator_ids = generators, .audio = audio };
 }
 
-fn enemyReferences(session: anytype, audio: anytype) !enemy_save.References {
-    return .{ .actor_ids = try actorIds(session), .player_id = session.player_actor.logic_id, .sector_count = session.level.sectors.len, .node_count = session.enemy_nodes.len, .audio = audio, .sound_ledger = &session.sound_ledger, .now = session.animation_time };
+fn enemyReferences(session: anytype, scratch: std.mem.Allocator, audio: anytype) !enemy_save.References {
+    return .{ .actor_ids = try actorIds(session, scratch), .player_id = session.player_actor.logic_id, .sector_count = session.level.sectors.len, .node_count = session.enemy_nodes.len, .audio = audio, .sound_ledger = &session.sound_ledger, .now = session.animation_time };
 }
 
-fn orderedActors(session: anytype, include_ephemeral: bool) ![]usize {
+fn orderedActors(session: anytype, scratch: std.mem.Allocator, include_ephemeral: bool) ![]usize {
     var sources: std.ArrayList(usize) = .empty;
-    const a = session.arena.allocator();
+    const a = scratch;
     if (session.player_actor.logic_id != 0) try sources.append(a, player_source);
     for (session.actor_slots, session.removed_actors, 0..) |slot, removed, source| {
         if (removed) continue;
@@ -133,7 +143,7 @@ fn getActor(session: anytype, source: usize) Actor {
     return if (source == player_source) session.player_actor else session.actor_slots[source].?;
 }
 
-fn captureActor(session: anytype, source: usize) anyerror!actor_save.Record {
+fn captureActor(session: anytype, scratch: std.mem.Allocator, source: usize) anyerror!actor_save.Record {
     var actor = getActor(session, source);
     var due: u32 = 0;
     if (source == player_source) {
@@ -156,23 +166,23 @@ fn captureActor(session: anytype, source: usize) anyerror!actor_save.Record {
     }
     var record = try actor_save.capture(session, actor, due);
     if (actor.child_source) |child| {
-        const nested = try session.arena.allocator().create(actor_save.Record);
-        nested.* = try captureActor(session, child);
+        const nested = try scratch.create(actor_save.Record);
+        nested.* = try captureActor(session, scratch, child);
         record.child = nested;
     }
     return record;
 }
 
-fn writeActors(session: anytype, writer: *stream.Writer, audio: anytype) !void {
+fn writeActors(session: anytype, scratch: std.mem.Allocator, writer: *stream.Writer, audio: anytype) !void {
     try writer.marker(0x42746341, 1, 0);
-    const order = try orderedActors(session, false);
+    const order = try orderedActors(session, scratch, false);
     try writer.integer(u32, @intCast(order.len));
     for (order) |source| {
-        try (try captureActor(session, source)).write(writer);
+        try (try captureActor(session, scratch, source)).write(writer);
         if (source == player_source) try (try player_save.capture(session, audio)).write(writer);
     }
     try writer.integer(u32, session.next_actor_id);
-    const refs = try enemyReferences(session, audio);
+    const refs = try enemyReferences(session, scratch, audio);
     for (order) |source| {
         if (source == player_source) continue;
         const actor = session.actor_slots[source].?;
@@ -180,19 +190,19 @@ fn writeActors(session: anytype, writer: *stream.Writer, audio: anytype) !void {
         if (session.targets[source]) |*target| {
             try enemy_save.writeEnemy(writer, target, actor.logic_id, refs);
         } else if (session.projectile_slots[source]) |state| {
-            try (try projectile_save.capture(session, state, session.pickup_slots[source])).write(writer);
+            try (try projectile_save.capture(session, scratch, state, session.pickup_slots[source])).write(writer);
         } else if (session.pickup_slots[source]) |pickup| {
             if (pickup.function == .instant_ground_object) {
                 try (try pickup_save.captureInstant(audio, pickup)).write(writer);
-            } else try (try pickup_save.capture(session.arena.allocator(), audio, pickup)).write(writer);
+            } else try (try pickup_save.capture(scratch, audio, pickup)).write(writer);
         } else return error.UnsupportedSavedActorNative;
     }
 }
 
-fn readActors(session: anytype, reader: *stream.Reader, audio: anytype) !void {
+fn readActors(session: anytype, scratch: std.mem.Allocator, reader: *stream.Reader, audio: anytype) !void {
     try reader.marker(0x42746341, 1, 0);
     const a = session.arena.allocator();
-    const old_order = try orderedActors(session, true);
+    const old_order = try orderedActors(session, scratch, true);
     for (old_order) |source| {
         if (source != player_source) try enemy_session.removeActor(session, source);
     }
@@ -220,13 +230,13 @@ fn readActors(session: anytype, reader: *stream.Reader, audio: anytype) !void {
     var has_player = false;
     for (0..count) |_| {
         const record = try actor_save.Record.read(reader, a);
-        const source = try restoreActor(session, record, &loaded, &has_player);
+        const source = try restoreActor(session, scratch, record, &loaded, &has_player);
         if (@hasField(@TypeOf(session.*), "actor_numbers")) try object_numbers.restoreActor(session, source);
         if (source == player_source) try player_save.apply(session, audio, try player_save.State.read(reader, a));
     }
     if (!has_player) return error.MissingSavedPlayer;
     _ = try reader.integer(u32);
-    const refs = try enemyReferences(session, audio);
+    const refs = try enemyReferences(session, scratch, audio);
     for (loaded.items) |source| {
         if (source == player_source) continue;
         const actor = &session.actor_slots[source].?;
@@ -260,8 +270,7 @@ fn readActors(session: anytype, reader: *stream.Reader, audio: anytype) !void {
     }
 }
 
-fn restoreActor(session: anytype, record: actor_save.Record, loaded: *std.ArrayList(usize), has_player: *bool) anyerror!usize {
-    const a = session.arena.allocator();
+fn restoreActor(session: anytype, scratch: std.mem.Allocator, record: actor_save.Record, loaded: *std.ArrayList(usize), has_player: *bool) anyerror!usize {
     var actor = try actor_save.hydrate(session, record);
     var source: usize = undefined;
     if (actor.secondary_flags & 0x10 != 0) {
@@ -312,9 +321,9 @@ fn restoreActor(session: anytype, record: actor_save.Record, loaded: *std.ArrayL
         if (actor.flags & 0x400 != 0) session.general_slots[source] = .{ .velocity = actor.velocity };
         session.syncActor(source);
     }
-    try loaded.append(a, source);
+    try loaded.append(scratch, source);
     if (record.child) |child| {
-        const child_source = try restoreActor(session, child.*, loaded, has_player);
+        const child_source = try restoreActor(session, scratch, child.*, loaded, has_player);
         if (source == player_source) session.player_actor.child_source = child_source else session.actor_slots[source].?.child_source = child_source;
     }
     return source;

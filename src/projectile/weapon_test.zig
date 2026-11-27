@@ -108,8 +108,10 @@ test "projectile charged weapon callbacks and release match 400 reference frames
         var costume = try nwx.Costume.parse(a, try archives[2].find(inventory.slots[case.slot].?.definition.costume, 0));
         var state: weapon.State = .{};
         var random: u32 = 0x742389ac;
-        var effects = inventory_module.Effects.init(a);
-        var shots = weapon.Shots.init(a);
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
+        var shots_buffer: weapon.ShotBuffer = undefined;
+        var shots = weapon.Shots.init(&shots_buffer);
         var capture: Capture = .{ .a = a, .configs = configs, .random = &random, .angles = &angles };
         var contact_state: @import("../script/cmm.zig").ContactState = .{};
         const native: script.Context = .{ .inventory = &inventory, .pickups = &.{}, .removed = &.{}, .now_ms = 0, .effects = &effects, .contact_state = &contact_state, .bubble_host = .{ .context = &capture, .spawn = Capture.bubble } };

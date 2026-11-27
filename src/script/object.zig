@@ -11,20 +11,23 @@ const nwx = @import("../assets/nwx.zig");
 const inventory = @import("../player/inventory.zig");
 const indexed = @import("../audio/indexed.zig");
 const lab = @import("../assets/lab.zig");
+const FixedList = @import("../util/fixed_list.zig").FixedList;
 
 pub const Selection = struct { source: usize, choreography: u16, serial: u64 };
+pub const Selections = FixedList(Selection, error{TooManyObjectSelections});
 
 pub const Runtime = struct {
     sounds: ?indexed.Table,
-    selections: std.ArrayList(Selection) = .empty,
+    selections: Selections,
     cursor: usize = 0,
 
-    pub fn init(a: std.mem.Allocator, archive: lab.Archive) !Runtime {
+    /// `selections` is the storage for the sprite choices waiting for delivery.
+    pub fn init(a: std.mem.Allocator, archive: lab.Archive, selections: []Selection) !Runtime {
         const bytes = archive.find("SOUNDS.LST", 0) catch |err| switch (err) {
-            error.ResourceNotFound => return .{ .sounds = null },
+            error.ResourceNotFound => return .{ .sounds = null, .selections = .init(selections) },
             else => return err,
         };
-        return .{ .sounds = try indexed.Table.parse(a, bytes) };
+        return .{ .sounds = try indexed.Table.parse(a, bytes), .selections = .init(selections) };
     }
 };
 
@@ -133,7 +136,7 @@ pub fn schedule(session: anytype, source: usize) void {
 
 fn enqueue(session: anytype, source: usize, actor: Actor) !void {
     const playback = actor.playback orelse return error.MissingObjectPlayback;
-    try session.object_logic.selections.append(session.arena.allocator(), .{
+    try session.object_logic.selections.append(.{
         .source = source,
         .choreography = @truncate(playback.choreography +% 1),
         .serial = session.enemy_selection_serial,

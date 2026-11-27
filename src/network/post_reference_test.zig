@@ -50,7 +50,7 @@ test "posts to objects and the repeat list match the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     router.reset();
     var db = database.Database.init(a);
@@ -135,7 +135,7 @@ test "posts to objects and the repeat list match the reference" {
             }
             try std.testing.expectEqual(injected.len, injection);
             try std.testing.expect(try db.next(&router, true, now) == null);
-            try std.testing.expectEqual(@as(usize, 0), router.taken.items.len);
+            try std.testing.expectEqual(@as(usize, 0), router.taken.count);
         } else return error.UnknownReferenceOperation;
         try std.testing.expectEqual(int(op.get("repeat_after").?), db.repeating);
         const list_value = op.get("list").?;
@@ -155,7 +155,7 @@ test "posts to objects and the repeat list match the reference" {
 }
 
 test "failed object deliveries release their packet and restore the repeat flag" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var db = database.Database.init(std.testing.allocator);
@@ -171,7 +171,7 @@ test "failed object deliveries release their packet and restore the repeat flag"
         try std.testing.expectError(error.MalformedNetworkMessage, db.next(&router, true, 0));
         try std.testing.expectEqual(@as(u32, 7), db.repeating);
         try std.testing.expect(db.repeat_previous == null);
-        try std.testing.expectEqual(@as(usize, 0), router.taken.items.len);
+        try std.testing.expectEqual(@as(usize, 0), router.taken.count);
     }
     var request = message.request(0x8402, router.own_client);
     message.set(&request, message.reply_offset, sector);
@@ -179,5 +179,5 @@ test "failed object deliveries release their packet and restore the repeat flag"
     try std.testing.expectError(error.ObjectRequestNotPorted, db.next(&router, true, 0));
     try std.testing.expectEqual(@as(u32, 7), db.repeating);
     try std.testing.expect(db.repeat_previous == null);
-    try std.testing.expectEqual(@as(usize, 0), router.taken.items.len);
+    try std.testing.expectEqual(@as(usize, 0), router.taken.count);
 }

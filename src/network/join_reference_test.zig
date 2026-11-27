@@ -26,7 +26,7 @@ test "the join's server answer and router queue match the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var server: server_module.Server = .{};
     var driver: reference.Driver = .{ .allocator = a };
@@ -36,8 +36,8 @@ test "the join's server answer and router queue match the reference" {
     router.network.session = driver.session();
     router.game = game.hooks();
     router.sender_check = false;
-    var user_messages: std.ArrayList(i32) = .empty;
-    defer user_messages.deinit(a);
+    var user_messages_buffer: server_module.UserMessageBuffer = undefined;
+    var user_messages = server_module.UserMessages.init(&user_messages_buffer);
     var loaded = false;
     var buffer: [0x800]u8 = undefined;
     var address: message.Address = undefined;
@@ -150,7 +150,7 @@ test "the join's server answer and router queue match the reference" {
 
 test "the router refuses join messages that do not fit its records" {
     const a = std.testing.allocator;
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var game: reference.Game = .{ .allocator = a };
     defer game.deinit();

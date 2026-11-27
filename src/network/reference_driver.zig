@@ -54,10 +54,11 @@ pub const Driver = struct {
         try self.description.appendSlice(self.allocator, data);
     }
 
-    fn send(context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) void {
+    fn send(context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) anyerror!void {
         const self: *Driver = @ptrCast(@alignCast(context));
-        const bytes = self.allocator.dupe(u8, data) catch @panic("out of memory");
-        self.sends.append(self.allocator, .{ .bytes = bytes, .to = if (to) |address| address.* else null, .flags = flags }) catch @panic("out of memory");
+        try self.sends.ensureUnusedCapacity(self.allocator, 1);
+        const bytes = try self.allocator.dupe(u8, data);
+        self.sends.appendAssumeCapacity(.{ .bytes = bytes, .to = if (to) |address| address.* else null, .flags = flags });
     }
 
     fn get(context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {

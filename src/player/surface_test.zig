@@ -172,8 +172,8 @@ test "dry surface contact damage sounds and death reports" {
     const shriek_name = (try item.stringValue("SND_SHRIEK")) orelse "shriek.wav";
     const local_messages = try system.find("LOCAL.MSG", 0);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     var frame_count: usize = 0;
     for (fixture.value.cases) |case| {
         const config = case.config;
@@ -194,6 +194,8 @@ test "dry surface contact damage sounds and death reports" {
         sector_states[0].velocity_present = config.conveyor[0] != 0 or config.conveyor[1] != 0 or config.conveyor[2] != 0;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &sector_states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         const spawn = level_module.Spawn{ .sector = 0, .position = .{ .x = config.position[0], .y = config.position[1], .z = config.position[2] }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
         var player = try movement.Player.init(&item, physics, spawn);
         player.velocity = .{ .x = config.velocity[0], .y = config.velocity[1], .z = config.velocity[2] };
@@ -215,7 +217,7 @@ test "dry surface contact damage sounds and death reports" {
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             const control = look.controlForLife(&packet, !player.dead);
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, config.seconds, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, config.seconds, &audio);
             inventory.player_flags = player.flags;
             var direct_health = inventory;
             const death = try damage.applyMovement(.{ .multiplier = config.damage_multiplier orelse damage_config.multiplier }, &inventory, player.impact, player.sector_damage, config.seconds, &flash, &audio, frame.now);

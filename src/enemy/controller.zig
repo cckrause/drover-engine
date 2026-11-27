@@ -34,6 +34,7 @@ pub const Node = struct {
 pub const Effect = union(enum) {
     fire: struct { source: ?usize, shot: weapon.Shot },
 };
+pub const Effects = @import("../util/fixed_list.zig").FixedList(Effect, error{TooManyEnemyShots});
 
 pub const Shared = struct {
     next_shot: u32 = 0,
@@ -141,7 +142,7 @@ pub const Context = struct {
     elapsed_seconds: f32,
     audio: ?*audio.Runtime = null,
     shared: *Shared,
-    effects: *std.ArrayList(Effect),
+    effects: *Effects,
     shot_sink: ?struct {
         context: *anyopaque,
         emit: *const fn (*anyopaque, *@import("../player/target.zig").Target, *Actor, *Context, weapon.Shot) anyerror!void,
@@ -166,7 +167,7 @@ pub const Context = struct {
     contact_hidden_taunt: bool = false,
 
     pub fn world(self: *Context) physics.World {
-        return .{ .allocator = self.allocator, .level = self.level, .scene = self.scene, .angles = self.angles, .actors = self.actors };
+        return .{ .level = self.level, .scene = self.scene, .angles = self.angles, .actors = self.actors };
     }
 
     pub fn visible(self: *Context, first: Subject, second: Subject) !bool {
@@ -1345,7 +1346,7 @@ fn fire(target: anytype, actor: *Actor, ctx: *Context) !void {
         };
         const no_collide = actor.flags & 0x100;
         actor.flags |= 0x80000100;
-        if (ctx.shot_sink) |sink| try sink.emit(sink.context, target, actor, ctx, shot) else try ctx.effects.append(ctx.allocator, .{ .fire = .{ .source = actor.source_index, .shot = shot } });
+        if (ctx.shot_sink) |sink| try sink.emit(sink.context, target, actor, ctx, shot) else try ctx.effects.append(.{ .fire = .{ .source = actor.source_index, .shot = shot } });
         actor.flags = (actor.flags & ~@as(u32, 0x100)) | no_collide | 0x80000000;
     }
     try ctx.sound(actor.*, target.config.shoot_sound, 0, 1, 0, false);

@@ -21,15 +21,15 @@ test "Hideout fires and reloads the installed pistol through the production fram
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
     try std.testing.expectEqual(@as(usize, 2), session.inventory.selected_weapon);
     try std.testing.expectEqual(@as(i32, 6), session.inventory.slots[2].?.loaded);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try session.advance(a, &.{}, 600);
-    _ = try session.render(a, pixels, 600);
+    _ = try session.render(pixels, 600);
     try std.testing.expect(session.hud.weaponAnimation().?.ready);
 
     var packet: input.Packet = .{};
@@ -43,15 +43,15 @@ test "Hideout fires and reloads the installed pistol through the production fram
         for (session.pickup_effects.items) |effect| if (effect == .sound) {
             sound_count += 1;
         };
-        _ = try session.render(a, pixels, session.animation_time);
+        _ = try session.render(pixels, session.animation_time);
         if (!checked_repeated_presentation and session.weapon_state.shot_count != 0) {
             const kick = session.weapon_state.kick;
             @memset(pixels, 0);
-            _ = try session.renderWorld(a, pixels, session.animation_time);
+            _ = try session.renderWorld(pixels, session.animation_time);
             var first: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(pixels, &first, .{});
             @memset(pixels, 0);
-            _ = try session.renderWorld(a, pixels, session.animation_time);
+            _ = try session.renderWorld(pixels, session.animation_time);
             var second: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(pixels, &second, .{});
             try std.testing.expectEqualSlices(u8, &first, &second);
@@ -70,7 +70,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
         if (frame == 1) packet.entries[@intFromEnum(input.Slot.reload)] = .{ .flags = input.released };
         if (frame == 2) packet = .{};
         try session.advance(a, &packet, 16);
-        _ = try session.render(a, pixels, session.animation_time);
+        _ = try session.render(pixels, session.animation_time);
     }
     try std.testing.expectEqual(@as(i32, 6), session.inventory.slots[2].?.loaded);
     try std.testing.expectEqual(reserve - 1, session.inventory.slots[ammo].?.count);
@@ -80,7 +80,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
     for (0..80) |frame| {
         if (frame == 1) packet = .{};
         try session.advance(a, &packet, 16);
-        _ = try session.render(a, pixels, session.animation_time);
+        _ = try session.render(pixels, session.animation_time);
     }
     try std.testing.expectEqual(@as(usize, 3), session.inventory.selected_weapon);
     try std.testing.expectEqual(@as(usize, 3), session.hud.weaponAnimation().?.slot);
@@ -90,19 +90,19 @@ test "Hideout fires and reloads the installed pistol through the production fram
     _ = try session.inventory.acquire(definition, 1);
     packet.entries[@intFromEnum(input.Slot.weapon)] = .{ .value = 3, .flags = input.absolute | input.pressed };
     try session.advance(a, &packet, 16);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expect(session.weapon_state.scope);
     try std.testing.expect(session.player.scope_active);
     try std.testing.expectEqual(@as(i32, 106), session.scope_view.width);
 
     packet.entries[@intFromEnum(input.Slot.weapon)].value = 0;
     try session.advance(a, &packet, 16);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expectEqual(@as(usize, 0), session.weapon_state.bound_slot);
     try std.testing.expect(!session.weapon_state.scope);
     packet.entries[@intFromEnum(input.Slot.weapon)].value = 3;
     try session.advance(a, &packet, 16);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expectEqual(@as(usize, 3), session.weapon_state.bound_slot);
     try std.testing.expect(!session.weapon_state.scope);
 }

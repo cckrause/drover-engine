@@ -40,7 +40,8 @@ pub fn read(reader: *stream.Reader, allocator: std.mem.Allocator) !?Instance {
         .flags = try reader.integer(u32),
         .terminated = try reader.boolean(),
     };
-    const native = try allocator.dupe(u8, try reader.string(&buffer));
-    if (native.len > 32) return error.InvalidSavedWaxBinding;
+    const binding = try reader.string(&buffer);
+    if (binding.len > 32) return error.InvalidSavedWaxBinding;
+    const native = try allocator.dupe(u8, binding);
     return .{ .resource = resource, .playback = playback, .native = native };
 }

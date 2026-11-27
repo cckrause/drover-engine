@@ -31,7 +31,7 @@ test "router one-machine half and message names match the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var taken: std.StringHashMapUnmanaged([]u8) = .empty;
     defer taken.deinit(a);
@@ -84,9 +84,9 @@ test "router one-machine half and message names match the reference" {
                 else => return error.MalformedReference,
             }
         } else if (std.mem.eql(u8, kind, "release")) {
-            const before = router.taken.items.len;
+            const before = router.taken.count;
             router.release(taken.get(op.get("name").?.string).?);
-            try std.testing.expectEqual(int(op, "freed"), 2 * @as(u32, @intCast(before - router.taken.items.len)));
+            try std.testing.expectEqual(int(op, "freed"), 2 * @as(u32, @intCast(before - router.taken.count)));
         } else return error.MalformedReference;
     }
     var buffer: [16]u8 = undefined;

@@ -4,6 +4,7 @@
 //! The function to call is supplied by whichever subsystem restores the
 //! task, not stored in the file.
 
+const std = @import("std");
 const stream = @import("stream.zig");
 
 pub const Task = struct {
@@ -58,6 +59,22 @@ pub fn capture(inventory: anytype) State {
     };
 }
 
+/// The task-link flags a successful save clears, kept so a failed save can
+/// put them back.
+pub const TaskLinks = struct {
+    sheriff: bool,
+    cloak: bool,
+
+    pub fn of(inventory: anytype) TaskLinks {
+        return .{ .sheriff = inventory.sheriff_task_linked, .cloak = inventory.cloak_task_linked };
+    }
+
+    pub fn restore(self: TaskLinks, inventory: anytype) void {
+        inventory.sheriff_task_linked = self.sheriff;
+        inventory.cloak_task_linked = self.cloak;
+    }
+};
+
 pub fn writeInventory(inventory: anytype, writer: *stream.Writer) !void {
     var state = capture(inventory);
     try state.write(writer);
@@ -77,7 +94,6 @@ pub fn apply(inventory: anytype, value: State) void {
 }
 
 test "Player module saves tasks and clears only global handles" {
-    const std = @import("std");
     const a = std.testing.allocator;
     const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/save-player-module-reference.json", a, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
@@ -121,4 +137,16 @@ test "Player module saves tasks and clears only global handles" {
         try std.testing.expectEqual(@as(i32, 5), inventory.sheriff_remaining);
         try std.testing.expectEqual(@as(i32, 6), inventory.cloak_remaining);
     }
+}
+
+test "a failed save can put the task links back" {
+    var inventory: struct { sheriff_task_linked: bool = true, cloak_task_linked: bool = false, sheriff_due: ?u32 = 5, sheriff_task_parameter: u32 = 0, cloak_due: ?u32 = null, cloak_task_parameter: u32 = 0, sheriff_remaining: i32 = 0, cloak_remaining: i32 = 0 } = .{};
+    const links = TaskLinks.of(&inventory);
+    var writer: stream.Writer = .{ .allocator = std.testing.allocator };
+    defer writer.deinit();
+    try writeInventory(&inventory, &writer);
+    try std.testing.expect(!inventory.sheriff_task_linked);
+    links.restore(&inventory);
+    try std.testing.expect(inventory.sheriff_task_linked);
+    try std.testing.expect(!inventory.cloak_task_linked);
 }

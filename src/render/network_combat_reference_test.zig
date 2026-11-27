@@ -75,14 +75,15 @@ test "fighting between machines matches the reference's messages, texts and poin
             try expectHex(op, "frag_delta", &message.fragDelta(3, .{ .client = 3, .team = 0xffffffff, .points = 1 }));
             try expectHex(op, "damage", &message.damage(3, .{ .kind = 0x10003, .damage = 4.5, .mass = 1, .speed = 2400, .yaw = -0x456, .pitch = 0x123, .position = .{ 1.5, -2.25, 300 }, .lateral = 0.25, .height = 3.5 }));
         } else if (std.mem.eql(u8, kind, "server_corpse")) {
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             router.reset();
             var sent: [message.corpse_capacity]u8 = undefined;
             const bytes = try std.fmt.hexToBytes(&sent, op.get("sent").?.string);
             _ = try router.post(0x100800, 0x3f6, bytes);
             var server: server_module.Server = .{};
-            var users: std.ArrayList(i32) = .empty;
+            var users_buffer: server_module.UserMessageBuffer = undefined;
+            var users = server_module.UserMessages.init(&users_buffer);
             var context: u8 = 0;
             const Hooks = struct {
                 fn create(_: *anyopaque, _: message.HaveServerCreate) anyerror!void {
@@ -97,7 +98,7 @@ test "fighting between machines matches the reference's messages, texts and poin
             }
             try testing.expectEqual(@as(?[]u8, null), try router.read(message.Queue.database));
         } else if (std.mem.eql(u8, kind, "frag")) {
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             var database = database_module.Database.init(a);
             defer database.deinit();
@@ -111,9 +112,8 @@ test "fighting between machines matches the reference's messages, texts and poin
             router.clients[3].setName("Joiner");
             router.clients[3].player = if (op.get("team").? == .integer) .{ .code = 'J', .flags = 0x90 | @as(u32, @intCast(op.get("team").?.integer)) } else null;
             try network_combat.postFragDelta(&router, mode, client, points);
-            const queued = router.queues[message.Queue.database].items;
-            try testing.expectEqual(@as(usize, 1), queued.len);
-            try testing.expectEqualStrings(op.get("posted").?.array.items[0].string, try hex(a, queued[0]));
+            try testing.expectEqual(@as(usize, 1), router.queues[message.Queue.database].count);
+            try testing.expectEqualStrings(op.get("posted").?.array.items[0].string, try hex(a, router.peek(message.Queue.database).?));
             const posted = (try database.next(&router, true, 0)) orelse return error.MissingFragDelta;
             try database.applyFragDelta(&router, posted.frag_delta, .{ .now = 0, .game_type = 5, .mode = mode, .game_state = 0 });
             for (op.get("scores").?.array.items, 0..) |expected, index| {
@@ -125,7 +125,7 @@ test "fighting between machines matches the reference's messages, texts and poin
         } else if (std.mem.eql(u8, kind, "player")) {
             errdefer std.debug.print("reference network player case {s}\n", .{op.get("name").?.string});
             players += 1;
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             router.reset();
             router.own_client = 3;
@@ -142,7 +142,8 @@ test "fighting between machines matches the reference's messages, texts and poin
             const events = op.get("events").?.array.items;
             var health: f32 = 10;
             var feedback: shot_damage.NetworkResult = .none;
-            var effects = inventory_module.Effects.init(a);
+            var effects_buffer: inventory_module.EffectBuffer = undefined;
+            var effects = inventory_module.Effects.init(&effects_buffer);
             if (!network_combat.justStartedAt(@intCast(op.get("start").?.integer), @intCast(op.get("clock").?.integer))) {
                 const value = try message.readDamage(bytes);
                 var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = .{ .x = 10, .y = 2, .z = -4 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });

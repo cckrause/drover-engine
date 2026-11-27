@@ -26,7 +26,7 @@ fn parsedStartup(text: []const u8) !campaign.Startup {
         .recipe = recipe,
         .recipe_loaded = true,
         .first_event = recipe.story[0],
-        .router = .init(std.testing.allocator),
+        .router = try .init(std.testing.allocator),
         .database = .init(std.testing.allocator),
     };
 }
@@ -43,7 +43,7 @@ test "campaign movie completion and cancellation gate the reference first level"
             try std.testing.expectEqualStrings("in_shb.san", startup.currentEvent().?.name);
             try std.testing.expectEqual(@as(?usize, 0), startup.story_index);
             try std.testing.expectError(error.MoviePlaybackPending, startup.selectLevel());
-            try std.testing.expectError(error.MoviePlaybackPending, Session.open(allocator, std.testing.io, "missing/OUTLAWS.LAB", archive, &startup));
+            try std.testing.expectError(error.MoviePlaybackPending, Session.open(allocator, @import("../render/test_workspace.zig").get(), std.testing.io, "missing/OUTLAWS.LAB", archive, &startup));
             try std.testing.expectEqual(@as(?usize, 0), startup.story_index);
             try std.testing.expect(startup.selected_level == null);
             try std.testing.expectEqual(@as(usize, 0), startup.skipped_movies);

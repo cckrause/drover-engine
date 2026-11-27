@@ -189,11 +189,11 @@ pub const Player = struct {
         return true;
     }
 
-    pub fn tick(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32) !void {
-        return self.tickWithAudio(allocator, level, scene, actors, angles, control, look, seconds, null);
+    pub fn tick(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32) !void {
+        return self.tickWithAudio(level, scene, actors, angles, control, look, seconds, null);
     }
 
-    pub fn tickWithAudio(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32, audio: ?*player_audio.Context) !void {
+    pub fn tickWithAudio(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32, audio: ?*player_audio.Context) !void {
         if (!std.math.isFinite(seconds) or seconds < 0) return error.InvalidPlayerTick;
         if (seconds == 0) {
             self.contact_residue.invalidateProjection();
@@ -219,12 +219,12 @@ pub const Player = struct {
             context.state.* = sound_state;
             context.effects.shrinkRetainingCapacity(effect_count);
         };
-        try next.advance(allocator, level, scene, actors, angles, control, &next_look, seconds, audio);
+        try next.advance(level, scene, actors, angles, control, &next_look, seconds, audio);
         self.* = next;
         look.* = next_look;
     }
 
-    fn advance(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, dt: f32, audio: ?*player_audio.Context) !void {
+    fn advance(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, dt: f32, audio: ?*player_audio.Context) !void {
         if (self.sector >= level.sectors.len) return error.InvalidPlayerSector;
         if (scene.sectors[self.sector].flags & 0x10000000 == 0) self.flags &= ~@as(u32, 8);
         const rail = self.flags & 8 != 0;
@@ -507,7 +507,7 @@ pub const Player = struct {
         const body = store(@as(f64, self.head_height) + eye);
         if (crouch and body <= query_step) query_step = body;
         self.floor_cache = floor;
-        const resolved = try collision.resolveWithOptions(allocator, level, scene, actors, self.sector, old, &target, &velocity, body, if (rail) 2.9 else self.radius, query_step, &self.floor_cache, .{ .rail_mode = rail, .projection = &self.contact_residue.projection, .wall_memory = &self.wall_memory });
+        const resolved = try collision.resolveWithOptions(level, scene, actors, self.sector, old, &target, &velocity, body, if (rail) 2.9 else self.radius, query_step, &self.floor_cache, .{ .rail_mode = rail, .projection = &self.contact_residue.projection, .wall_memory = &self.wall_memory });
         self.sector = resolved.actor_sector;
         target.x = resolved.position.x;
         target.z = resolved.position.z;
@@ -808,7 +808,8 @@ fn checkWaterReference(fixture_path: []const u8) !void {
     defer scene.deinit();
     startup.applyScene(&level, &scene);
     const config = try player_audio.Config.fromItem(&item);
-    var effects = @import("inventory.zig").Effects.init(a);
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     const runtime_module = @import("../script/runtime.zig");
     const Capture = struct {
         value: ?Bubble = null,
@@ -844,7 +845,7 @@ fn checkWaterReference(fixture_path: []const u8) !void {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             effects.clearRetainingCapacity();
-            player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context) catch |err| {
+            player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context) catch |err| {
                 std.debug.print("wading case {s} frame {d}: {s}\n", .{ case.name, frame_index, @errorName(err) });
                 return err;
             };
@@ -886,7 +887,7 @@ fn checkWaterReference(fixture_path: []const u8) !void {
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
-            try std.testing.expectError(error.CapturedOriginalBubbleBoundary, player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context));
+            try std.testing.expectError(error.CapturedOriginalBubbleBoundary, player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context));
             try std.testing.expectEqualDeep(expected, captured.value.?);
         }
     }
@@ -925,11 +926,12 @@ test "player audio matches 539 frames and rolls back failed movement" {
     var level = std.mem.zeroInit(level_asset.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     const Chunk = struct {
         slots: []const [3]i16 = &.{},
         count: usize = 1,
@@ -968,7 +970,7 @@ test "player audio matches 539 frames and rolls back failed movement" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, case.seconds, &context);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, case.seconds, &context);
             var frame: [8]u8 = undefined;
             std.mem.writeInt(u32, frame[0..4], @bitCast(sound_state.tired_elapsed), .little);
             std.mem.writeInt(u32, frame[4..8], @intCast(effects.items.len), .little);
@@ -1004,20 +1006,20 @@ test "player audio matches 539 frames and rolls back failed movement" {
     var loaded = [_]bool{false};
     const before = player;
     const before_look = look;
-    try std.testing.expectError(error.CollisionActorsNotLoaded, player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context));
+    try std.testing.expectError(error.CollisionActorsNotLoaded, player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context));
     try std.testing.expectEqualDeep(before, player);
     try std.testing.expectEqualDeep(before_look, look);
     try std.testing.expectEqual(@as(f32, 1.49), sound_state.tired_elapsed);
     try std.testing.expectEqual(@as(usize, 1), effects.items.len);
     loaded[0] = true;
-    try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context);
+    try player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context);
     try std.testing.expectEqual(@as(usize, 2), effects.items.len);
     try std.testing.expect(std.ascii.eqlIgnoreCase("LAND.WAV", effects.items[1].sound.basename));
     player = before;
     player.velocity.y = -46;
     player.energy = 0;
     sound_state.tired_elapsed = 1.49;
-    try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
+    try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
     try std.testing.expectEqual(@as(f32, 46), player.impact);
     try std.testing.expectEqual(@as(f32, 0), sound_state.tired_elapsed);
     try std.testing.expectEqual(@as(usize, 4), effects.items.len);
@@ -1089,7 +1091,8 @@ test "player integrator agrees across archived physics control sequences" {
     var level = std.mem.zeroInit(level_asset.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     const Chunk = struct { slots: []const [3]i16, count: usize };
@@ -1108,7 +1111,7 @@ test "player integrator agrees across archived physics control sequences" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+            try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
             const words = [_]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z), @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z), @bitCast(@as(i32, player.pitch)), @bitCast(@as(i32, player.yaw)), @bitCast(@as(i32, player.head_yaw)), @bitCast(player.eye_height), @bitCast(player.body_height), @bitCast(player.floor_cache), @bitCast(player.energy), @bitCast(player.head_bob), @bitCast(player.stride), player.flags, @bitCast(look.pitch_accumulator) };
             for (words) |word| {
                 var encoded: [4]u8 = undefined;
@@ -1138,7 +1141,7 @@ test "player integrator agrees across archived physics control sequences" {
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         const control = look.control(&packet);
-        try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+        try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
         try std.testing.expectEqual(pin.position, [3]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z) });
         try std.testing.expectEqual(pin.velocity, [3]u32{ @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z) });
         try std.testing.expectEqual(pin.bob, @as(u32, @bitCast(player.head_bob)));
@@ -1209,7 +1212,7 @@ test "player integrator agrees across archived physics control sequences" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (frame.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, active_level, active_scene, .{ .entries = &.{} }, &angles, control, &look, @bitCast(frame.seconds));
+            try player.tick(active_level, active_scene, .{ .entries = &.{} }, &angles, control, &look, @bitCast(frame.seconds));
             const actual = State{
                 .sector = player.sector,
                 .position = .{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z) },
@@ -1286,7 +1289,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+            try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
             const words = [_]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z), @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z), @bitCast(@as(i32, player.pitch)), @bitCast(@as(i32, player.yaw)), @bitCast(@as(i32, player.head_yaw)), @bitCast(player.eye_height), @bitCast(player.body_height), @bitCast(player.floor_cache), @bitCast(player.energy), @bitCast(player.head_bob), @bitCast(player.stride), player.flags & 0x2004, @bitCast(look.pitch_accumulator), @intCast(player.sector), @bitCast(player.weapon_offset[0]), @bitCast(player.weapon_offset[1]) };
             for (words) |word| {
                 var encoded: [4]u8 = undefined;
@@ -1303,8 +1306,8 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
     };
 
     const config = try player_audio.Config.fromItem(&item);
-    var effects = @import("inventory.zig").Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     for ([_]usize{ 214, 70 }) |sector| for ([_]f32{ -10, -38 }) |velocity| {
         var player = try Player.init(&item, physics, .{ .sector = sector, .position = .{ .x = 465.5, .y = 1.6, .z = if (sector == 214) 458 else 460 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });
         player.velocity.y = velocity;
@@ -1314,7 +1317,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
         var sound_state: player_audio.State = .{};
         var context: player_audio.Context = .{ .config = &config, .state = &sound_state, .effects = &effects };
         effects.clearRetainingCapacity();
-        try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, .{}, &look, 0.016, &context);
+        try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, .{}, &look, 0.016, &context);
         const expected: usize = if (sector == 70 and velocity == -10) 0 else 1;
         try std.testing.expectEqual(expected, effects.items.len);
         if (expected != 0) {

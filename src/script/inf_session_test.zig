@@ -36,7 +36,7 @@ test "Hideout activation ray matches 320 reference traces" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archive, &startup);
     defer session.deinit(a);
     for (fixture.value.cases, 0..) |case, index| {
         var player = session.player;
@@ -44,9 +44,10 @@ test "Hideout activation ray matches 320 reference traces" {
         player.position = .{ .x = @bitCast(case.position_bits[0]), .y = @bitCast(case.position_bits[1]), .z = @bitCast(case.position_bits[2]) };
         player.yaw = case.yaw;
         player.body_height = @bitCast(case.height_bits);
-        const actual = try interaction.activate(a, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = &.{} }, case.object_id);
-        defer a.free(actual);
-        std.testing.expectEqualDeep(case.events, actual) catch |err| {
+        var events_buffer: interaction.RayEventBuffer = undefined;
+        var events = interaction.RayEvents.init(&events_buffer);
+        try interaction.activate(&events, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = &.{} }, case.object_id);
+        std.testing.expectEqualDeep(case.events, events.items) catch |err| {
             std.debug.print("reference activation ray case{d}, sector{d}, yaw{d}\n", .{ index, case.sector, case.yaw });
             return err;
         };
@@ -65,7 +66,7 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     session.player.sector = 337;
     session.player.position = .{ .x = 429.5, .y = 0, .z = 211.5 };
@@ -94,7 +95,7 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
     try std.testing.expect(elevator.runtime_flags & 1 == 0);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expect(session.rendered_sector_visits > 0);
 }
 
@@ -110,7 +111,7 @@ test "Hideout automatic swinging door opens and closes through queued messages" 
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try std.testing.expectEqual(@as(usize, 32), session.inf.elevators.len);
     try std.testing.expectEqual(@as(u32, 0xf03a2f29), session.contact_state.random);
@@ -146,7 +147,7 @@ test "Hideout INF selected keys retain success and failure sound requests" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const brass = for (session.level.sectors, 0..) |sector, i| {
         if (std.mem.eql(u8, sector.name, "MHBRASS")) break i;
@@ -180,12 +181,12 @@ test "Train starting room door and first moving-ground gap work with audio" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     const audio = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
     try audio.engine.updateListener(session.audioListener());
@@ -218,7 +219,7 @@ test "Train starting room door and first moving-ground gap work with audio" {
             else => {},
         };
         try audio.engine.updateListener(session.audioListener());
-        _ = try session.render(a, pixels, now);
+        _ = try session.render(pixels, now);
         try audio.advanceMusic(std.testing.io, now);
         try audio.advanceAmbient(now, session.level.sectors[session.player.sector].layer);
     }
@@ -257,12 +258,12 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     const audio = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
     try audio.engine.updateListener(session.audioListener());
@@ -306,7 +307,7 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
             },
         };
         try audio.engine.updateListener(session.audioListener());
-        _ = try session.render(a, pixels, now);
+        _ = try session.render(pixels, now);
         try audio.advanceMusic(std.testing.io, now);
         try audio.advanceAmbient(now, session.level.sectors[session.player.sector].layer);
 

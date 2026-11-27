@@ -7,6 +7,7 @@
 //! order.
 
 const std = @import("std");
+const lab = @import("../assets/lab.zig");
 const controller = @import("controller.zig");
 const lifecycle = @import("lifecycle.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -31,7 +32,7 @@ pub fn preload(session: anytype, allocator: std.mem.Allocator) !void {
     const sectors = try allocator.alloc(bool, session.level.sectors.len);
     defer allocator.free(sectors);
     @memset(sectors, false);
-    _ = try session.loadActors(allocator, sectors, true);
+    _ = try session.loadActors(sectors, true);
     var nodes: std.ArrayList(controller.Node) = .empty;
     for (session.objects.entries) |object| {
         if (object.flags[1] & session.difficulty_mask == 0 or object.flags[0] & 1 != 0) continue;
@@ -131,8 +132,8 @@ pub fn run(session: anytype, allocator: std.mem.Allocator, sound: ?*audio.Runtim
     }
     const target = if (session.targets[source]) |*value| value else return false;
     const actor = if (session.actor_slots[source]) |*value| value else return error.MissingEnemyActor;
-    var effects = inventory.Effects.init(allocator);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     var runtime = scriptContext(session, &effects, actor.secondary_flags);
     runtime.linked_actor = source;
     runtime.link_order = &actor.sector_link_order;
@@ -252,10 +253,10 @@ pub fn deliverSelectionsBefore(session: anytype, allocator: std.mem.Allocator, s
         const index = source orelse break;
         if (serial >= before) break;
         if (object) {
-            var effects = inventory.Effects.init(allocator);
-            defer effects.deinit();
+            var effects_buffer: inventory.EffectBuffer = undefined;
+            var effects = inventory.Effects.init(&effects_buffer);
             try object_logic.deliverNext(session, session.active_effects orelse &effects);
-            try session.enemy_native_effects.appendSlice(session.arena.allocator(), effects.items);
+            try session.enemy_native_effects.appendSlice(effects.items);
         } else if (splash) {
             session.splash_slots[index].?.selection_serial = null;
             if (try blood.selectSplash(&session.actor_slots[index].?, session.animation_time)) session.removed_actors[index] = true;
@@ -447,6 +448,7 @@ pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !u
     const length = try std.math.add(usize, index, 1);
     const actor_count = session.actors.len;
     const fields = .{ "actor_slots", "targets", "pickup_slots", "removed_actors", "actor_next_update", "actor_storage", "source_to_entry", "blood_slots", "general_slots", "splash_slots" };
+    const has_transformed = @hasField(@TypeOf(session.*), "actor_transformed");
     std.debug.assert(index <= session.actor_capacity);
     if (length > session.actor_capacity) {
         const capacity = try std.math.mul(usize, @max(session.actor_capacity, 1), 2);
@@ -454,6 +456,7 @@ pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !u
         inline for (fields, 0..) |field, i| grown[i] = try growActors(a, @field(session.*, field), capacity);
         if (@hasField(@TypeOf(session.*), "projectile_slots")) session.projectile_slots = try growActors(a, session.projectile_slots, capacity);
         if (@hasField(@TypeOf(session.*), "actor_numbers")) session.actor_numbers = try growActors(a, session.actor_numbers, capacity);
+        if (has_transformed) session.actor_transformed = (try growActors(a, session.actor_transformed, capacity)).ptr[0..capacity];
         inline for (fields, 0..) |field, i| @field(session.*, field) = grown[i];
         session.actor_capacity = capacity;
     }
@@ -490,10 +493,8 @@ pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !u
 
 pub fn costume(session: anytype, animation: []const u8) !*nwx.Costume {
     const a = session.arena.allocator();
-    var scratch = std.heap.stackFallback(128, session.allocator);
-    const temporary = scratch.get();
-    const key = try std.ascii.allocUpperString(temporary, animation);
-    defer temporary.free(key);
+    var key_buffer: lab.NameBuffer = undefined;
+    const key = try lab.upperName(&key_buffer, animation);
     if (session.costumes.get(key)) |value| return value;
     const bytes = session.object_archive.find(animation, 0) catch |err| switch (err) {
         error.ResourceNotFound => try session.system_archive.find(animation, 0),

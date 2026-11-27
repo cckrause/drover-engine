@@ -131,10 +131,10 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
 
     session.player.position = .{ .x = expected.player_position[0], .y = expected.player_position[1], .z = expected.player_position[2] };
     session.player.sector = expected.sector;
@@ -153,17 +153,17 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     const visible = try a.alloc(bool, session.level.sectors.len);
     @memset(visible, false);
     visible[expected.sector] = true;
-    _ = try session.loadActorsInSectors(a, visible);
+    _ = try session.loadActorsInSectors(visible);
     const source_index = for (session.objects.entries, 0..) |object, index| {
         if (object.id == expected.victim_id) break index;
     } else return error.MissingReferenceShotTarget;
     try std.testing.expectEqual(@as(f32, 2), session.targets[source_index].?.damage.health);
 
     const weapon = @import("weapon.zig");
-    var effects = @import("inventory.zig").Effects.init(a);
-    defer effects.deinit();
-    var shots = weapon.Shots.init(a);
-    defer shots.deinit();
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
+    var shots_buffer: weapon.ShotBuffer = undefined;
+    var shots = weapon.Shots.init(&shots_buffer);
     var context = weapon.Context{ .state = &session.weapon_state, .inventory = &session.inventory, .player = &session.player, .random = &session.contact_state.random, .effects = &effects, .shots = &shots, .now = session.animation_time, .ready = true, .angles = &session.angles };
     const animation = session.hud.weaponAnimation().?;
     try context.event(animation.playback, animation.costume, 1, &.{}, session.animation_time);

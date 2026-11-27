@@ -12,6 +12,7 @@ const camera = @import("../render/backends/software/camera.zig");
 const texture = @import("../assets/texture.zig");
 const collision = @import("../player/collision.zig");
 const movement = @import("../player/movement.zig");
+const FixedList = @import("../util/fixed_list.zig").FixedList;
 
 pub const Event = struct {
     sector: usize,
@@ -21,35 +22,35 @@ pub const Event = struct {
     actor: ?usize = null,
 };
 
-const Wall = struct { sector: usize, index: usize };
+/// Most events one use ray or shot can report, the same room the other
+/// per-pass lists get.
+/// TODO: No proven ceiling; a ray through many thin sectors could reach it.
+pub const max_ray_events = 256;
+pub const RayEvents = FixedList(Event, error{TooManyRayEvents});
+pub const RayEventBuffer = [max_ray_events]Event;
 
-pub fn activate(a: std.mem.Allocator, level: *const level_module.Level, scene: *const scene_module.Scene, angles: *const camera.Angles, textures: []const texture.Texture, player: *const movement.Player, actors: collision.Actors, object_id: u32) ![]Event {
-    var events = std.array_list.Managed(Event).init(a);
-    errdefer events.deinit();
+pub const Wall = struct { sector: usize, index: usize };
+
+/// Fills `events`, which must start empty. Walls and sectors the ray has
+/// already passed are remembered through the scene's collision check number.
+pub fn activate(events: *RayEvents, level: *const level_module.Level, scene: *const scene_module.Scene, angles: *const camera.Angles, textures: []const texture.Texture, player: *const movement.Player, actors: collision.Actors, object_id: u32) !void {
+    std.debug.assert(events.items.len == 0);
     const origin = level_module.Vec2{ .x = player.position.x, .z = player.position.z };
     const basis = angles.sinCos(player.yaw);
     const end = level_module.Vec2{ .x = f(@as(f64, basis.sin) * 5.0 + origin.x), .z = f(@as(f64, basis.cos) * 5.0 + origin.z) };
     const y = f(@as(f64, player.body_height) * 0.75 + player.position.y);
-    const offsets = try a.alloc(usize, level.sectors.len + 1);
-    defer a.free(offsets);
-    offsets[0] = 0;
-    for (level.sectors, 0..) |sector, i| offsets[i + 1] = offsets[i] + sector.walls.len;
-    const seen = try a.alloc(bool, offsets[level.sectors.len]);
-    defer a.free(seen);
-    @memset(seen, false);
-    const visited = try a.alloc(bool, level.sectors.len);
-    defer a.free(visited);
-    @memset(visited, false);
+    scene.startCollisionCheck();
+    const check = scene.collision_check.*;
     var sector = player.sector;
     try events.append(.{ .sector = sector, .mask = 0x10, .object_id = object_id });
-    try actorActivation(&events, level, scene, actors, sector, origin, end, y);
+    try actorActivation(events, level, scene, actors, sector, origin, end, y);
     var previous: f32 = -0x1p31;
     while (true) {
         var hit_wall: ?Wall = null;
         var hit_point: level_module.Vec2 = undefined;
         var distance: f32 = 0x1p31;
         for (level.sectors[sector].walls, scene.sectors[sector].walls, 0..) |wall, state, index| {
-            if (seen[offsets[sector] + index]) continue;
+            if (state.last_collision_check == check) continue;
             const vertices = level.sectors[sector].vertices;
             const hit = collision.intersection(origin, end, vertices[wall.v1], vertices[wall.v2]) orelse continue;
             if (origin.x == hit.x and origin.z == hit.z and 0 <= (@as(f64, end.x) - origin.x) * state.direction.z - (@as(f64, end.z) - origin.z) * state.direction.x) continue;
@@ -65,14 +66,8 @@ pub fn activate(a: std.mem.Allocator, level: *const level_module.Level, scene: *
         }
         const hit = hit_wall orelse break;
         previous = distance;
-        seen[offsets[hit.sector] + hit.index] = true;
         const wall = level.sectors[hit.sector].walls[hit.index];
-        for (mirrors(wall)) |mirror| if (mirror) |m| {
-            seen[offsets[m.sector] + m.index] = true;
-            for (mirrors(level.sectors[m.sector].walls[m.index])) |second| if (second) |s| {
-                seen[offsets[s.sector] + s.index] = true;
-            };
-        };
+        markPassed(level, scene, hit, check);
         const first = level.sectors[hit.sector].vertices[wall.v1];
         const dx = f(@as(f64, first.x) - hit_point.x);
         const dz = f(@as(f64, first.z) - hit_point.z);
@@ -84,16 +79,27 @@ pub fn activate(a: std.mem.Allocator, level: *const level_module.Level, scene: *
             @intCast(wall.dadjoin)
         else if (wall.adjoin >= 0) @intCast(wall.adjoin) else null;
         if (next) |target| {
-            if (!visited[target]) {
+            if (scene.sectors[target].last_collision_check != check) {
                 try events.append(.{ .sector = target, .mask = 0x20, .object_id = object_id });
-                try actorActivation(&events, level, scene, actors, target, origin, end, y);
-                visited[target] = true;
+                try actorActivation(events, level, scene, actors, target, origin, end, y);
+                scene.sectors[target].last_collision_check = check;
             }
             if (y <= level.sectors[target].floor.height or level.sectors[target].ceiling.height <= y) break;
             sector = target;
         } else break;
     }
-    return events.toOwnedSlice();
+}
+
+/// Marks a wall the ray passed, its mirrors and their mirrors, so the walk
+/// never crosses the same wall twice.
+pub fn markPassed(level: *const level_module.Level, scene: *const scene_module.Scene, passed: Wall, check: u32) void {
+    scene.sectors[passed.sector].walls[passed.index].last_collision_check = check;
+    for (mirrors(level.sectors[passed.sector].walls[passed.index])) |mirror| if (mirror) |m| {
+        scene.sectors[m.sector].walls[m.index].last_collision_check = check;
+        for (mirrors(level.sectors[m.sector].walls[m.index])) |second| if (second) |s| {
+            scene.sectors[s.sector].walls[s.index].last_collision_check = check;
+        };
+    };
 }
 
 pub fn wallEvents(level: *const level_module.Level, sector: usize, index: usize, mask: u32, object_id: u32, y: f32) [2]?Event {
@@ -169,7 +175,7 @@ pub fn actorMaskHit(actor: @import("../render/objects.zig").Actor, from: level_m
     return hit;
 }
 
-fn actorActivation(events: *std.array_list.Managed(Event), level: *const level_module.Level, scene: *const scene_module.Scene, actors: collision.Actors, sector: usize, from: level_module.Vec2, to: level_module.Vec2, y: f32) !void {
+fn actorActivation(events: *RayEvents, level: *const level_module.Level, scene: *const scene_module.Scene, actors: collision.Actors, sector: usize, from: level_module.Vec2, to: level_module.Vec2, y: f32) !void {
     var iterator = try actors.inSector(sector);
     const dx = f(@as(f64, to.x) - from.x);
     const dz = f(@as(f64, to.z) - from.z);

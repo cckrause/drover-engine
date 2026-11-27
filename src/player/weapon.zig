@@ -16,8 +16,15 @@ const projectile = @import("../projectile/runtime.zig");
 const choreography = @import("choreography.zig");
 pub const Config = @import("weapon_config.zig").Config;
 pub const Mode = @import("weapon_config.zig").Mode;
+const FixedList = @import("../util/fixed_list.zig").FixedList;
 
-pub const Shots = std.array_list.Managed(Shot);
+/// Shots one pass may collect before they are cast: four trigger pulls of
+/// two rounds with the most pellets any shipped weapon fires (30). Frame time
+/// is not capped, so a long stall can still go past this and stop with
+/// `TooManyShots`.
+pub const max_shots = 4 * 2 * 30;
+pub const Shots = FixedList(Shot, error{TooManyShots});
+pub const ShotBuffer = [max_shots]Shot;
 
 pub const ShotKind = enum(u32) { melee = 0, bullet = 1 };
 

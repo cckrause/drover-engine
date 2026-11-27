@@ -9,6 +9,7 @@ const std = @import("std");
 const c = @import("sdl.zig").c;
 const Runtime = @import("../audio/runtime.zig").Runtime;
 const asset = @import("../audio/asset.zig");
+const sound = @import("../audio/engine.zig");
 const mix = @import("audio_mix.zig");
 
 pub const Device = struct {
@@ -16,7 +17,7 @@ pub const Device = struct {
     id: c.SDL_AudioDeviceID = 0,
     frequency: c_int = 44100,
     cache: std.AutoHashMap(u64, []f32),
-    voices: [8]Voice = @splat(.{}),
+    voices: [sound.voice_count]Voice = @splat(.{}),
     music: mix.Buffer = .{},
     music_samples: ?[]f32 = null,
     music_generation: u64 = 0,
@@ -54,7 +55,20 @@ pub const Device = struct {
         self.allocator.destroy(self);
     }
 
+    /// Converts what the engine's voices and music need first, without the
+    /// device lock: the callback only reads the device's own voice and music
+    /// buffers, never the cache. The locked part just publishes the result.
     pub fn sync(self: *Device, runtime: *Runtime) !void {
+        for (&runtime.engine.voices) |*voice| {
+            if (!voice.active) continue;
+            _ = try self.converted(runtime, voice.asset, voice.controls.frequency_hz);
+        }
+        const music_changed = self.music_generation != runtime.music_generation;
+        const music_samples = if (music_changed) if (runtime.music_wave) |wave| try self.convert(wave, wave.sample_rate) else null else null;
+        var replaced_music: ?[]f32 = null;
+        defer if (replaced_music) |samples| self.allocator.free(samples);
+        errdefer if (music_samples) |samples| self.allocator.free(samples);
+
         c.SDL_LockAudioDevice(self.id);
         defer c.SDL_UnlockAudioDevice(self.id);
         for (&self.voices, &runtime.engine.voices) |*host, *voice| {
@@ -65,13 +79,7 @@ pub const Device = struct {
                 continue;
             }
             const hz = voice.controls.frequency_hz;
-            const key = (@as(u64, voice.asset) << 32) | hz;
-            const samples = self.cache.get(key) orelse blk: {
-                const converted = try self.convert(runtime.waves.items[voice.asset], hz);
-                errdefer self.allocator.free(converted);
-                try self.cache.put(key, converted);
-                break :blk converted;
-            };
+            const samples = try self.converted(runtime, voice.asset, hz);
             if (host.generation != voice.generation) {
                 host.* = .{ .id = voice.id, .generation = voice.generation, .frequency = hz, .buffer = .{ .samples = samples } };
             } else if (host.frequency != hz) {
@@ -84,15 +92,26 @@ pub const Device = struct {
             host.buffer.loop = voice.params.flags & 1 != 0;
             host.buffer.gain = mix.gains(voice.controls.volume_db, voice.controls.pan_db);
         }
-        if (self.music_generation != runtime.music_generation) {
-            const converted = if (runtime.music_wave) |wave| try self.convert(wave, wave.sample_rate) else null;
-            if (self.music_samples) |samples| self.allocator.free(samples);
-            self.music_samples = converted;
-            self.music = .{ .samples = converted orelse &.{}, .playing = true, .gain = @splat(0x3838 / @as(f32, 65535)) };
+        if (music_changed) {
+            replaced_music = self.music_samples;
+            self.music_samples = music_samples;
+            self.music = .{ .samples = music_samples orelse &.{}, .playing = true, .gain = @splat(0x3838 / @as(f32, 65535)) };
             self.music_generation = runtime.music_generation;
             runtime.musicStarted(c.SDL_GetTicks());
         }
         self.music.playing = runtime.music_wave != null and !runtime.musicPaused();
+    }
+
+    /// The device-rate samples for one sound at one playback rate, converted
+    /// once and kept.
+    // TODO: Bound the cache; repeated pitches of one sound each keep a copy.
+    fn converted(self: *Device, runtime: *const Runtime, asset_index: u32, hz: u32) ![]f32 {
+        const key = (@as(u64, asset_index) << 32) | hz;
+        if (self.cache.get(key)) |samples| return samples;
+        try self.cache.ensureUnusedCapacity(1);
+        const samples = try self.convert(runtime.waves.items[asset_index], hz);
+        self.cache.putAssumeCapacityNoClobber(key, samples);
+        return samples;
     }
 
     fn convert(self: *Device, wave: asset.Wave, frequency: u32) ![]f32 {

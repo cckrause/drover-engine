@@ -140,7 +140,9 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&state)[0..1];
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random: u32 = 0x742389ac;
         var particle = try blood.spawn(&costume, &random, 0, fromBits(case.position_bits), 1000);
         particle.state.velocity = .{ .x = 0, .y = 0, .z = 0 };
@@ -161,17 +163,17 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     const victim = for (session.targets, 0..) |optional, index| {
         if (optional) |target| if (!target.dead and target.native == .enemy) break index;
     } else return error.MissingOriginalEnemyPlacement;
     const health = session.targets[victim].?.damage.health;
     var pending = pendingHit(&session.angles, fixture.impacts[0], victim);
     pending.blood.sector = session.player.sector;
-    try session.pending_hits.append(session.arena.allocator(), pending);
+    try session.pending_hits.append(pending);
     const first = session.actor_slots.len;
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(first + 3, session.actor_slots.len);
@@ -182,11 +184,11 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
         try std.testing.expect(!session.removed_actors[index]);
         try std.testing.expectEqual(@as(u32, 0), actor.flags & 0x400);
     }
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try session.advance(a, &.{}, 16);
     try std.testing.expect(session.targets[victim].?.damage.health < health);
     for (first..first + 3) |index| try std.testing.expect(session.removed_actors[index]);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try session.advance(a, &.{}, 16);
     for (first..first + 3) |index| try std.testing.expect(session.removed_actors[index]);
 }

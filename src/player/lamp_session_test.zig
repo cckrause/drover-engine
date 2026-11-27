@@ -24,12 +24,12 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), io, path, archive, &startup);
     defer session.deinit(a);
     const original_player = session.player;
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try std.testing.expect(session.hud.fuel_group == null);
     const fuel = session.inventory.find("IOIL");
     try std.testing.expect(fuel != 0);
@@ -53,7 +53,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
         light_sounds += 1;
     };
     try std.testing.expectEqual(@as(usize, 1), light_sounds);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expect(session.hud.fuel_group != null);
     try std.testing.expect(session.lamp_state.force_depth);
     const held = try keys.sample(session.animation_time + 16, .{});
@@ -63,17 +63,17 @@ test "portable lamp commits input oil HUD lighting and restart state" {
 
     for (0..6) |_| {
         try session.advance(a, &.{}, 250);
-        _ = try session.render(a, pixels, session.animation_time);
+        _ = try session.render(pixels, session.animation_time);
     }
     try std.testing.expect(session.lamp_state.flicker_time != 0);
     const before = session.lamp_state;
     const random = session.contact_state.random;
     @memset(pixels, 0);
-    _ = try session.renderWorld(a, pixels, session.animation_time);
+    _ = try session.renderWorld(pixels, session.animation_time);
     var first: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pixels, &first, .{});
     @memset(pixels, 0);
-    _ = try session.renderWorld(a, pixels, session.animation_time);
+    _ = try session.renderWorld(pixels, session.animation_time);
     var second: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pixels, &second, .{});
     try std.testing.expectEqualSlices(u8, &first, &second);
@@ -84,7 +84,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     selection.entries[@intFromEnum(input.Slot.weapon)] = .{ .value = 3, .flags = input.absolute | input.pressed };
     for (0..5) |_| {
         try session.advance(a, &selection, 600);
-        _ = try session.render(a, pixels, session.animation_time);
+        _ = try session.render(pixels, session.animation_time);
         selection = .{};
     }
     try std.testing.expectEqual(@as(usize, 3), session.inventory.selected_weapon);
@@ -99,12 +99,12 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     var scoped_random = session.contact_state.random;
     scoped_lamp.advancePresentation(session.frame_seconds, session.animation_time, &scoped_random);
     scoped_lamp.advancePresentation(session.frame_seconds, session.animation_time, &scoped_random);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expect(session.player.scope_active);
     try std.testing.expectEqualDeep(scoped_lamp, session.lamp_state);
     try std.testing.expectEqual(scoped_random, session.contact_state.random);
     std.crypto.hash.sha2.Sha256.hash(pixels, &first, .{});
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     std.crypto.hash.sha2.Sha256.hash(pixels, &second, .{});
     try std.testing.expectEqualSlices(u8, &first, &second);
     try std.testing.expectEqualDeep(scoped_lamp, session.lamp_state);

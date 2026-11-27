@@ -113,7 +113,9 @@ test "blood spawn gravity contacts and removal" {
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random = config.seed;
         var particle = try blood.spawn(&costume, &random, 0, point(config.position), 1000);
         try check(case.initial, particle, random);
@@ -199,7 +201,9 @@ test "general actor scheduler gravity and conveyors" {
         sector_state.velocity_present = config.conveyor != null;
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random = config.seed;
         var particle = try blood.spawn(&costume, &random, 0, point(config.position), 1000);
         particle.actor.flags = case.flags;
@@ -260,9 +264,11 @@ test "dynamic callbacks retain exact projectile contact stack residue" {
         states[1].flags = 0x80;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var residue = @import("../projectile/contact.zig").Residue{};
         for (case.residue_before, 0..) |value, index| residue.words[index] = value;
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .fragment } };
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .fragment } };
         var actor = @import("../render/objects.zig").Actor{
             .costume = &costume,
             .sector = 0,
@@ -359,6 +365,8 @@ test "player blood projection preserves proven scheduler stack words" {
     var states = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
     var scene: scene_module.Scene = undefined;
     scene.sectors = &states;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     for (corpora) |corpus| for (corpus.cases, 0..) |case, index| {
         errdefer std.debug.print("reference projection stack case{d}\n", .{index});
         const config = case.player_config;
@@ -371,16 +379,16 @@ test "player blood projection preserves proven scheduler stack words" {
         var look: input.LookState = .{};
         const control = look.control(&packet);
         if (config.original_scene) {
-            try player.tick(a, &hideout, &hideout_scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
+            try player.tick(&hideout, &hideout_scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
         } else {
             sectors[0].gravity = -50;
             sectors[0].friction = 1;
             sectors[0].ceiling.height = 30;
-            try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
+            try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
             sectors[0].gravity = -60;
             sectors[0].friction = 0.3;
         }
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &player.contact_residue, .caller = .fragment } };
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &player.contact_residue, .caller = .fragment } };
         var actor = projectionActor(&costume, case.initial);
         var motion = blood.State{ .velocity = fromBits(case.initial.velocity_bits) };
         if (case.previous) |kind| {

@@ -45,6 +45,7 @@ test "INF consumes the selected handle including mismatched USE_ID" {
         var owned: inventory.Inventory = .{ .selected = case.selected };
         for (fixture.layout) |value| owned.slots[value.slot] = .{ .definition = try inventory.Definition.load(a, &archives, value.name), .count = value.count };
         var runtime: inf.Runtime = .{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = undefined, .classes = undefined, .inventory = &owned };
+        try runtime.reserveLists();
         defer runtime.deinit();
         runtime.triggers = try runtime.arena.allocator().alloc(inf.Trigger, 1);
         runtime.triggers[0] = .{ .target = .{ .sector = 0 }, .flags = case.flags, .object_id = 101 };

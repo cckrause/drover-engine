@@ -32,12 +32,15 @@ pub const Config = struct {
     allow_bounce: i32 = 0,
 
     pub fn load(a: std.mem.Allocator, item: *const Item, name: []const u8) !Config {
-        var result: Config = .{ .name = try configName(a, name), .model = try a.dupe(u8, item.animation) };
+        var result: Config = .{ .name = "", .model = "" };
+        errdefer result.deinit(a);
+        result.name = try configName(a, name);
+        result.model = try a.dupe(u8, item.animation);
         result.ground_chor = @truncate(item.intValue("GROUND_CHOR") orelse 0);
         result.life = item.intValue("LIFE") orelse 0;
         result.allow_bounce = item.intValue("ALLOW_BOUNCE") orelse 0;
         inline for (.{ .{ "dead_item", "DEAD_ITEM" }, .{ "explosion", "EXPLOSION" }, .{ "fuse_sound", "FUSE_SOUND" }, .{ "explode_sound", "EXPLODE_SOUND" } }) |field| {
-            @field(result, field[0]) = if (try item.stringValue(field[1])) |value| try a.dupe(u8, value) else null;
+            if (try item.stringValue(field[1])) |value| @field(result, field[0]) = try a.dupe(u8, value);
         }
         inline for (.{ .{ "radius", "RADIUS" }, .{ "wall_radius", "WALL_RADIUS" }, .{ "rate", "RATE" }, .{ "mass", "MASS" }, .{ "damage", "DAMAGE" }, .{ "throw_pitch", "THROW_PITCH" }, .{ "collide_radius", "COLLIDE_RADIUS" } }) |field| {
             const value = item.floatValue(field[1]) orelse 0;
@@ -45,6 +48,17 @@ pub const Config = struct {
             @field(result, field[0]) = value;
         }
         return result;
+    }
+
+    /// Frees the strings `load` made with the same allocator.
+    pub fn deinit(self: *Config, a: std.mem.Allocator) void {
+        a.free(self.name);
+        a.free(self.model);
+        inline for (.{ "dead_item", "explosion", "fuse_sound", "explode_sound" }) |field| {
+            if (@field(self, field)) |value| a.free(value);
+        }
+        self.name = "";
+        self.model = "";
     }
 };
 
@@ -90,12 +104,20 @@ pub const State = struct {
 
 pub const Blast = struct { damage: @import("../player/shooting.zig").DamageInput, impact: Vec3 };
 
+pub const ConfigNameBuffer = [32]u8;
+
 pub fn configName(a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var buffer: ConfigNameBuffer = undefined;
+    return a.dupe(u8, try configNameInto(&buffer, path));
+}
+
+/// The definition name a projectile path refers to, written into `buffer`.
+pub fn configNameInto(buffer: *ConfigNameBuffer, path: []const u8) ![]const u8 {
     const start = if (std.mem.lastIndexOfAny(u8, path, "\\/:")) |position| position + 1 else 0;
     const tail = path[start..];
     const end = std.mem.indexOfScalar(u8, tail, '.') orelse tail.len;
     if (end == 0 or end + 4 >= 32) return error.InvalidProjectileName;
-    return std.fmt.allocPrint(a, "{s}.itm", .{tail[0..end]});
+    return std.fmt.bufPrint(buffer, "{s}.itm", .{tail[0..end]}) catch unreachable;
 }
 
 pub fn initialize(actor: *Actor, config: *const Config, descriptor: Descriptor, now: u32) State {

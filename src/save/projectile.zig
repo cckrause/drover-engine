@@ -59,8 +59,8 @@ pub const Record = struct {
 
 pub const Restored = struct { state: runtime.State, pickup: ?inventory.Pickup };
 
-pub fn capture(session: anytype, state: runtime.State, ground: ?inventory.Pickup) !Record {
-    return .{ .kind = state.descriptor.kind, .held = state.held, .explode = state.explode, .deadline = state.deadline, .owner_id = try session.savedActorId(state.descriptor.owner), .damage = state.descriptor.damage, .mass = state.descriptor.mass, .bounced = state.bounced, .pickup = if (ground) |value| try pickup.capture(session.arena.allocator(), session.active_audio orelse return error.MissingSaveAudio, value) else null, .configuration = state.config.name };
+pub fn capture(session: anytype, scratch: std.mem.Allocator, state: runtime.State, ground: ?inventory.Pickup) !Record {
+    return .{ .kind = state.descriptor.kind, .held = state.held, .explode = state.explode, .deadline = state.deadline, .owner_id = try session.savedActorId(state.descriptor.owner), .damage = state.descriptor.damage, .mass = state.descriptor.mass, .bounced = state.bounced, .pickup = if (ground) |value| try pickup.capture(scratch, session.active_audio orelse return error.MissingSaveAudio, value) else null, .configuration = state.config.name };
 }
 
 pub fn restore(session: anytype, record: Record, actor: *const Actor) !Restored {

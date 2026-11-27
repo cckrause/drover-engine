@@ -76,7 +76,8 @@ fn compare(case: Case, unsupported: ?usize) !void {
     var loads: usize = 0;
     var random: u32 = 1;
     var shared: controller.Shared = .{ .now = 1000 };
-    var effects: std.ArrayList(controller.Effect) = .empty;
+    var effects_buffer: [16]controller.Effect = undefined;
+    var effects = controller.Effects.init(&effects_buffer);
     var ctx: controller.Context = .{
         .allocator = a,
         .level = &level,

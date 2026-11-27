@@ -85,6 +85,8 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
     var states = [_]scene.SectorState{.{ .flags = 0, .runtime_flags = 0, .floor_slope = null, .ceiling_slope = null, .walls = &.{} }} ** 2;
     var state: scene.Scene = undefined;
     state.sectors = &states;
+    var collision_check: u32 = 0;
+    state.collision_check = &collision_check;
     for (parsed.value.rays, 0..) |sample, index| {
         errdefer std.debug.print("reference actor ray sample {d}\n", .{index});
         var random = sample.seed;

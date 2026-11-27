@@ -26,6 +26,7 @@ const save_game = @import("save/game.zig");
 const save_stream = @import("save/stream.zig");
 const save_header = @import("save/header.zig");
 const save_menu = @import("save/menu.zig");
+const save_player_module = @import("save/player_module.zig");
 const build_options = @import("build_options");
 const patches = @import("platform/patches.zig");
 const settings = @import("settings.zig");
@@ -35,15 +36,76 @@ const display_palette = @import("render/display_palette.zig");
 const options_platform = @import("platform/options.zig");
 const network_menu_platform = @import("platform/network_menu.zig");
 const network_join = @import("platform/network_join.zig");
+const world = @import("render/backends/software/world.zig");
 const network_lobby_platform = @import("platform/network_lobby.zig");
 const drivers = @import("platform/drivers.zig");
 const enet_driver = @import("platform/enet_driver.zig");
 const asset_installer = @import("platform/asset_installer.zig");
+const MemoryBudget = @import("platform/MemoryBudget.zig");
+const memory_hooks = @import("platform/memory_hooks.zig");
+const c_memory = @import("platform/c_memory.zig");
+const memory_limits = @import("memory/limits.zig");
 const c = platform.c;
+
+comptime {
+    _ = @import("memory/layout.zig");
+}
 
 const RestoredClock = struct { host_time: u32, engine_time: u32 };
 
 pub fn main(init: std.process.Init) !void {
+    const capacity = memory_limits.heap_bytes;
+    const backing = std.heap.page_allocator;
+    const memory = blk: {
+        const owner = try backing.create(MemoryBudget);
+        errdefer backing.destroy(owner);
+        // The budget only uses uncancelable futex operations from this static
+        // I/O instance; those remain valid for foreign threads at process exit.
+        owner.* = try MemoryBudget.init(backing, std.Io.Threaded.global_single_threaded.io(), capacity);
+        break :blk owner;
+    };
+
+    var release_reservation = true;
+    defer if (release_reservation) {
+        memory.deinit(backing);
+        backing.destroy(memory);
+    };
+
+    // Some SDL implementations retain process globals after SDL_Quit.
+    // Their callbacks and allocator owner must outlive library destructors.
+    const hooks = try memory_hooks.install(memory.allocator());
+    defer release_reservation = hooks.restore();
+
+    var runtime_io = std.Io.Threaded.init(memory.allocator(), .{
+        .argv0 = .init(init.minimal.args),
+        .environ = init.minimal.environ,
+    });
+    defer runtime_io.deinit();
+
+    var bounded = init;
+    bounded.gpa = memory.allocator();
+    bounded.io = runtime_io.io();
+
+    run(bounded, memory) catch |err| {
+        if (err == error.OutOfMemory or err == error.MemoryBudgetExceeded or c_memory.exhausted()) {
+            const state = memory.stats();
+            std.log.err("memory profile {s} exceeded: capacity {d} MiB, reserved {d} bytes, peak {d} bytes; fix residency or review the build profile", .{
+                @tagName(memory_limits.profile), state.capacity / (1024 * 1024), state.reserved, state.peak,
+            });
+            return error.MemoryBudgetExceeded;
+        }
+        return err;
+    };
+
+    try checkMemory(memory);
+}
+
+fn checkMemory(memory: *MemoryBudget) error{MemoryBudgetExceeded}!void {
+    try memory.check();
+    if (c_memory.exhausted()) return error.MemoryBudgetExceeded;
+}
+
+fn run(init: std.process.Init, memory: *MemoryBudget) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.skip();
     var data_path: []const u8 = title.current.default_data_path;
@@ -81,7 +143,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--help")) {
             std.debug.print("drover [--data DATA.LAB] [--patch none|1.1|2.0] [--snapshot frame.ppm] [--frames N]\n" ++
                 "        [--menu main|difficulty] [--headless [--start good|bad|ugly]]\n" ++
-                "        [--movie FILE.SAN [--headless --frames N]] [--installer]\n", .{});
+                "        [--movie FILE.SAN [--headless --frames N]] [--installer]\n" ++
+                "memory profile: {s}, {d} MiB heap (selected at build time)\n", .{
+                @tagName(memory_limits.profile), memory_limits.heap_bytes / (1024 * 1024),
+            });
             return;
         } else {
             std.log.err("unknown argument: {s}", .{arg});
@@ -147,6 +212,9 @@ pub fn main(init: std.process.Init) !void {
     var shell = Shell{ .screen = try menu.Menu.initKind(init.gpa, archive, initial_menu) };
     defer shell.deinit(init.gpa);
     var palette = try shell.screen.render(pixels, 0);
+    // Frame drawing storage for every level, reserved once here.
+    const render_workspace = try world.Workspace.create(init.gpa);
+    defer render_workspace.destroy(init.gpa);
     var session: ?*Session = null;
     defer if (session) |loaded| loaded.deinit(init.gpa);
 
@@ -164,8 +232,8 @@ pub fn main(init: std.process.Init) !void {
             if (build_options.mission) |name| try mission.select(&shell.startup.?, name);
             const diagnostic_level = try shell.startup.?.levelForDiagnostics();
             try mounts.selectDisc(init.io, diagnostic_level.disc);
-            session = try Session.openWithState(init.gpa, init.io, mounts.path(), mounts.system(), &shell.startup.?, 0, .{ .base_palette = palette });
-            palette = try session.?.render(init.gpa, pixels, 0);
+            session = try Session.openWithState(init.gpa, render_workspace, init.io, mounts.path(), mounts.system(), &shell.startup.?, 0, .{ .base_palette = palette });
+            palette = try session.?.render(pixels, 0);
             reportStartup(&shell.startup.?, session.?);
         }
         if (snapshot) |path| try writeSnapshot(init, path, pixels, &palette);
@@ -218,6 +286,7 @@ pub fn main(init: std.process.Init) !void {
     var menu_requested = false;
 
     main_loop: while (running) {
+        try checkMemory(memory);
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event) != 0) {
             const now = c.SDL_GetTicks();
@@ -277,7 +346,7 @@ pub fn main(init: std.process.Init) !void {
                 try audio.remount(init.io, mounts.path(), mounts.system());
                 const opened_at = c.SDL_GetTicks();
                 warnViewBox(&view);
-                const next = try Session.openWithCampaignState(init.gpa, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state, &carry);
+                const next = try Session.openWithCampaignState(init.gpa, render_workspace, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state, &carry);
                 startRequest(next);
                 session = next;
                 try next.bindAudio(audio);
@@ -285,7 +354,7 @@ pub fn main(init: std.process.Init) !void {
                 try audio.beginLevel(init.io, &next.level, next.geometry_archive, c.SDL_GetTicks());
                 try audio.beginAmbient(&next.level, &next.objects, startup.difficulty);
                 try audio_device.sync(audio);
-                palette = try next.render(init.gpa, pixels, c.SDL_GetTicks());
+                palette = try next.render(pixels, c.SDL_GetTicks());
                 try window.present(&palette);
                 player_input.clearLevelKeys();
                 player_input.last_sample = opened_at;
@@ -334,7 +403,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        if (session) |loaded| if (menu_requested and loaded.animation_ticks.items.len > 2) {
+        if (session) |loaded| if (menu_requested and loaded.animation_tick_count > 2) {
             menu_requested = false;
             try loaded.prepareMenu(init.gpa, audio);
             const game_pixels = try init.gpa.dupe(u8, pixels);
@@ -389,14 +458,19 @@ pub fn main(init: std.process.Init) !void {
                             defer if (selected.thumbnail) |thumbnail| init.gpa.free(thumbnail);
                             if (result == .save) {
                                 const engine_now = loaded.animation_time +% (c.SDL_GetTicks() -% player_input.last_sample);
+                                const links = save_player_module.TaskLinks.of(&loaded.inventory);
                                 const bytes_out = try save_game.write(init.gpa, loaded, &shell.startup.?, audio, mounts.active, engine_now, selected.description, .{ .width = save_menu.thumbnail_width, .height = save_menu.thumbnail_height, .pixels = selected.thumbnail orelse return error.MissingSaveThumbnail });
                                 defer init.gpa.free(bytes_out);
-                                try catalog.write(init.gpa, init.io, selected.slot, bytes_out);
+                                catalog.write(init.io, selected.slot, bytes_out) catch |err| {
+                                    links.restore(&loaded.inventory);
+                                    return err;
+                                };
                             } else {
                                 persistent_state = loaded.persistentState();
-                                const bytes_in = catalog.files[selected.slot] orelse return error.EmptySaveSlot;
+                                const bytes_in = try catalog.read(init.gpa, init.io, selected.slot);
+                                defer init.gpa.free(bytes_in);
                                 warnViewBox(&view);
-                                const restored = try restoreGame(init.gpa, init.io, bytes_in, &shell, &mounts, &session, audio, audio_device, persistent_state);
+                                const restored = try restoreGame(init.gpa, render_workspace, init.io, bytes_in, &shell, &mounts, &session, audio, audio_device, persistent_state);
                                 engine_clock_offset = restored.host_time -% restored.engine_time;
                                 player_input.last_sample = restored.host_time;
                                 player_input.clearLevelKeys();
@@ -446,7 +520,7 @@ pub fn main(init: std.process.Init) !void {
                 try audio.engine.updateListener(loaded.audioListener());
             }
 
-            palette = try loaded.render(init.gpa, pixels, c.SDL_GetTicks());
+            palette = try loaded.render(pixels, c.SDL_GetTicks());
             player_input.capture_map_arrows = loaded.automap.capture_arrows;
 
             if (loaded.hud.sound_request) |effect| {
@@ -494,7 +568,9 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .selection => |selected| {
                         warnViewBox(&view);
-                        const restored = try restoreGame(init.gpa, init.io, catalog.files[selected.slot] orelse return error.EmptySaveSlot, &shell, &mounts, &session, audio, audio_device, persistent_state);
+                        const bytes_in = try catalog.read(init.gpa, init.io, selected.slot);
+                        defer init.gpa.free(bytes_in);
+                        const restored = try restoreGame(init.gpa, render_workspace, init.io, bytes_in, &shell, &mounts, &session, audio, audio_device, persistent_state);
                         engine_clock_offset = restored.host_time -% restored.engine_time;
                         player_input.last_sample = restored.host_time;
                         player_input.clearLevelKeys();
@@ -535,7 +611,7 @@ pub fn main(init: std.process.Init) !void {
                                     const opened_at = c.SDL_GetTicks();
                                     warnViewBox(&view);
                                     persistent_state.base_palette = palette;
-                                    session = try Session.openWithState(init.gpa, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state);
+                                    session = try Session.openWithState(init.gpa, render_workspace, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state);
                                     try session.?.bindAudio(audio);
                                     try audio.engine.updateListener(session.?.audioListener());
                                     try audio.beginLevel(init.io, &session.?.level, session.?.geometry_archive, c.SDL_GetTicks());
@@ -547,7 +623,7 @@ pub fn main(init: std.process.Init) !void {
                                         .quit, .frame_limit => break :main_loop,
                                         .playing => {},
                                     }
-                                    palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                                    palette = try session.?.render(pixels, c.SDL_GetTicks());
                                     try window.present(&palette);
                                     reportNetworkStartup(startup, session.?);
                                     player_input.capture_map_arrows = session.?.automap.capture_arrows;
@@ -572,7 +648,7 @@ pub fn main(init: std.process.Init) !void {
                                 const startup = &shell.startup.?;
                                 try network_menu_platform.bindPlayer(startup, &store, archive);
                                 warnViewBox(&view);
-                                switch (try network_join.run(init.gpa, init.io, archive, data_path, &mounts, window, pixels, &palette, audio, audio_device, &frames, frame_limit, startup, &network_opener, std.mem.sliceTo(&join_selection.name, 0), engine_clock_offset, persistent_state)) {
+                                switch (try network_join.run(init.gpa, render_workspace, init.io, archive, data_path, &mounts, window, pixels, &palette, audio, audio_device, &frames, frame_limit, startup, &network_opener, std.mem.sliceTo(&join_selection.name, 0), engine_clock_offset, persistent_state)) {
                                     .quit, .frame_limit => break :main_loop,
                                     .menu => {
                                         shell.startup.?.deinit(init.gpa);
@@ -592,7 +668,7 @@ pub fn main(init: std.process.Init) !void {
                                             .quit, .frame_limit => break :main_loop,
                                             .playing => {},
                                         }
-                                        palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                                        palette = try session.?.render(pixels, c.SDL_GetTicks());
                                         try window.present(&palette);
                                         reportNetworkStartup(startup, session.?);
                                         player_input.capture_map_arrows = session.?.automap.capture_arrows;
@@ -618,7 +694,7 @@ pub fn main(init: std.process.Init) !void {
                 const opened_at = c.SDL_GetTicks();
                 warnViewBox(&view);
                 persistent_state.base_palette = palette;
-                session = try Session.openWithState(init.gpa, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state);
+                session = try Session.openWithState(init.gpa, render_workspace, init.io, mounts.path(), mounts.system(), startup, opened_at -% engine_clock_offset, persistent_state);
                 startRequest(session.?);
                 try session.?.bindAudio(audio);
                 try audio.engine.updateListener(session.?.audioListener());
@@ -626,7 +702,7 @@ pub fn main(init: std.process.Init) !void {
                 try audio.beginAmbient(&session.?.level, &session.?.objects, startup.difficulty);
                 try audio_device.sync(audio);
                 {
-                    palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                    palette = try session.?.render(pixels, c.SDL_GetTicks());
                     try window.present(&palette);
                 }
                 reportStartup(startup, session.?);
@@ -729,7 +805,7 @@ fn startRequest(session: *Session) void {
     session.seedStartRequest(c.SDL_GetTicks());
 }
 
-fn restoreGame(a: std.mem.Allocator, io: std.Io, bytes: []const u8, shell: *Shell, mounts: *mission.Mounts, session: *?*Session, audio: *audio_runtime.Runtime, device: *audio_platform.Device, persistent: Session.PersistentState) !RestoredClock {
+fn restoreGame(a: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, bytes: []const u8, shell: *Shell, mounts: *mission.Mounts, session: *?*Session, audio: *audio_runtime.Runtime, device: *audio_platform.Device, persistent: Session.PersistentState) !RestoredClock {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     var reader: save_stream.Reader = .{ .bytes = bytes };
@@ -751,7 +827,7 @@ fn restoreGame(a: std.mem.Allocator, io: std.Io, bytes: []const u8, shell: *Shel
     placed = true;
     const startup = &shell.startup.?;
     try audio.remount(io, mounts.path(), mounts.system());
-    const next = try Session.openForRestore(a, io, mounts.path(), mounts.system(), startup, header.clock, persistent);
+    const next = try Session.openForRestore(a, render_workspace, io, mounts.path(), mounts.system(), startup, header.clock, persistent);
     errdefer next.deinit(a);
     try next.bindAudio(audio);
     try save_game.readBody(next, startup, audio, &reader, header);

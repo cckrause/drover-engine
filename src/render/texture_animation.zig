@@ -75,9 +75,9 @@ pub const Runtime = struct {
         return .{ .programs = programs, .instances = try instances.toOwnedSlice(a) };
     }
 
-    pub fn message(self: *Runtime, a: std.mem.Allocator, level: *level_module.Level, scene: *scene_module.Scene, target: Target, code: u32, arg1: i32, now: u32, effects: *inventory.Effects) !void {
-        var events = std.array_list.Managed(atx.Event).init(a);
-        defer events.deinit();
+    pub fn message(self: *Runtime, level: *level_module.Level, scene: *scene_module.Scene, target: Target, code: u32, arg1: i32, now: u32, effects: *inventory.Effects) !void {
+        var events_buffer: atx.EventBuffer = undefined;
+        var events = atx.Events.init(&events_buffer);
         var index = self.instances.len;
         while (index != 0) {
             index -= 1;
@@ -89,18 +89,18 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn messageInstance(self: *Runtime, a: std.mem.Allocator, level: *level_module.Level, scene: *scene_module.Scene, index: usize, code: u32, arg1: i32, now: u32, effects: *inventory.Effects) !void {
+    pub fn messageInstance(self: *Runtime, level: *level_module.Level, scene: *scene_module.Scene, index: usize, code: u32, arg1: i32, now: u32, effects: *inventory.Effects) !void {
         if (index >= self.instances.len) return error.InvalidAtxInstance;
         const instance = &self.instances[index];
-        var events = std.array_list.Managed(atx.Event).init(a);
-        defer events.deinit();
+        var events_buffer: atx.EventBuffer = undefined;
+        var events = atx.Events.init(&events_buffer);
         try instance.state.message(self.programs[instance.resource].?.animation, code, arg1, now, &events);
         try self.apply(level, scene, instance, events.items, effects);
     }
 
-    pub fn tick(self: *Runtime, a: std.mem.Allocator, level: *level_module.Level, scene: *scene_module.Scene, now: u32, effects: *inventory.Effects) !void {
-        var events = std.array_list.Managed(atx.Event).init(a);
-        defer events.deinit();
+    pub fn tick(self: *Runtime, level: *level_module.Level, scene: *scene_module.Scene, now: u32, effects: *inventory.Effects) !void {
+        var events_buffer: atx.EventBuffer = undefined;
+        var events = atx.Events.init(&events_buffer);
         var index = self.instances.len;
         while (index != 0) {
             index -= 1;
@@ -193,10 +193,10 @@ test "ATX states and spatial requests match shipped script execution" {
     const angles = @import("backends/software/camera.zig").Angles.init();
     var scene = try scene_module.Scene.init(a, &level, &angles);
     defer scene.deinit();
-    var events = std.array_list.Managed(atx.Event).init(a);
-    defer events.deinit();
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var events_buffer: atx.EventBuffer = undefined;
+    var events = atx.Events.init(&events_buffer);
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         const animation = try atx.Animation.parse(a, try archive.find(case.name, 0));
         defer animation.deinit(a);

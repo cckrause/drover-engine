@@ -96,13 +96,15 @@ test "player scheduler writes the later knife contact residue" {
         var sector_state = std.mem.zeroes(Scene.SectorState);
         var scene: Scene.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = point(case.player_config.position), .rotation = .{ .x = 0, .y = 0, .z = 0 } });
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         for (case.player_input) |slot| packet.entries[@intCast(slot[0])] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
         var look: input.LookState = .{};
         const control = look.control(&packet);
-        try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
+        try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.2);
         try std.testing.expectEqualDeep([4]?u32{ case.raw_query[7], case.raw_query[10], case.raw_query[11], case.raw_query[12] }, player.contact_residue.words);
     }
 }
@@ -222,7 +224,9 @@ test "projectile movement damping model rotation and slopes match the reference"
         }
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&sector_state)[0..1];
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var actor: Actor = .{ .sector = 0, .position = point(input.position), .pitch = input.angles[0], .yaw = input.angles[1], .roll = input.angles[2], .flags = 0x8000004f, .secondary_flags = 0x420, .scale_x = 1, .scale_y = 1, .height = 2, .collision_radius = 1, .choreography = 0, .frame = 0, .angle_offset = 0 };
         var state: runtime.State = .{ .config = &config, .held = false, .velocity = point(input.velocity), .rotation = point(input.rotation), .descriptor = .{ .kind = .knife, .item = "", .owner = null, .origin = actor.position, .sector = 0, .pitch = 0, .yaw = 0, .damage = 0, .mass = 0, .rate = 0, .range = 0 } };
         var motion: blood.State = .{ .velocity = state.velocity };
@@ -309,4 +313,18 @@ test "instant health and sheriff pickup save records match the reference" {
         try reader.end();
         try std.testing.expectEqualSlices(u8, bytes, try writer.finish());
     }
+}
+
+test "a projectile definition that fails part way through keeps none of its strings" {
+    var item = try Item.parse(std.testing.allocator, "ITEM 1.0\nANIM PDYNAM.3DO\nDATA 3\nSTR EXPLOSION EXPLODE\nSTR FUSE_SOUND fuse.wav\nFLOAT RADIUS 2\n");
+    defer item.deinit();
+    const Load = struct {
+        fn run(a: std.mem.Allocator, source: *const Item) !void {
+            var config = try runtime.Config.load(a, source, "PDYNAM.ITM");
+            config.deinit(a);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Load.run, .{&item});
+    item.fields[2].value = .{ .float = std.math.inf(f32) };
+    try std.testing.expectError(error.InvalidProjectileFloat, runtime.Config.load(std.testing.allocator, &item, "PDYNAM.ITM"));
 }

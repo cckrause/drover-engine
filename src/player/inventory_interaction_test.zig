@@ -63,7 +63,7 @@ test "inventory selection health use and drops match player/ execution" {
         defer if (startup) |*owned| owned.deinit(a);
         const session: ?*Session = if (has_drop) blk: {
             _ = try startup.?.levelForDiagnostics();
-            const live = try Session.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[2], &startup.?);
+            const live = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[2], &startup.?);
             live.player.position = .{ .x = 0, .y = 0, .z = 0 };
             live.level.sectors[live.player.sector].floor.height = 0;
             live.level.sectors[live.player.sector].ceiling.height = 20;
@@ -76,7 +76,8 @@ test "inventory selection health use and drops match player/ execution" {
             if (slot.hidden) |hidden| definition.no_show = hidden != 0;
             inventory.slots[slot.slot] = .{ .definition = definition, .count = slot.count };
         }
-        var effects = inventory_module.Effects.init(a);
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         for (case.inputs, case.frames, 0..) |entries, expected, frame_index| {
             var packet = input.Packet{};
             for (entries) |entry| packet.entries[@intCast(entry[0])] = .{ .value = @intCast(entry[1]), .flags = @intCast(entry[2]) };
@@ -86,8 +87,8 @@ test "inventory selection health use and drops match player/ execution" {
                 const live = session.?;
                 live.inventory = inventory;
                 const before = live.actor_slots.len;
-                var shots = weapon.Shots.init(a);
-                defer shots.deinit();
+                var shots_buffer: weapon.ShotBuffer = undefined;
+                var shots = weapon.Shots.init(&shots_buffer);
                 try live.dropSelected(&effects, &shots);
                 inventory = live.inventory;
                 try std.testing.expectEqual(expected.drops.len, live.actor_slots.len - before);

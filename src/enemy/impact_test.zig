@@ -114,8 +114,8 @@ fn check(session: *Session, a: std.mem.Allocator, expected: Case) !void {
     const first = session.actor_slots.len;
     const selection = session.enemy_selection_serial;
     const old_removed = removedCount(session);
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     const shot = weapon.Shot{ .kind = .bullet, .sector = sector, .origin = point(config.origin), .yaw = config.yaw, .pitch = config.pitch, .range = 100, .damage = 0, .mass = 0, .rate = 0, .impact_effect = config.enabled != 0, .impact_sound = config.sound != 0 };
     try impact.apply(session, a, shot, .{ .sector = sector, .index = expected.hit.index, .position = fromBits(expected.hit.position_bits), .along = 0 }, &effects);
     try std.testing.expectEqual(expected.random, session.contact_state.random);
@@ -195,7 +195,7 @@ test "wall impact flags positions actors RNG rate and mark replacement" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     session.player.position = .{ .x = 10000, .y = 0, .z = 10000 };
     for (fixture.cases, 0..) |case, index| {
@@ -244,7 +244,7 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const old_sectors = session.level.sectors;
     const old_states = session.scene.sectors;
@@ -297,12 +297,12 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
         session.enemy_shared.crt_random = 1;
         session.impact_state = .{};
         session.animation_time = config.now;
-        var effects = inventory.Effects.init(a);
-        defer effects.deinit();
-        var queued = weapon.Shots.init(a);
-        defer queued.deinit();
-        var packets = weapon.Shots.init(a);
-        defer packets.deinit();
+        var effects_buffer: inventory.EffectBuffer = undefined;
+        var effects = inventory.Effects.init(&effects_buffer);
+        var queued_buffer: weapon.ShotBuffer = undefined;
+        var queued = weapon.Shots.init(&queued_buffer);
+        var packets_buffer: weapon.ShotBuffer = undefined;
+        var packets = weapon.Shots.init(&packets_buffer);
         var context = session.weaponContext(&effects, &queued, true);
         var capture = ShotCapture{ .original = context.shot_sink.?, .packets = &packets };
         context.shot_sink = .{ .context = &capture, .emit = ShotCapture.emit };

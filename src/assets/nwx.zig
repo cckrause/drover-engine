@@ -10,6 +10,12 @@
 
 const std = @import("std");
 
+/// Selections may nest this deep on one instance. Callbacks run game code
+/// that selects again in the middle of a command, so nesting stays on the
+/// call stack and this bounds it. No shipped sprite set nests at all; a
+/// sequence that selects itself is refused instead of overflowing the stack.
+pub const max_selection_depth = 32;
+
 pub const Cell = struct {
     width: u32,
     height: u32,
@@ -48,6 +54,9 @@ pub const Playback = struct {
     flags: u32 = 1,
     terminated: bool = false,
     command_budget: ?*usize = null,
+    /// How many selections are running inside each other on this instance,
+    /// through select commands and through callbacks that select again.
+    selection_depth: u8 = 0,
 
     pub fn advance(self: *Playback, costume: *const Costume, count: u32, now: u32) !void {
         var next = self.*;
@@ -72,6 +81,9 @@ pub const Playback = struct {
         const shared = previous orelse &budget;
         if (shared.* == 0) return error.InvalidNwxCommandLoop;
         shared.* -= 1;
+        if (self.selection_depth == max_selection_depth) return error.NwxSelectionTooDeep;
+        self.selection_depth += 1;
+        defer self.selection_depth -= 1;
         self.command_budget = shared;
         defer self.command_budget = previous;
         self.last_time = now;
@@ -636,4 +648,24 @@ test "NWX compressed columns retain clipped runs and reject missing payload" {
     try std.testing.expectError(error.TruncatedNwxColumn, decodeColumn(&.{ 4, 7, 8 }, &result));
     try std.testing.expectError(error.TruncatedNwxColumn, decodeColumn(&.{1}, &result));
     try std.testing.expectError(error.UnsupportedNwxVersion, Costume.parse(std.testing.allocator, "WAXF\x03\x00\x00\x00\x01\x00\x00\x00"));
+}
+
+test "a sequence that selects itself is refused before the stack runs out" {
+    var frames = [_]i16{ -4, 1, 0, 0 };
+    var choreographies = [_]Choreography{.{ .values = .{ 0, 0, 10, 0 }, .directions = 1, .frames_per_direction = frames.len, .frames = &frames }};
+    var costume: Costume = .{ .arena = undefined, .scale = 1, .secondary_scale = 1, .cells = &.{}, .frames = &.{}, .choreographies = &choreographies };
+    const Counter = struct {
+        selections: usize = 0,
+
+        pub fn event(self: *@This(), _: *Playback, _: *const Costume, message: u32, _: []const u32, _: u32) !void {
+            if (message == 0x5f) self.selections += 1;
+        }
+    };
+    var counter: Counter = .{};
+    var playback: Playback = .{};
+    try std.testing.expectError(error.NwxSelectionTooDeep, playback.select(&costume, 0, 0, &counter));
+    try std.testing.expectEqual(@as(usize, max_selection_depth), counter.selections);
+    try std.testing.expectEqual(@as(u8, 0), playback.selection_depth);
+    var unbound: Playback = .{};
+    try std.testing.expectError(error.NwxSelectionTooDeep, unbound.advance(&costume, 1, 0));
 }

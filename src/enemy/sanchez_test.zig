@@ -58,6 +58,8 @@ test "Sanchez constructor template dormant clock and message gate" {
     var sector_state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&sector_state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     var visibility = try occlusion.Cache.init(a, &level);
     defer visibility.deinit();
@@ -89,7 +91,8 @@ test "Sanchez constructor template dormant clock and message gate" {
             try std.testing.expectEqual(@as(u32, 15000), target.config.taunt_timer_time);
             var random: u32 = 0x742389ac;
             var shared: controller.Shared = .{ .now = 1000, .total_enemies = 1 };
-            var effects: std.ArrayList(controller.Effect) = .empty;
+            var effects_buffer: [16]controller.Effect = undefined;
+            var effects = controller.Effects.init(&effects_buffer);
             var context: controller.Context = .{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = null, .visibility = &visibility, .random = &random, .now = 9000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects };
             try std.testing.expectEqual(false, try controller.tick(&target, &actor, &context));
             try std.testing.expectEqual(@as(u32, 3000), target.next_tick);
@@ -179,7 +182,8 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         if (std.mem.eql(u8, case.variant, "taunt_wait")) target.ai.taunt_at = 9000;
         var random = entry.random;
         var cache = try occlusion.Cache.init(a, &level);
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var residue: @import("../projectile/contact.zig").Residue = .{};
         for (entry.projection, 0..) |word, index| residue.projection.words[index] = word;
         const sites = [_]@import("sanchez.zig").Site{.{ .source = 0, .sector = actor.sector, .position = actor.position }};
@@ -198,10 +202,12 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         var state = std.mem.zeroes(scene_module.SectorState);
         var blood_scene: scene_module.Scene = undefined;
         blood_scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        blood_scene.collision_check = &collision_check;
         const initial = case.initial;
         var particle: @import("../render/objects.zig").Actor = .{ .costume = &blood_costume, .sector = 0, .position = projectionPoint(initial.position_bits), .yaw = 0, .flags = initial.flags, .secondary_flags = 0, .height = @bitCast(initial.height_bits), .collision_radius = @bitCast(initial.radius_bits), .scale_x = @bitCast(initial.scale_bits[0]), .scale_y = @bitCast(initial.scale_bits[1]), .choreography = 0, .frame = 0, .angle_offset = 0 };
         var motion: blood.State = .{ .velocity = projectionPoint(initial.velocity_bits) };
-        const world = @import("physics.zig").World{ .allocator = a, .level = &blood_level, .scene = &blood_scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .blood } };
+        const world = @import("physics.zig").World{ .level = &blood_level, .scene = &blood_scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .blood } };
         if (reveal) {
             const start = particle.position;
             _ = try blood.tick(&particle, &motion, world, 0.2);
@@ -273,10 +279,13 @@ test "hidden Sanchez selected taunt sound updates projection by actual admission
         var state = std.mem.zeroes(scene_module.SectorState);
         var scene: scene_module.Scene = undefined;
         scene.sectors = (&state)[0..1];
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
         var cache = try occlusion.Cache.init(a, &level);
         var random = entry.random;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var residue: @import("../projectile/contact.zig").Residue = .{};
         for (entry.projection, 0..) |word, index| residue.projection.words[index] = word;
         const runtime = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", system);

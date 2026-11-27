@@ -6,6 +6,7 @@
 //! their obvious places.
 
 const std = @import("std");
+const lab = @import("../assets/lab.zig");
 const stream = @import("stream.zig");
 const costume = @import("costume.zig");
 const Vec3 = @import("../assets/level.zig").Vec3;
@@ -265,21 +266,23 @@ fn asset(session: anytype, name: []const u8) ![]const u8 {
 
 fn loadCostume(session: anytype, name: []const u8) !*nwx.Costume {
     const a = session.arena.allocator();
-    const key = try std.ascii.allocUpperString(a, name);
+    var key_buffer: lab.NameBuffer = undefined;
+    const key = try lab.upperName(&key_buffer, name);
     if (session.costumes.get(key)) |existing| return existing;
     const loaded = try a.create(nwx.Costume);
     loaded.* = try nwx.Costume.parse(a, try asset(session, name));
-    try session.costumes.put(key, loaded);
+    try session.costumes.put(try a.dupe(u8, key), loaded);
     return loaded;
 }
 
 fn loadModel(session: anytype, name: []const u8) !*model_asset.Model {
     const a = session.arena.allocator();
-    const key = try std.ascii.allocUpperString(a, name);
+    var key_buffer: lab.NameBuffer = undefined;
+    const key = try lab.upperName(&key_buffer, name);
     if (session.models.get(key)) |existing| return existing;
     const loaded = try a.create(model_asset.Model);
     loaded.* = try model_asset.Model.parse(a, try asset(session, name), &.{ session.object_archive, session.texture_archive, session.system_archive });
-    try session.models.put(key, loaded);
+    try session.models.put(try a.dupe(u8, key), loaded);
     return loaded;
 }
 

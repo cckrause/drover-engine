@@ -110,14 +110,10 @@ pub fn deathImpulse(world: physics.World, actor: Actor, state: *physics.State, r
 fn traverse(world: physics.World, start: usize, from: level.Vec3, to: level.Vec3, mode: Crossing, up: f32, down: f32) !?usize {
     if (start >= world.level.sectors.len) return error.InvalidEnemySector;
     if (to.x - from.x == 0 and to.z - from.z == 0) return start;
-    var arena = std.heap.ArenaAllocator.init(world.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const offsets = try a.alloc(usize, world.level.sectors.len + 1);
-    offsets[0] = 0;
-    for (world.level.sectors, 0..) |sector, i| offsets[i + 1] = offsets[i] + sector.walls.len;
-    const seen = try a.alloc(bool, offsets[world.level.sectors.len]);
-    @memset(seen, false);
+    // Crossed walls are remembered with the scene's shared check number, the
+    // same way collision checks do it, so this walk needs no storage of its own.
+    world.scene.startCollisionCheck();
+    const check = world.scene.collision_check.*;
     var current = start;
     var previous: f32 = -0x1p31;
     while (true) {
@@ -125,7 +121,7 @@ fn traverse(world: physics.World, start: usize, from: level.Vec3, to: level.Vec3
         var distance: f32 = 0x1p31;
         const sector = world.level.sectors[current];
         for (sector.walls, world.scene.sectors[current].walls, 0..) |wall, state, index| {
-            if (seen[offsets[current] + index]) continue;
+            if (state.last_collision_check == check) continue;
             const hit = collision.intersection(.{ .x = from.x, .z = from.z }, .{ .x = to.x, .z = to.z }, sector.vertices[wall.v1], sector.vertices[wall.v2]) orelse continue;
             if (from.x == hit.x and from.z == hit.z and 0 <= (@as(f64, to.x) - from.x) * state.direction.z - (@as(f64, to.z) - from.z) * state.direction.x) continue;
             const dx = @abs(f(@as(f64, hit.x) - from.x));
@@ -138,11 +134,11 @@ fn traverse(world: physics.World, start: usize, from: level.Vec3, to: level.Vec3
             }
         }
         const selected_wall = selected orelse return current;
-        mark(world, offsets, seen, selected_wall);
+        mark(world, check, selected_wall);
         const wall = sector.walls[selected_wall.wall];
         for (mirrors(wall)) |mirror| if (mirror) |first| {
-            mark(world, offsets, seen, first);
-            for (mirrors(world.level.sectors[first.sector].walls[first.wall])) |second| if (second) |value| mark(world, offsets, seen, value);
+            mark(world, check, first);
+            for (mirrors(world.level.sectors[first.sector].walls[first.wall])) |second| if (second) |value| mark(world, check, value);
         };
         previous = distance;
         var next = wall.adjoin;
@@ -163,9 +159,8 @@ fn mirrors(wall: level.Wall) [2]?WallRef {
     return .{ if (wall.adjoin < 0) null else .{ .sector = @intCast(wall.adjoin), .wall = @intCast(wall.mirror) }, if (wall.dadjoin < 0) null else .{ .sector = @intCast(wall.dadjoin), .wall = @intCast(wall.dmirror) } };
 }
 
-fn mark(world: physics.World, offsets: []const usize, seen: []bool, wall: WallRef) void {
-    _ = world;
-    seen[offsets[wall.sector] + wall.wall] = true;
+fn mark(world: physics.World, check: u32, wall: WallRef) void {
+    world.scene.sectors[wall.sector].walls[wall.wall].last_collision_check = check;
 }
 
 fn nearest(value: f32) i32 {

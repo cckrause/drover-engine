@@ -81,7 +81,8 @@ test "rail mode angles slopes collision and sound timing" {
     const config = try player_audio.Config.fromItem(&item);
     const runtime = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[0]);
     defer runtime.deinit();
-    var effects = @import("inventory.zig").Effects.init(a);
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     for (reference.value.cases) |case| {
         var scene = try scene_module.Scene.init(a, &level, &angles);
         defer scene.deinit();
@@ -120,7 +121,7 @@ test "rail mode angles slopes collision and sound timing" {
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             effects.clearRetainingCapacity();
             try runtime.engine.updateListener(.{ .position = .{ player.position.x, player.position.y, player.position.z } });
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
             var expected = frame.state;
             expected.flags &= 0x200c;
             try std.testing.expectEqualDeep(expected, Snapshot.read(&player, &look));

@@ -62,14 +62,14 @@ pub fn readLogic(reader: *stream.Reader, a: std.mem.Allocator, shared: *controll
     return sites;
 }
 
-pub fn writeGen(writer: *stream.Writer, state: generator.State, actor_ids: []const u32) !void {
+pub fn writeGen(writer: *stream.Writer, state: *const generator.State, actor_ids: []const u32) !void {
     return writeGenWithAudio(writer, state, actor_ids, null);
 }
 
-pub fn writeGenWithAudio(writer: *stream.Writer, state: generator.State, actor_ids: []const u32, audio: ?*@import("../audio/runtime.zig").Runtime) !void {
+pub fn writeGenWithAudio(writer: *stream.Writer, state: *const generator.State, actor_ids: []const u32, audio: ?*@import("../audio/runtime.zig").Runtime) !void {
     try writer.marker(0x426e6547, 1, 1);
     try writer.integer(u32, @intCast(state.records.items.len));
-    for (state.records.items) |record| {
+    for (state.records.items, 0..) |record, record_index| {
         try writer.integer(u32, record.id);
         try writer.integer(u32, @intFromEnum(record.kind));
         try writer.string(record.generatee);
@@ -92,14 +92,13 @@ pub fn writeGenWithAudio(writer: *stream.Writer, state: generator.State, actor_i
         try writer.integer(i32, record.live);
         try writer.boolean(record.enabled);
         try writer.boolean(record.los);
-        try writer.integer(u32, @intCast(record.children.items.len));
-        for (record.children.items) |child| switch (child) {
-            .actor => |source| {
-                if (source >= actor_ids.len) return error.InvalidSavedGeneratorActor;
-                try writer.integer(u32, 0);
-                try writer.integer(u32, actor_ids[source]);
-            },
-            .sound => try writer.integer(u32, 1),
+        try writer.integer(u32, state.childCount(record_index));
+        if (@intFromEnum(record.kind) >= 2) {
+            for (0..record.sound_children) |_| try writer.integer(u32, 1);
+        } else for (state.actorChildren()) |child| if (child.record == record_index) {
+            if (child.source >= actor_ids.len) return error.InvalidSavedGeneratorActor;
+            try writer.integer(u32, 0);
+            try writer.integer(u32, actor_ids[child.source]);
         };
         const resource: ?sound_save.Record = if (record.sound_resource) |value| if (audio) |runtime| try sound_save.capture(runtime, value.name) else .{ .name = value.name, .priority = @bitCast(value.priority), .flags = value.flags, .registered_at = value.created_at, .volume = @bitCast(record.resource_volume) } else null;
         try sound_save.write(writer, resource);
@@ -148,7 +147,7 @@ pub fn readGen(reader: *stream.Reader, a: std.mem.Allocator, sector_count: usize
             0 => {
                 const actor_id = try reader.integer(u32);
                 for (actor_ids, 0..) |existing, source| if (existing == actor_id) {
-                    try record.children.append(a, .{ .actor = source });
+                    try result.addActorChild(result.records.items.len, source);
                     break;
                 };
             },
@@ -491,7 +490,7 @@ test "generator logic and enemy save bytes match the reference" {
         var state: generator.State = .{};
         try state.append(a, &definition, object, 0, 1000, &rng);
         var writer = stream.Writer{ .allocator = a };
-        try writeGen(&writer, state, &.{});
+        try writeGen(&writer, &state, &.{});
         const bytes = try writer.finish();
         try expectHex(a, case.bytes, bytes);
         var reader = stream.Reader{ .bytes = bytes };
@@ -534,6 +533,8 @@ test "generator logic and enemy save bytes match the reference" {
     var sector_state = std.mem.zeroes(scene_module.SectorState);
     var scene: scene_module.Scene = undefined;
     scene.sectors = (&sector_state)[0..1];
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     const angles = camera.Angles.init();
     const refs: References = .{ .actor_ids = &.{101}, .player_id = 102, .sector_count = 1, .node_count = 0 };
     for (fixture.enemies) |case| {
@@ -551,7 +552,8 @@ test "generator logic and enemy save bytes match the reference" {
         if (case.hit) {
             var cache = try @import("../audio/occlusion.zig").Cache.init(a, &level);
             var random: u32 = 0x742389ac;
-            var effects: std.ArrayList(controller.Effect) = .empty;
+            var effects_buffer: [16]controller.Effect = undefined;
+            var effects = controller.Effects.init(&effects_buffer);
             const player: controller.Subject = .{ .position = .{ .x = 20, .y = 0, .z = 0 }, .sector = 0, .height = 6, .radius = 1.5, .yaw = 0, .flags = 1, .secondary_flags = 0x10 };
             var context = controller.Context{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = player, .hit_sender = player, .visibility = &cache, .random = &random, .now = 1000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects };
             const Reflection = struct {
@@ -609,14 +611,14 @@ test "generator restore resolves only actors present before DB and preserves del
         try reader.end();
         try std.testing.expectEqual(@as(i32, @bitCast(case.restored.fields[11])), state.records.items[0].live);
         try std.testing.expectEqual(case.restored.fields[3], state.records.items[0].deadline);
-        try std.testing.expectEqual(case.restored.children.len, state.records.items[0].children.items.len);
+        try std.testing.expectEqual(case.restored.children.len, state.childCount(0));
         if (case.after_destroy) |expected| {
             var rng: u32 = 0x12345678;
             state.removed(0, 90000, &rng);
             try std.testing.expectEqual(@as(i32, @bitCast(expected.fields[11])), state.records.items[0].live);
             try std.testing.expectEqual(expected.fields[3], state.records.items[0].deadline);
             try std.testing.expectEqual(expected.random, rng);
-            try std.testing.expectEqual(expected.children.len, state.records.items[0].children.items.len);
+            try std.testing.expectEqual(expected.children.len, state.childCount(0));
         }
     }
 }

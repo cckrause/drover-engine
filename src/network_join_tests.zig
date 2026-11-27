@@ -180,7 +180,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     try host.beginHost(a, testing.io, path, system);
     const log_level = testing.log_level;
     testing.log_level = .err;
-    const host_level_open = Session.open(a, testing.io, path, system, &host);
+    const host_level_open = Session.open(a, @import("render/test_workspace.zig").get(), testing.io, path, system, &host);
     testing.log_level = log_level;
     const host_level = try host_level_open;
     defer host_level.deinit(a);
@@ -246,7 +246,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
 
     try joiner.beginJoinedLevel();
     try testing.expectEqualStrings("LOADING LEVEL", std.mem.sliceTo(&joiner.loading.text, 0));
-    const join_level = try Session.open(a, testing.io, path, system, &joiner);
+    const join_level = try Session.open(a, @import("render/test_workspace.zig").get(), testing.io, path, system, &joiner);
     defer join_level.deinit(a);
     try joiner.endJoinedLevel();
     joiner.networkLevelLoaded();
@@ -450,7 +450,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     var stood_after_shot = false;
     var copy_shot_frames: usize = 0;
     for (0..800) |frame| {
-        _ = try host_level.render(a, pixels, host_level.animation_time);
+        _ = try host_level.render(pixels, host_level.animation_time);
         const shooting = if (frame % 40 == 0) &firing else if (frame % 40 == 1) &releasing else &packet;
         try pair.frame(if (dead_at == null) shooting else &packet, &packet);
         if (host_level.player_animation == shoot) shot_frames += 1;
@@ -562,7 +562,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         const glass = try faceGlass(side.shooter);
         try testing.expect(side.other.scene.sectors[glass.sector].walls[glass.wall].flags & 0x4000 != 0);
         for (0..300) |_| {
-            _ = try side.shooter.render(a, pixels, side.shooter.animation_time);
+            _ = try side.shooter.render(pixels, side.shooter.animation_time);
             try pair.frame(&packet, &packet);
             const weapon = side.shooter.hud.weaponAnimation() orelse continue;
             if (weapon.ready and side.shooter.weapon_state.action == -1) break;
@@ -570,7 +570,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         try testing.expect(side.shooter.player.sector == glass.sector);
         const shots_before = side.shooter.weapon_state.shot_count;
         for (0..60) |frame| {
-            _ = try side.shooter.render(a, pixels, side.shooter.animation_time);
+            _ = try side.shooter.render(pixels, side.shooter.animation_time);
             const shot = if (frame == 0) &firing else if (frame == 1) &releasing else &packet;
             if (side.shooter == host_level) try pair.frame(shot, &packet) else try pair.frame(&packet, shot);
             if (side.shooter.scene.sectors[glass.sector].walls[glass.wall].flags & 0x4000 == 0) break;

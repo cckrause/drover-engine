@@ -55,7 +55,7 @@ test "Hideout's object numbers follow the reference load order" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     var closed = false;
     defer if (!closed) session.deinit(a);
     const db = &startup.database;
@@ -118,7 +118,7 @@ test "Hideout's object numbers follow the reference load order" {
     session.deinit(a);
     closed = true;
     try std.testing.expect(db.repeats == null);
-    try std.testing.expectEqual(@as(usize, 1), startup.router.queues[0].items.len);
+    try std.testing.expectEqual(@as(usize, 1), startup.router.queues[0].count);
     try std.testing.expect(try db.next(&startup.router, false, 103) == null);
     for (db.tables[1].?[1 .. last + 1], 1..) |entry, index| {
         const number: u32 = 0x800 | @as(u32, @intCast(index));

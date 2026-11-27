@@ -205,7 +205,7 @@ fn integrate(actor: *Actor, state: *State, world: physics.World, dt: f32, mask: 
     }
     collision_options.exclude_source = actor.source_index;
     collision_options.wall_memory = &state.wall_memory;
-    const solved = try collision.resolveWithOptions(world.allocator, world.level, world.scene, actors, actor.sector, old, &next, &velocity, actor.height, @abs(actor.collision_radius), actor.height, &state.floor_cache, collision_options);
+    const solved = try collision.resolveWithOptions(world.level, world.scene, actors, actor.sector, old, &next, &velocity, actor.height, @abs(actor.collision_radius), actor.height, &state.floor_cache, collision_options);
     if (stack) |tracking| if (tracking.caller == .bubble and solved.actor_flags_dirty) {
         tracking.residue.projection.words[2] = 0x004c1370;
     };

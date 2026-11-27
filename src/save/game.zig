@@ -11,6 +11,7 @@ const header = @import("header.zig");
 const statistics = @import("statistics.zig");
 const palette = @import("palette.zig");
 const campaign = @import("../campaign.zig");
+const player_module = @import("player_module.zig");
 
 pub fn write(a: std.mem.Allocator, session: anytype, startup: *const campaign.Startup, audio: anytype, disc: u8, now: u32, description: [15]u8, thumbnail: header.Thumbnail) ![]u8 {
     const entry = startup.selected_level orelse return error.LevelNotSelected;
@@ -28,6 +29,10 @@ pub fn write(a: std.mem.Allocator, session: anytype, startup: *const campaign.St
         .recipe = .{ .disc = entry.disc, .filename = startup.request.path(), .ordinal = @intCast((startup.story_index orelse return error.CampaignExhausted) + 1) },
     };
     try saved_header.write(&writer);
+    // Writing the player module clears the inventory's task links; a save
+    // that fails afterwards leaves the running game as it was.
+    const links = player_module.TaskLinks.of(&session.inventory);
+    errdefer links.restore(&session.inventory);
     try session.writeSaved(&writer, audio);
     try writer.integer(u32, 0);
     try (header.Statistics{ .accumulated = startup.accumulated_stats, .level = statistics.level(session) }).write(&writer);

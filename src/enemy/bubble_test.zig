@@ -101,7 +101,9 @@ test "bubble batches preserve RNG construction drift and ceiling flags" {
         state.flags &= ~config.clear_flags;
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        var collision_check: u32 = 0;
+        scene.collision_check = &collision_check;
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random = config.seed;
         _ = bubble.sound(&random, 0, point(config.position));
         const actors = try a.alloc(@import("../render/objects.zig").Actor, @intCast(config.count));
@@ -126,7 +128,7 @@ test "Hideout underwater bubbles grow live actor lists and preserve saved-next s
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     session.player.sector = 66;
     session.player.position = .{ .x = 465.5, .y = -10, .z = 460 };

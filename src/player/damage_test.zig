@@ -135,7 +135,8 @@ fn checkEnvironmentReference(fixture_path: []const u8) !void {
     const physics = try movement.Physics.parse(try archives[0].find("AIR.PHY", 0x50485953));
     const audio_config = try player_audio.Config.fromItem(&item);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         errdefer std.debug.print("drowning case {s}\n", .{case.name});
         var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = .{ .x = case.config.position[0], .y = case.config.position[1], .z = case.config.position[2] }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });
@@ -186,12 +187,13 @@ test "fall damage threshold health feedback and dead movement" {
     var level = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     const spawn: level_module.Spawn = .{ .sector = 0, .position = .{ .x = 0, .y = 0.01, .z = 0 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     const fixture_bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/player-damage-reference.json", a, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
@@ -241,7 +243,7 @@ test "fall damage threshold health feedback and dead movement" {
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         const control = look.controlForLife(&packet, true);
-        try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
+        try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
         inventory.player_flags = player.flags;
         _ = try damage.applyMovement(.{ .multiplier = case.multiplier orelse damage_config.multiplier }, &inventory, player.impact, 0, 0.016, &flash, &context, 1000);
         if (player.choreography_input) |value| _ = choreography.select(&player.flags, chors, value);
@@ -294,7 +296,7 @@ test "fall damage threshold health feedback and dead movement" {
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         for ([_]usize{ 0, 2, 10, 11 }) |slot| packet.entries[slot] = .{ .value = 5120, .flags = 0 };
         const control = look.controlForLife(&packet, false);
-        try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+        try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
         if (player.choreography_input) |value| _ = choreography.select(&player.flags, chors, value);
         const actual = MovementState.read(&player, &look);
         actual.hash(&digest);
@@ -355,9 +357,11 @@ test "solid ceiling crushing records and compressed player motion" {
     var level = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
     level.sectors = &sectors;
     var scene_sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
-    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    var collision_check: u32 = 0;
+    var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
-    var effects = inventory_module.Effects.init(a);
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     for (fixture.value.movement_cases) |case| {
         sectors[0].ceiling.height = case.config.ceiling;
         scene_sectors[0].flags = case.config.sector_flags;
@@ -372,7 +376,7 @@ test "solid ceiling crushing records and compressed player motion" {
             errdefer std.debug.print("crush ceiling{d} flags{x} frame{d}\n", .{ case.config.ceiling, case.config.sector_flags, frame_index });
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
             _ = try damage.applyMovementWithEnvironment(damage_config, &inventory, player.impact, player.sector_damage, 0.016, &flash, &audio, 1000, .{ .crush_required = player.crush_required, .crush_body = player.crush_body });
             var expected_motion = frame.movement;
             expected_motion.flags &= 0x10003004;

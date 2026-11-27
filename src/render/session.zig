@@ -78,7 +78,12 @@ const projectile_session = @import("../projectile/session.zig");
 const generator = @import("../enemy/generator.zig");
 const initial = @import("initial_state.zig");
 
-const ActorMessage = struct { target: usize, code: u32, serial: u64 };
+const session_queues = @import("session_queues.zig");
+
+comptime {
+    // Each user message becomes one effect of the frame.
+    std.debug.assert(network_server.max_user_messages == inventory_module.max_effects);
+}
 
 pub const Session = struct {
     active_audio: ?*audio_runtime.Runtime = null,
@@ -92,7 +97,7 @@ pub const Session = struct {
     player_sound_names: [22]?[]const u8 = @splat(null),
     sounds_closed: bool = false,
     active_effects: ?*inventory_module.Effects = null,
-    enemy_native_effects: std.ArrayList(inventory_module.Effect) = .empty,
+    enemy_native_effects: inventory_module.Effects = .init(&.{}),
     rail_audio_state: rail_audio.State = .{},
     impact_state: shot_impact.State = .{},
     arena: std.heap.ArenaAllocator,
@@ -128,7 +133,7 @@ pub const Session = struct {
     enemy_shared: enemy.Shared,
     enemy_nodes: []enemy.Node,
     sanchez_sites: ?[]sanchez.Site,
-    enemy_effects: std.ArrayList(enemy.Effect),
+    enemy_effects: enemy.Effects,
     enemies_loaded: bool,
     corpse_pool: enemy_lifecycle.CorpsePool,
     corpse_sources: [30]?usize,
@@ -139,9 +144,9 @@ pub const Session = struct {
     splash_slots: []?enemy_dynamic.SplashState,
     actor_link_serial: u64,
     player_link_order: u64,
-    pending_hits: std.ArrayList(shooting.PendingHit),
-    queued_hits: std.ArrayList(shooting.PendingHit),
-    actor_messages: std.ArrayList(ActorMessage),
+    pending_hits: session_queues.PendingHits,
+    queued_hits: session_queues.PendingHits,
+    actor_messages: session_queues.ActorMessages,
     projectile_slots: []?projectile.State,
     projectile_configs: std.StringHashMap(*const projectile.Config),
     projectile_blast_sender: ?usize,
@@ -149,6 +154,9 @@ pub const Session = struct {
     scope_explosion_flash: i32 = 0,
     generators: generator.State,
     scope_view: camera.View,
+    /// Borrowed from whoever opened the session; it outlives the session.
+    /// The main and scope views share it, drawn one after the other.
+    render_workspace: *world.Workspace,
     scope_pixels: []u8,
     frame_seconds: f32,
     actor_time: u32,
@@ -169,7 +177,9 @@ pub const Session = struct {
     contact_state: cmm.ContactState,
     collision_diameter: f32 = 0,
     actor_next_update: []i32,
-    pickup_effects: std.ArrayList(inventory_module.Effect),
+    pickup_effects: inventory_module.Effects,
+    /// Backs the hit, actor message and effect lists above; never moves.
+    queue_storage: session_queues.Storage,
     look: player_input.LookState,
     palette: [256]u32,
     palette_index: u8 = 0,
@@ -187,7 +197,7 @@ pub const Session = struct {
     player_choreographies: player_choreography.Table = .{},
     player_animation: u32 = 0,
     lobby: ?*@import("../ui/dialog.zig").Dialog = null,
-    remote_players: std.ArrayList(network_actors.RemotePlayer) = .empty,
+    remote_players: session_queues.RemotePlayers,
     start_keys_cleared: bool = false,
     router: *network_router.Router,
     server: *network_server.Server,
@@ -203,6 +213,9 @@ pub const Session = struct {
     actors: []object_render.Actor,
     actor_capacity: usize,
     actor_storage: []object_render.Actor,
+    /// The object pass's view-space position of each live actor, kept with
+    /// the actor arrays so drawing a frame allocates nothing.
+    actor_transformed: []level_module.Vec3,
     actor_slots: []?object_render.Actor,
     source_to_entry: []?usize,
     actor_links: actor_links.Links,
@@ -222,7 +235,8 @@ pub const Session = struct {
     rendered_sector_visits: usize = 0,
     started_at: u32,
     animation_time: u32,
-    animation_ticks: std.ArrayList(u32),
+    /// Simulation updates since the level opened, saturating.
+    animation_tick_count: u32,
 
     const Presentation = struct { time: u32, kick: f32, flash: i32, explosion_flash: i32 };
 
@@ -347,8 +361,8 @@ pub const Session = struct {
         };
     }
 
-    pub fn open(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup) !*Session {
-        return openWithState(allocator, io, data_path, system, startup, 0, .{});
+    pub fn open(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup) !*Session {
+        return openWithState(allocator, render_workspace, io, data_path, system, startup, 0, .{});
     }
 
     pub fn campaignState(self: *Session, allocator: std.mem.Allocator) !CampaignState {
@@ -375,8 +389,8 @@ pub const Session = struct {
         return result;
     }
 
-    pub fn openWithCampaignState(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, carry: *const CampaignState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, true, carry, false);
+    pub fn openWithCampaignState(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, carry: *const CampaignState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, true, carry, false);
     }
 
     pub fn restart(self: *Session, allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32) !*Session {
@@ -398,15 +412,15 @@ pub const Session = struct {
         try self.inventory.startItems(self.arena.allocator(), &.{ self.object_archive, self.weapon_archive, self.geometry_archive, self.system_archive }, &cid);
         var carry = try self.campaignState(allocator);
         defer carry.deinit();
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, true, &carry, false);
+        return openImpl(allocator, self.render_workspace, io, data_path, system, startup, now, persistent, true, &carry, false);
     }
 
-    pub fn openWithState(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, false, null, false);
+    pub fn openWithState(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, false, null, false);
     }
 
-    pub fn openForRestore(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, false, null, true);
+    pub fn openForRestore(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, false, null, true);
     }
 
     pub fn closeSounds(self: *Session) !void {
@@ -433,11 +447,11 @@ pub const Session = struct {
         allocator.destroy(self);
     }
 
-    pub fn render(self: *Session, allocator: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
+    pub fn render(self: *Session, pixels: []u8, ticks: u32) ![256]u32 {
         if (pixels.len != 640 * 480) return error.InvalidFramebuffer;
         if (!self.framebuffer_initialized) @memset(pixels, 0);
         try self.hud.update(&self.inventory, self.player.energy, self.player.underwater_elapsed, self.animation_time);
-        const palette = try self.renderWorld(allocator, pixels, ticks);
+        const palette = try self.renderWorld(pixels, ticks);
         self.hud.blend_table = self.blend();
         self.hud.color_map = self.color_map;
         var weapon_options: weapon_render.Options = .{
@@ -455,7 +469,7 @@ pub const Session = struct {
                 self.player.scope_active = true;
                 self.weapon_state.aim_x = 0;
                 self.weapon_state.aim_y = 0;
-                _ = try self.renderView(allocator, &self.scope_view, self.scope_pixels, ticks);
+                _ = try self.renderView(&self.scope_view, self.scope_pixels, ticks);
                 try weapon_render.composeScope(pixels, self.scope_pixels, rect);
             }
         };
@@ -488,8 +502,9 @@ pub const Session = struct {
         return self.damage_flash.palette(palette);
     }
 
-    pub fn renderWorld(self: *Session, allocator: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
-        return self.renderView(allocator, &self.view, pixels, ticks);
+    /// Drawing the world allocates nothing.
+    pub fn renderWorld(self: *Session, pixels: []u8, ticks: u32) ![256]u32 {
+        return self.renderView(&self.view, pixels, ticks);
     }
 
     pub fn advance(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, elapsed_ms: u32) !void {
@@ -557,11 +572,11 @@ pub const Session = struct {
         defer self.active_audio = previous_audio;
         const previous_effects = self.active_effects;
         defer self.active_effects = previous_effects;
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         self.active_effects = &effects;
-        var shots = weapon_module.Shots.init(allocator);
-        defer shots.deinit();
+        var shots_buffer: weapon_module.ShotBuffer = undefined;
+        var shots = weapon_module.Shots.init(&shots_buffer);
         if (self.hud.weaponAnimation()) |animation| {
             var context = self.weaponContext(&effects, &shots, animation.ready);
             context.animation_slot = animation.slot;
@@ -577,19 +592,18 @@ pub const Session = struct {
         self.active_audio = audio;
         defer self.active_audio = previous_audio;
         self.animation_time +%= elapsed_ms;
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         const previous_effects = self.active_effects;
         self.active_effects = &effects;
         defer self.active_effects = previous_effects;
         try self.startup.networkStepWith(allocator, self.animation_time, network_level.level(self), self.server_enabled, &user_messages);
         if (user_messages.items.len != 0) return error.UserMessageOutsideLevelFrame;
         try self.drainDatabase(&effects);
-        try self.pickup_effects.ensureTotalCapacity(self.arena.allocator(), effects.items.len);
         self.pickup_effects.clearRetainingCapacity();
-        self.pickup_effects.appendSliceAssumeCapacity(effects.items);
+        try self.pickup_effects.appendSlice(effects.items);
     }
 
     pub fn advanceWithAudio(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, elapsed_ms: u32, audio: ?*audio_runtime.Runtime) !void {
@@ -602,11 +616,11 @@ pub const Session = struct {
         defer self.active_effects = previous_effects;
         try self.loadEnemies(allocator);
         self.inf.effects.clearRetainingCapacity();
-        var animation_effects = inventory_module.Effects.init(allocator);
+        var animation_effects_buffer: inventory_module.EffectBuffer = undefined;
+        var animation_effects = inventory_module.Effects.init(&animation_effects_buffer);
         self.active_effects = &animation_effects;
-        defer animation_effects.deinit();
-        var shots = weapon_module.Shots.init(allocator);
-        defer shots.deinit();
+        var shots_buffer: weapon_module.ShotBuffer = undefined;
+        var shots = weapon_module.Shots.init(&shots_buffer);
         try self.deliverHits(allocator, audio, &animation_effects);
         try enemy_session.deliverSelections(self, allocator, audio);
         self.animation_time +%= elapsed_ms;
@@ -626,8 +640,8 @@ pub const Session = struct {
             incoming_ids[incoming_count] = @bitCast(owned.definition.use_id);
             incoming_count += 1;
         };
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try self.startup.networkStepWith(allocator, self.animation_time, network_level.level(self), self.server_enabled, &user_messages);
         try self.inf.flushQueued(&self.level, &self.scene, self.animation_time, incoming_ids[0..incoming_count], self.difficulty_mask >> 8);
         try self.drainDatabase(&animation_effects);
@@ -654,16 +668,16 @@ pub const Session = struct {
             },
             .wall_frame => |request| {
                 if (request.instance) |index|
-                    try self.texture_animations.messageInstance(allocator, &self.level, &self.scene, index, request.code, request.arg1, self.animation_time, &animation_effects)
+                    try self.texture_animations.messageInstance(&self.level, &self.scene, index, request.code, request.arg1, self.animation_time, &animation_effects)
                 else
-                    try self.texture_animations.message(allocator, &self.level, &self.scene, .{ .sector = request.sector, .wall = request.wall }, request.code, request.arg1, self.animation_time, &animation_effects);
+                    try self.texture_animations.message(&self.level, &self.scene, .{ .sector = request.sector, .wall = request.wall }, request.code, request.arg1, self.animation_time, &animation_effects);
             },
             .inventory_use => {},
             .sound => |sound| if (!sound.delivered) {
                 try animation_effects.append(.{ .sound = soundRequest(sound) });
             },
         };
-        try self.texture_animations.tick(allocator, &self.level, &self.scene, self.animation_time, &animation_effects);
+        try self.texture_animations.tick(&self.level, &self.scene, self.animation_time, &animation_effects);
         if (self.inf.audio) |context| for (animation_effects.items) |*effect| if (effect.* == .sound) {
             const request = &effect.sound;
             if (request.occlusion_applied or request.sector == null or request.position == null) continue;
@@ -682,7 +696,7 @@ pub const Session = struct {
         try @import("../player/inventory_wax.zig").advance(self, self.animation_time);
         try self.castShots(allocator, shots.items, &animation_effects);
         shots.clearRetainingCapacity();
-        try self.animation_ticks.append(self.arena.allocator(), self.animation_time);
+        self.animation_tick_count +|= 1;
         try enemy_session.animations(self, allocator, audio, &animation_effects);
         try self.castEnemyEffects(allocator, &animation_effects);
         const elapsed: f32 = @floatFromInt(self.animation_time -% self.actor_time);
@@ -703,8 +717,8 @@ pub const Session = struct {
             try context.selectInput(packet.get(.weapon));
         }
         const control = look.controlForLife(packet, alive);
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         enemy_session.syncSchedule(self);
         self.inventory.player_flags = self.player.flags;
         if (logic) self.player.dead = !alive;
@@ -775,7 +789,7 @@ pub const Session = struct {
             bodies.runtime = &runtime;
             bodies.allow_pickups = true;
         }
-        if (alive) try self.activatePlayer(allocator, packet, bodies, &runtime);
+        if (alive) try self.activatePlayer(packet, bodies, &runtime);
         if (alive and seconds != 0 and packet.get(.lamp).flags & player_input.pressed != 0)
             try self.lamp_state.toggle(&self.inventory, &self.lamp_config, &effects);
         if (alive) {
@@ -805,7 +819,7 @@ pub const Session = struct {
                 try self.messages.post(0x13, null, self.animation_time);
             if (seconds != 0) try self.lamp_state.consume(&self.inventory, seconds);
             self.player.flags = self.inventory.player_flags;
-            try self.player.tickWithAudio(allocator, &self.level, &self.scene, bodies, &self.angles, control, &look, seconds, &player_audio_context);
+            try self.player.tickWithAudio(&self.level, &self.scene, bodies, &self.angles, control, &look, seconds, &player_audio_context);
             if (self.player.flags & 0x8000 != 0) self.lamp_state.hardOff();
             self.inventory.player_flags = self.player.flags;
             self.pending_player_death = try player_damage.applyMovementWithEnvironment(self.player_damage_config, &self.inventory, self.player.impact, self.player.sector_damage, seconds, &self.damage_flash, &player_audio_context, self.animation_time, .{ .elapsed = self.player.drowning, .crush_required = self.player.crush_required, .crush_body = self.player.crush_body, .runtime = &runtime, .player = &self.player, .angles = &self.angles });
@@ -829,7 +843,7 @@ pub const Session = struct {
         try enemy_dynamic.tick(self, allocator, &effects, dynamic_next);
         try projectile_session.flushExplosions(self, allocator, &effects);
         try projectile_session.flushContacts(self, &effects);
-        std.mem.swap(std.ArrayList(shooting.PendingHit), &self.pending_hits, &self.queued_hits);
+        std.mem.swap(session_queues.PendingHits, &self.pending_hits, &self.queued_hits);
         self.weapon_state.reconcileSelection(&self.inventory);
         if (self.hud.weaponAnimation()) |animation| {
             if (self.inventory.slots[self.inventory.selected_weapon] != null) {
@@ -873,9 +887,8 @@ pub const Session = struct {
         try self.damage_flash.advance(self.inventory.health == 0, self.animation_time);
         self.frame_aim_weight = self.weapon_state.aim_weight;
         self.weapon_state.advanceAim(self.animation_time);
-        try self.pickup_effects.ensureTotalCapacity(self.arena.allocator(), effects.items.len);
         self.pickup_effects.clearRetainingCapacity();
-        self.pickup_effects.appendSliceAssumeCapacity(effects.items);
+        try self.pickup_effects.appendSlice(effects.items);
         var messages = self.messages;
         for (effects.items) |effect| switch (effect) {
             .message => |message| if (message.routed)
@@ -947,8 +960,8 @@ pub const Session = struct {
         self.actor_slots[source] = actor.*;
         self.targets[source] = target.*;
         self.syncActor(source);
-        var local = inventory_module.Effects.init(self.allocator);
-        defer local.deinit();
+        var local_buffer: inventory_module.EffectBuffer = undefined;
+        var local = inventory_module.Effects.init(&local_buffer);
         const effects = self.active_effects orelse &local;
         if (ctx.actors.runtime) |runtime| if (runtime.effects != effects) {
             try effects.appendSlice(runtime.effects.items);
@@ -956,7 +969,7 @@ pub const Session = struct {
         };
         try self.castShotsFrom(self.allocator, &.{shot}, effects, source);
         try self.drainSounds(effects);
-        if (self.active_effects == null) try self.enemy_native_effects.appendSlice(self.arena.allocator(), local.items);
+        if (self.active_effects == null) try self.enemy_native_effects.appendSlice(local.items);
         actor.* = self.actor_slots[source].?;
         target.* = self.targets[source].?;
         const runtime = ctx.actors.runtime;
@@ -1074,7 +1087,7 @@ pub const Session = struct {
 
     pub fn enqueueNativeActorMessage(host: *anyopaque, source: usize, code: u32) !void {
         const self: *Session = @ptrCast(@alignCast(host));
-        try self.actor_messages.append(self.arena.allocator(), .{ .target = source, .code = code, .serial = self.enemy_selection_serial });
+        try self.actor_messages.append(.{ .target = source, .code = code, .serial = self.enemy_selection_serial });
         self.enemy_selection_serial += 1;
     }
 
@@ -1085,7 +1098,7 @@ pub const Session = struct {
 
     pub fn enqueueReflectedHit(host: *anyopaque, source: ?usize, damage: shooting.DamageInput) !void {
         const self: *Session = @ptrCast(@alignCast(host));
-        try self.queued_hits.append(self.arena.allocator(), .{ .target = shooting.local_player, .sender = source, .queue_serial = self.enemy_selection_serial, .count = 1, .input = damage });
+        try self.queued_hits.append(.{ .target = shooting.local_player, .sender = source, .queue_serial = self.enemy_selection_serial, .count = 1, .input = damage });
         self.enemy_selection_serial += 1;
     }
 
@@ -1259,15 +1272,16 @@ pub const Session = struct {
         };
     }
 
-    pub fn loadActorsInSectors(self: *Session, allocator: std.mem.Allocator, visited_sectors: []const bool) !bool {
-        return self.loadActors(allocator, visited_sectors, false);
+    pub fn loadActorsInSectors(self: *Session, visited_sectors: []const bool) !bool {
+        return self.loadActors(visited_sectors, false);
     }
 
-    pub fn loadActors(self: *Session, allocator: std.mem.Allocator, visited_sectors: []const bool, all_enemies: bool) !bool {
-        if (visited_sectors.len != self.level.sectors.len) return error.InvalidActorSectorSet;
+    pub fn loadActors(self: *Session, visited_sectors: []const bool, all_enemies: bool) !bool {
+        if (visited_sectors.len != self.level.sectors.len or visited_sectors.len > world.max_level_sectors) return error.InvalidActorSectorSet;
         const a = self.arena.allocator();
-        const visible = try allocator.dupe(bool, visited_sectors);
-        defer allocator.free(visible);
+        var visible_storage: [world.max_level_sectors]bool = undefined;
+        const visible = visible_storage[0..visited_sectors.len];
+        @memcpy(visible, visited_sectors);
         for (visited_sectors, self.level.sectors, self.scene.sectors) |visited, sector, state| {
             if (visited and sector.vadjoin >= 0 and state.flags & 0x80 == 0) visible[@intCast(sector.vadjoin)] = true;
         }
@@ -1287,7 +1301,8 @@ pub const Session = struct {
             if (slot.* != null) continue;
             const sector_requested = visible[sector] and !self.loaded_actor_sectors[sector];
             if (!sector_requested and !all_enemies) continue;
-            const name = try std.fmt.allocPrint(a, "{s}.ITM", .{std.fs.path.stem(object.name)});
+            var name_buffer: lab.NameBuffer = undefined;
+            const name = try lab.printName(&name_buffer, "{s}.ITM", .{std.fs.path.stem(object.name)});
             const definition_bytes = try self.objectResource(self.system_archive, name);
             if (!sector_requested and definition_bytes == null) continue;
             const definition = if (definition_bytes) |bytes| item.Item.parse(a, bytes) catch |err| {
@@ -1367,8 +1382,8 @@ pub const Session = struct {
                 std.log.err("cannot construct object {s}: {s}", .{ object.name, @errorName(err) });
                 return err;
             }) orelse continue;
-            const key = try a.dupe(u8, animation);
-            for (key) |*character| character.* = std.ascii.toUpper(character.*);
+            var key_buffer: lab.NameBuffer = undefined;
+            const key = try lab.upperName(&key_buffer, animation);
             const costume = self.costumes.get(key) orelse blk: {
                 const bytes = try self.objectResource(self.system_archive, animation) orelse {
                     if (definition == null) {
@@ -1380,7 +1395,7 @@ pub const Session = struct {
                 };
                 const loaded = try a.create(nwx.Costume);
                 loaded.* = try nwx.Costume.parse(a, bytes);
-                try self.costumes.put(key, loaded);
+                try self.costumes.put(try a.dupe(u8, key), loaded);
                 break :blk loaded;
             };
             const state = try object_state.State.init(object, sector, definition_ptr, costume);
@@ -1408,7 +1423,10 @@ pub const Session = struct {
                 target.selection_serial = &self.enemy_selection_serial;
             }
             if (!object_logic.bound(slot.*.?)) {
-                for (self.animation_ticks.items) |now| try slot.*.?.advanceUnboundAnimation(now);
+                // Every decoration is built when the level opens, before the
+                // first tick, as in the original, so its animation has run from
+                // the start. One built later would have missed updates.
+                if (self.animation_tick_count != 0) return error.DecorationBuiltAfterPlayStarted;
             }
             self.syncActor(source_index);
             added = true;
@@ -1510,7 +1528,7 @@ pub const Session = struct {
         self.blood_slots[index] = spawned.state;
     }
 
-    fn openImpl(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, retain_player: bool, carry: ?*const CampaignState, restoring: bool) !*Session {
+    fn openImpl(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, retain_player: bool, carry: ?*const CampaignState, restoring: bool) !*Session {
         const self = try allocator.create(Session);
         errdefer allocator.destroy(self);
         self.arena = std.heap.ArenaAllocator.init(allocator);
@@ -1523,12 +1541,12 @@ pub const Session = struct {
         self.player_sound_names = @splat(null);
         self.sounds_closed = false;
         self.active_effects = null;
-        self.enemy_native_effects = .empty;
+        self.enemy_native_effects = .init(&self.queue_storage.enemy_native_effects);
         self.campaign_completion_requested = false;
         self.player_bind_flags = 0;
         self.death_restart_requested = false;
         self.death_restart = .{};
-        self.actor_messages = .empty;
+        self.actor_messages = .init(&self.queue_storage.actor_messages);
         self.projectile_blast_sender = null;
         self.explosion_flash = 0;
         self.scope_explosion_flash = 0;
@@ -1548,7 +1566,7 @@ pub const Session = struct {
         self.player_choreographies = .{};
         self.player_animation = 0;
         self.lobby = null;
-        self.remote_players = .empty;
+        self.remote_players = .init(&self.queue_storage.remote_players);
         self.start_keys_cleared = false;
         self.router = &startup.router;
         self.server = &startup.server;
@@ -1577,6 +1595,7 @@ pub const Session = struct {
         const object_path = try std.fmt.allocPrint(a, "{s}.obb", .{request.name});
         const inf_path = try std.fmt.allocPrint(a, "{s}.inf", .{request.name});
         self.level = try level_module.Level.parse(a, try preferredGeometryResource(a, geometry, level_path, "lvt"));
+        try world.Workspace.checkLevel(&self.level);
         if (self.game_type == 4 or self.game_type == 5) {
             const item_path = try std.fmt.allocPrint(a, "{s}.itm", .{request.name});
             const item_bytes = try geometry.find(item_path, 0x4954454d);
@@ -1711,7 +1730,7 @@ pub const Session = struct {
         self.enemy_shared = .{ .next_shot = persistent.enemy_next_shot, .next_taunt = persistent.enemy_next_taunt, .crt_random = persistent.crt_random, .now = persistent.enemy_now, .entry_random = persistent.enemy_entry_random, .next_tick = persistent.enemy_next_tick, .animation_message = persistent.enemy_animation_message };
         self.enemy_nodes = &.{};
         self.sanchez_sites = null;
-        self.enemy_effects = .empty;
+        self.enemy_effects = .init(&self.queue_storage.enemy_effects);
         self.enemies_loaded = false;
         self.corpse_pool = .{};
         self.corpse_sources = @splat(null);
@@ -1724,8 +1743,8 @@ pub const Session = struct {
         @memset(self.splash_slots, null);
         self.player_link_order = self.objects.entries.len + 1;
         self.actor_link_serial = self.player_link_order + 1;
-        self.pending_hits = .empty;
-        self.queued_hits = .empty;
+        self.pending_hits = .init(&self.queue_storage.hits[0]);
+        self.queued_hits = .init(&self.queue_storage.hits[1]);
         self.actor_time = persistent.actor_time;
         self.frame_seconds = persistent.frame_seconds;
         self.frame_aim_weight = 0;
@@ -1749,7 +1768,7 @@ pub const Session = struct {
         self.automap_was_separate = false;
         self.framebuffer_initialized = false;
         self.collision_diameter = 0;
-        self.pickup_effects = .empty;
+        self.pickup_effects = .init(&self.queue_storage.pickup_effects);
         self.look = persistent.look;
         if (self.look.pitch_active) {
             self.look.pitch_accumulator = 0;
@@ -1760,6 +1779,7 @@ pub const Session = struct {
         self.scope_view = try camera.View.initFov(a, &self.angles, weapon_render.scope_size, weapon_render.scope_size, weapon_render.scope_fov);
         self.scope_pixels = try a.alloc(u8, weapon_render.scope_size * weapon_render.scope_size);
         @memset(self.scope_pixels, 0);
+        self.render_workspace = render_workspace;
         self.view.bottom = 439;
         self.view.setParallax(self.level.parallax.x, self.level.parallax.z);
         self.scope_view.setParallax(self.level.parallax.x, self.level.parallax.z);
@@ -1779,10 +1799,11 @@ pub const Session = struct {
         self.depth_map = texture.defaultDepthMap();
         self.blend_table = shades.build(self.palette, self.level.shades);
         self.system_archive = system;
-        self.object_logic = try object_logic.Runtime.init(a, system);
+        self.object_logic = try object_logic.Runtime.init(a, system, &self.queue_storage.object_selections);
         self.difficulty_mask = @intFromEnum(startup.difficulty) << 8;
         self.actor_capacity = self.objects.entries.len;
         self.actor_storage = try a.alloc(object_render.Actor, self.actor_capacity);
+        self.actor_transformed = try a.alloc(level_module.Vec3, self.actor_capacity);
         self.actors = self.actor_storage[0..0];
         self.actor_slots = try a.alloc(?object_render.Actor, self.objects.entries.len);
         @memset(self.actor_slots, null);
@@ -1805,7 +1826,7 @@ pub const Session = struct {
         self.projectile_configs = std.StringHashMap(*const projectile.Config).init(a);
         self.started_at = now;
         self.animation_time = now;
-        self.animation_ticks = .empty;
+        self.animation_tick_count = 0;
         if (!restoring and !loads_objects) {
             self.inf = try inf_module.Runtime.fromGeometry(now, geometry_classes);
             self.inf.router = self.router;
@@ -1828,7 +1849,7 @@ pub const Session = struct {
             const every_sector = try allocator.alloc(bool, self.level.sectors.len);
             defer allocator.free(every_sector);
             @memset(every_sector, true);
-            _ = try self.loadActors(allocator, every_sector, true);
+            _ = try self.loadActors(every_sector, true);
             try self.loadEnemies(allocator);
             var startup_world: inf_geometry.World = .{ .level = &self.level, .scene = &self.scene, .angles = &self.angles, .actors = self.actors, .links = &self.actor_links, .source_to_entry = self.source_to_entry, .live_entries = &self.actors, .live_slots = &self.actor_slots, .collision_diameter = 0, .marks = self.networkMarks(), .reshaped = null };
             self.inf = try inf_module.Runtime.loadPreparedWithWorld(a, &self.level, try geometry.find(inf_path, 0x494e4646), &self.scene, &self.angles, now, geometry_classes, .{ .world = &startup_world, .textures = self.textures, .seconds = if (@as(u32, @bitCast(self.frame_seconds)) & 0x7fffffff == 0) 1 else self.frame_seconds });
@@ -1915,42 +1936,45 @@ pub const Session = struct {
         }
     }
 
-    fn renderView(self: *Session, allocator: std.mem.Allocator, view: *camera.View, pixels: []u8, ticks: u32) anyerror![256]u32 {
-        const pass = try self.beginView(view);
-        var objects = try object_render.Objects.init(allocator, .{
-            .native_slots = self.actor_slots,
-            .native_player = &self.player_actor,
-            .view = view,
-            .level = &self.level,
-            .scene = &self.scene,
-            .camera_sector = pass.sector,
-            .pixels = pixels,
-            .lighting = pass.lighting,
-            .blend_table = self.blend(),
-            .links = &self.actor_links,
-            .source_to_entry = self.source_to_entry,
-            .angles = &self.angles,
-        }, self.actors);
-        defer objects.deinit();
-        var frame = try world.Frame.init(allocator, view, &self.angles, &self.level, &self.scene, self.textures, pixels, pass.lighting, .scalar, ticks);
-        defer frame.deinit();
-        frame.blend_table = self.blend();
-        frame.objects = &objects;
-        try frame.draw(pass.sector);
-        if (try self.loadActorsInSectors(allocator, frame.visited)) {
-            return self.renderView(allocator, view, pixels, ticks);
-        }
-        self.aim_count = 0;
-        for ([_][]const usize{ objects.aim_static[0..objects.aim_static_count], objects.aim_dynamic[0..objects.aim_dynamic_count] }) |list| {
-            for (list) |i| {
-                const point = objects.transformed[i];
-                self.aim_candidates[self.aim_count] = .{ .flags = self.actors[i].secondary_flags, .x = point.x, .y = point.y, .z = point.z, .height = self.actors[i].height };
-                self.aim_count += 1;
+    fn renderView(self: *Session, view: *camera.View, pixels: []u8, ticks: u32) anyerror![256]u32 {
+        // Drawing can reveal sectors whose actors are not loaded yet; they are
+        // loaded and the whole view is drawn again until nothing new shows.
+        // Each pass loads at least one sector, so this ends.
+        while (true) {
+            const pass = try self.beginView(view);
+            var objects = try object_render.Objects.initWith(.{
+                .native_slots = self.actor_slots,
+                .native_player = &self.player_actor,
+                .view = view,
+                .level = &self.level,
+                .scene = &self.scene,
+                .camera_sector = pass.sector,
+                .pixels = pixels,
+                .lighting = pass.lighting,
+                .blend_table = self.blend(),
+                .links = &self.actor_links,
+                .source_to_entry = self.source_to_entry,
+                .angles = &self.angles,
+            }, self.actors, self.actor_transformed, &self.render_workspace.object_sectors);
+            defer objects.deinit();
+            var frame = try world.Frame.init(self.render_workspace, view, &self.angles, &self.level, &self.scene, self.textures, pixels, pass.lighting, .scalar, ticks);
+            defer frame.deinit();
+            frame.blend_table = self.blend();
+            frame.objects = &objects;
+            try frame.draw(pass.sector);
+            if (try self.loadActorsInSectors(frame.visited)) continue;
+            self.aim_count = 0;
+            for ([_][]const usize{ objects.aim_static[0..objects.aim_static_count], objects.aim_dynamic[0..objects.aim_dynamic_count] }) |list| {
+                for (list) |i| {
+                    const point = objects.transformed[i];
+                    self.aim_candidates[self.aim_count] = .{ .flags = self.actors[i].secondary_flags, .x = point.x, .y = point.y, .z = point.z, .height = self.actors[i].height };
+                    self.aim_count += 1;
+                }
             }
+            self.rendered_sector_visits = frame.sector_visits;
+            self.endView(pass);
+            return self.palette;
         }
-        self.rendered_sector_visits = frame.sector_visits;
-        self.endView(pass);
-        return self.palette;
     }
 
     fn acquireInventorySounds(context: *anyopaque, definition: inventory_module.Definition, now: u32) anyerror!void {
@@ -2056,8 +2080,9 @@ pub const Session = struct {
             const ray = shooting.Ray{ .sector = shot.sector, .origin = shot.origin, .range = shot.range, .pitch = shot.pitch, .yaw = shot.yaw, .kind = @intFromEnum(shot.kind), .exclude_source = source };
             var actors = self.collisionActors();
             if (source != null) actors.player = enemy_session.playerBody(self);
-            const result = try shooting.trace(a, &self.level, &self.scene, &self.angles, actors, self.textures, ray);
-            defer result.deinit(a);
+            var events_buffer: interaction.RayEventBuffer = undefined;
+            var events = interaction.RayEvents.init(&events_buffer);
+            const result = try shooting.trace(&events, &self.level, &self.scene, &self.angles, actors, self.textures, ray);
             for (result.events) |event| try self.inf.event(&self.level, .{ .sector = event.sector, .wall = event.wall, .mask = event.mask, .object_id = event.object_id, .now_ms = self.animation_time });
             if (result.hit) |hit| {
                 switch (hit) {
@@ -2071,7 +2096,7 @@ pub const Session = struct {
                             found = true;
                             break;
                         };
-                        if (!found) try self.pending_hits.append(self.arena.allocator(), shooting.PendingHit.initFrom(source_index, source orelse shooting.local_player, &self.angles, damage, victim));
+                        if (!found) try self.pending_hits.append(shooting.PendingHit.initFrom(source_index, source orelse shooting.local_player, &self.angles, damage, victim));
                     },
                 }
                 if (shot.hit_sound) |sound| {
@@ -2083,7 +2108,7 @@ pub const Session = struct {
         }
     }
 
-    fn deliverActorMessage(self: *Session, allocator: std.mem.Allocator, audio: ?*audio_runtime.Runtime, message: ActorMessage) !void {
+    fn deliverActorMessage(self: *Session, allocator: std.mem.Allocator, audio: ?*audio_runtime.Runtime, message: session_queues.ActorMessage) !void {
         if (message.target == shooting.local_player) return;
         if (message.target >= self.actor_slots.len or self.removed_actors[message.target]) return;
         const actor = self.actor_slots[message.target] orelse return error.MissingScriptActor;
@@ -2176,8 +2201,8 @@ pub const Session = struct {
     }
 
     fn startDrain(self: *Session, allocator: std.mem.Allocator, now: u32) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try network_server.processRequests(self.server, self.router, .{ .now = now, .game_type = self.game_type, .mode = self.mode, .level_loaded = true, .allocator = allocator, .user_messages = &user_messages });
         if (user_messages.items.len != 0) return error.UnexpectedStartupMessage;
     }
@@ -2193,13 +2218,14 @@ pub const Session = struct {
         return level_module.Spawn.fromStart(&self.level, starts[starts.len - 1]);
     }
 
-    fn activatePlayer(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, actors: @import("../player/collision.zig").Actors, runtime: *script_runtime.Context) !void {
+    fn activatePlayer(self: *Session, packet: *const player_input.Packet, actors: @import("../player/collision.zig").Actors, runtime: *script_runtime.Context) !void {
         for ([_]player_input.Slot{ .use, .nudge }) |slot| {
             if (packet.get(slot).flags & player_input.pressed == 0) continue;
             const id: u32 = if (slot == .use) (try self.inventory.useSelected(runtime.effects) orelse continue) else 0;
-            const events = try interaction.activate(allocator, &self.level, &self.scene, &self.angles, self.textures, &self.player, actors, id);
-            defer allocator.free(events);
-            for (events) |event| try runtime.infEvent(event);
+            var events_buffer: interaction.RayEventBuffer = undefined;
+            var events = interaction.RayEvents.init(&events_buffer);
+            try interaction.activate(&events, &self.level, &self.scene, &self.angles, self.textures, &self.player, actors, id);
+            for (events.items) |event| try runtime.infEvent(event);
         }
     }
 
@@ -2227,17 +2253,6 @@ pub const Session = struct {
     fn blend(self: *const Session) ?[]const u8 {
         for (self.level.shades[1..]) |shade| if (shade != null) return &self.blend_table;
         return null;
-    }
-
-    fn loadVisibleActors(self: *Session, allocator: std.mem.Allocator) !void {
-        const pixels = try allocator.alloc(u8, 640 * 480);
-        defer allocator.free(pixels);
-        @memset(pixels, 0);
-        var geometry = try world.Frame.init(allocator, &self.view, &self.angles, &self.level, &self.scene, self.textures, pixels, self.lighting(), .scalar, 0);
-        defer geometry.deinit();
-        geometry.blend_table = self.blend();
-        try geometry.draw(self.player.sector);
-        _ = try self.loadActorsInSectors(allocator, geometry.visited);
     }
 
     fn acceptObject(self: *const Session, object: level_module.Object) bool {
@@ -2282,7 +2297,7 @@ pub const Session = struct {
         defer self.allocator.free(sectors);
         @memset(sectors, false);
         sectors[sector] = true;
-        _ = try self.loadActorsInSectors(self.allocator, sectors);
+        _ = try self.loadActorsInSectors(sectors);
     }
 
     fn loadEnemies(self: *Session, allocator: std.mem.Allocator) !void {
@@ -2346,7 +2361,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try startup.beginHost(a, std.testing.io, path, system);
     const audio = try audio_runtime.Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try std.testing.expectEqualStrings("drygulch", session.level_name);
     try std.testing.expectEqualStrings("NULL", session.level.music);
@@ -2360,7 +2375,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try audio.beginAmbient(&session.level, &session.objects, startup.difficulty);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try std.testing.expect(!startup.server.started);
     try std.testing.expect(session.stand_in);
     try std.testing.expectEqual(@as(usize, 0), session.player.sector);
@@ -2424,11 +2439,11 @@ test "mission restart restores the current level with retained globals and const
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const old = try Session.open(a, std.testing.io, path, system, &startup);
+    const old = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer old.deinit(a);
     try std.testing.expect(startup.server.started);
     try std.testing.expectEqual(@as(u32, 0x36a11), startup.server.starts[0][0]);
-    for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.items.len);
+    for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);
     const selected = old.inventory.selected_weapon;
     const loaded = old.inventory.slots[selected].?.loaded;
     old.inventory.health = 2;
@@ -2540,7 +2555,7 @@ test "bound campaign carry releases Ranch weapons through the retained sound ser
     _ = try startup.levelForDiagnostics();
 
     const departed = block: {
-        const old = try Session.openWithState(a, io, path, system, &startup, 90000, .{});
+        const old = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, 90000, .{});
         defer old.deinit(a);
         try old.bindAudio(audio);
         try audio.beginLevel(io, &old.level, old.geometry_archive, 90000);
@@ -2573,7 +2588,7 @@ test "bound campaign carry releases Ranch weapons through the retained sound ser
     const event = try ranch.levelForDiagnostics();
     try mounts.selectDisc(io, event.disc);
     try audio.remount(io, mounts.path(), mounts.system());
-    const fresh = try Session.openWithCampaignState(a, io, mounts.path(), mounts.system(), &ranch, 180000, departed.persistent, &carry);
+    const fresh = try Session.openWithCampaignState(a, @import("test_workspace.zig").get(), io, mounts.path(), mounts.system(), &ranch, 180000, departed.persistent, &carry);
     defer fresh.deinit(a);
 
     try std.testing.expectEqual(@as(u32, 0xc000), fresh.player_bind_flags);
@@ -2621,7 +2636,7 @@ test "bound Train restart registers its missing doubled door sound again" {
     const log_level = std.testing.log_level;
     std.testing.log_level = .err;
     defer std.testing.log_level = log_level;
-    const old = try Session.open(a, io, path, system, &startup);
+    const old = try Session.open(a, @import("test_workspace.zig").get(), io, path, system, &startup);
     defer old.deinit(a);
     try old.bindAudio(audio);
     const fresh = try old.restart(a, io, path, system, &startup, 90000);
@@ -2665,7 +2680,7 @@ test "campaign completion admits at SYS drain and retains its final frame" {
         defer startup.deinit(a);
         startup.server.completion_gate.last = sample.previous;
         _ = try startup.levelForDiagnostics();
-        const session = try Session.openWithState(a, io, path, system, &startup, sample.now -% 1, .{});
+        const session = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, sample.now -% 1, .{});
         defer session.deinit(a);
         try network_server.requestEndLevel(session.router);
         try session.advance(a, &.{}, 1);
@@ -2693,7 +2708,7 @@ test "SYS drain skips Train LAST_DOOR's TRIGGER and still admits END_LEVEL" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.openWithState(a, io, path, system, &startup, 20000, .{});
+    const session = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, 20000, .{});
     defer session.deinit(a);
     try session.inf.postSystem(.{ .code = 0x7d6 });
     try network_server.requestEndLevel(session.router);
@@ -2713,7 +2728,7 @@ test "INF audio captures pre-player message and post-player task listener phases
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const audio = audio_runtime.Runtime.open(a, std.testing.io, path, system) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
@@ -2781,7 +2796,7 @@ test "queued sounds precede handcar admission and retain their captured listener
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const sound = try audio_runtime.Runtime.open(a, std.testing.io, path, system);
     defer sound.deinit();
@@ -2790,8 +2805,8 @@ test "queued sounds precede handcar admission and retain their captured listener
     sound.engine.effects_volume = 127;
     const resource = try sound.register("thunk.wav");
     for (0..7) |_| _ = try sound.engine.start(resource, sound.waves.items[resource].sample_rate, .{ .priority = 64 }, 0);
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     var pending = Session.PendingAudio{ .session = session, .effects = &effects };
     var context = rail_audio.Context{ .state = &session.rail_audio_state, .runtime = sound, .now = 0, .before = .{ .context = &pending, .drain = Session.PendingAudio.drain } };
     const position: level_module.Vec3 = .{ .x = 0, .y = 0, .z = 0 };
@@ -2895,7 +2910,7 @@ test "live vertical tasks retain double-mirror wall heights" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const owned = session.arena.allocator();
     session.level = try level_module.Level.parse(owned, try session.geometry_archive.find("TRAIN.LVB", 0));
@@ -2907,6 +2922,7 @@ test "live vertical tasks retain double-mirror wall heights" {
         .value = 0,
         .runtime_flags = 3,
     }}), .classes = &.{}, .triggers = &.{} };
+    try session.inf.reserveLists();
     for (case.slaves) |slave| try session.inf.elevators[0].slaves.append(owned, .{ .sector = slave });
     session.enemies_loaded = true;
     @memset(session.loaded_actor_sectors, true);
@@ -2974,7 +2990,7 @@ test "live runtime flag clears survive unrelated light tasks" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const owned = session.arena.allocator();
     var held = for (session.inf.elevators) |elevator| {
@@ -2997,6 +3013,7 @@ test "live runtime flag clears survive unrelated light tasks" {
         .{ .target = .{ .sector = held.sector, .wall = 0 }, .flags = 0x04f00001 },
         .{ .target = .{ .sector = sectors[3] }, .flags = 0x04f00001 },
     }) };
+    try session.inf.reserveLists();
     try session.inf.elevators[1].slaves.append(owned, .{ .sector = sectors[1] });
     session.enemies_loaded = true;
     @memset(session.loaded_actor_sectors, true);
@@ -3023,8 +3040,8 @@ test "live runtime flag clears survive unrelated light tasks" {
     };
     try Check.state(session, held.sector, sectors, fixture.value.initial);
     for (fixture.value.samples) |sample| {
-        try session.inf.pending.append(owned, .{ .message = .{ .value = .{ .target = .{ .sector = held.sector, .wall = 0 }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
-        for (sectors) |sector| try session.inf.pending.append(owned, .{ .message = .{ .value = .{ .target = .{ .sector = sector }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
+        try session.inf.pending.append(.{ .message = .{ .value = .{ .target = .{ .sector = held.sector, .wall = 0 }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
+        for (sectors) |sector| try session.inf.pending.append(.{ .message = .{ .value = .{ .target = .{ .sector = sector }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
         session.inf.elevators[1].speed = sample.speed;
         session.inf.elevators[1].runtime_flags = if (sample.enabled) 3 else 0;
         try session.advance(a, &.{}, sample.now - session.animation_time);

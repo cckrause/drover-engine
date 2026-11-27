@@ -141,7 +141,8 @@ test "3DO constructors match GDYNAM GKNIFE and bare actor factories" {
         try std.testing.expectEqual(definition != null, constructed.pickup != null);
         if (constructed.pickup) |pickup| {
             var player: inventory.Inventory = .{};
-            var effects = inventory.Effects.init(a);
+            var effects_buffer: inventory.EffectBuffer = undefined;
+            var effects = inventory.Effects.init(&effects_buffer);
             try std.testing.expect(try player.take(&pickup, 0, &effects));
             const slot = player.find(if (std.mem.eql(u8, case[0], "GDYNAM")) "IDYNAM" else "IKNIFE");
             try std.testing.expect(slot != 0);

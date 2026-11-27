@@ -20,8 +20,76 @@ const raster = @import("raster.zig");
 const ripple = @import("ripple.zig");
 const m = @import("math.zig");
 
+/// The widest view a frame can draw; the game view is 640 pixels wide.
+pub const max_view_width = 640;
+/// Projected and visible walls per frame share one limit of 1384 entries.
+const max_frame_walls = 0x568;
+/// Portals are followed at most 140 sectors deep.
+const max_portal_depth = 0x8c;
+/// Depth strips kept per screen column.
+const depth_strips_per_column = 30;
+
+/// The largest shipped levels: Ranch has 679 sectors, Town 6171 walls and a
+/// Hideout sector 127 vertices. Larger levels are refused when they load.
+pub const max_level_sectors = 679;
+pub const max_level_walls = 6171;
+pub const max_sector_vertices = 127;
+
+/// Everything a frame draws with, reserved once when the program starts and
+/// reset by each frame, so drawing allocates nothing. Any session can use it,
+/// one frame at a time.
+pub const Workspace = struct {
+    in_use: bool = false,
+    edges: walls.EdgeList = undefined,
+    depth_strips: [max_view_width * depth_strips_per_column]walls.DepthStrip = undefined,
+    depth_counts: [max_view_width]u8 = undefined,
+    depth_furthest: [max_view_width]i16 = undefined,
+    top_y: [max_view_width]i32 = undefined,
+    bottom_y: [max_view_width]i32 = undefined,
+    dynamic_depths: [max_view_width * max_portal_depth]i16 = undefined,
+    view_top: [max_view_width]i16 = undefined,
+    view_bottom: [max_view_width]i16 = undefined,
+    /// The clip lines a sector hands to the sectors behind its portals, one
+    /// set per portal depth: only one sector per depth is being drawn at a time.
+    portal_clips: [max_portal_depth][4][max_view_width]i16 = undefined,
+    projected: [max_frame_walls]visibility.Wall = undefined,
+    filtered: [max_frame_walls]visibility.Wall = undefined,
+    transformed: [max_sector_vertices]projection.Vec2 = undefined,
+    active_flags: [max_level_walls]bool = undefined,
+    active: [max_level_sectors][]bool = undefined,
+    cached: [max_level_sectors]?[]visibility.Wall = undefined,
+    visited: [max_level_sectors]bool = undefined,
+    model_sectors: [max_level_sectors]bool = undefined,
+    completed: [max_level_sectors]bool = undefined,
+    /// Which sectors' actors the object pass has already placed in the view.
+    object_sectors: [max_level_sectors]bool = undefined,
+
+    /// The caller owns the result and frees it with `destroy`.
+    pub fn create(allocator: std.mem.Allocator) !*Workspace {
+        const self = try allocator.create(Workspace);
+        self.* = .{};
+        return self;
+    }
+
+    pub fn destroy(self: *Workspace, allocator: std.mem.Allocator) void {
+        std.debug.assert(!self.in_use);
+        allocator.destroy(self);
+    }
+
+    /// Refuses a level bigger than the storage was made for.
+    pub fn checkLevel(level: *const level_module.Level) !void {
+        if (level.sectors.len > max_level_sectors) return error.LevelTooLargeForRenderWorkspace;
+        var wall_count: usize = 0;
+        for (level.sectors) |sector| {
+            if (sector.vertices.len > max_sector_vertices) return error.LevelTooLargeForRenderWorkspace;
+            wall_count += sector.walls.len;
+        }
+        if (wall_count > max_level_walls) return error.LevelTooLargeForRenderWorkspace;
+    }
+};
+
 pub const Frame = struct {
-    arena: std.heap.ArenaAllocator,
+    workspace: *Workspace,
     view: *const camera.View,
     angles: *const camera.Angles,
     level: *const level_module.Level,
@@ -48,34 +116,38 @@ pub const Frame = struct {
     total_filtered: usize = 0,
     sector_visits: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, view: *const camera.View, angles: *const camera.Angles, level: *const level_module.Level, scene: *const scene_module.Scene, textures: []const texture.Texture, pixels: []u8, lighting: walls.Lighting, arithmetic: raster.SpanArithmetic, ticks: u32) !Frame {
+    /// Takes `workspace` until `deinit`; a second frame on the same workspace
+    /// is refused while this one is open.
+    pub fn init(workspace: *Workspace, view: *const camera.View, angles: *const camera.Angles, level: *const level_module.Level, scene: *const scene_module.Scene, textures: []const texture.Texture, pixels: []u8, lighting: walls.Lighting, arithmetic: raster.SpanArithmetic, ticks: u32) !Frame {
         if (pixels.len != @as(usize, @intCast(view.width)) * @as(usize, @intCast(view.height))) return error.InvalidFramebuffer;
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer arena.deinit();
-        const a = arena.allocator();
+        if (view.width > max_view_width) return error.ViewTooWideForRenderWorkspace;
+        if (workspace.in_use) return error.RenderWorkspaceInUse;
+        try Workspace.checkLevel(level);
         const width: usize = @intCast(view.width);
-        const active = try a.alloc([]bool, level.sectors.len);
-        for (active, level.sectors) |*flags, sector| {
-            flags.* = try a.alloc(bool, sector.walls.len);
-            @memset(flags.*, false);
+        const sectors = level.sectors.len;
+        var next: usize = 0;
+        for (workspace.active[0..sectors], level.sectors) |*flags, sector| {
+            flags.* = workspace.active_flags[next..][0..sector.walls.len];
+            next += sector.walls.len;
         }
-        const cached = try a.alloc(?[]visibility.Wall, level.sectors.len);
-        @memset(cached, null);
-        const visited = try a.alloc(bool, level.sectors.len);
-        @memset(visited, false);
-        const model_sectors = try a.alloc(bool, level.sectors.len);
-        @memset(model_sectors, false);
-        const completed = try a.alloc(bool, level.sectors.len);
-        @memset(completed, false);
-        const edges = try a.create(walls.EdgeList);
-        edges.* = .{ .view_top = view.top, .view_bottom = view.bottom, .top_limit = view.top - 1, .bottom_limit = view.bottom + 1 };
-        const depth_buffer = try walls.DepthBuffer.init(a, width);
-        const top_y = try a.alloc(i32, width);
-        const bottom_y = try a.alloc(i32, width);
-        const dynamic_depths = try a.alloc(i16, width * 140);
+        @memset(workspace.active_flags[0..next], false);
+        @memset(workspace.cached[0..sectors], null);
+        @memset(workspace.visited[0..sectors], false);
+        @memset(workspace.model_sectors[0..sectors], false);
+        @memset(workspace.completed[0..sectors], false);
+        workspace.edges = .{ .view_top = view.top, .view_bottom = view.bottom, .top_limit = view.top - 1, .bottom_limit = view.bottom + 1 };
+        const depth_buffer = walls.DepthBuffer{
+            .strips = workspace.depth_strips[0 .. width * depth_strips_per_column],
+            .counts = workspace.depth_counts[0..width],
+            .furthest = workspace.depth_furthest[0..width],
+        };
+        @memset(depth_buffer.counts, 0);
+        @memset(depth_buffer.furthest, 0);
+        const dynamic_depths = workspace.dynamic_depths[0 .. width * max_portal_depth];
         @memset(dynamic_depths, 0);
+        workspace.in_use = true;
         return .{
-            .arena = arena,
+            .workspace = workspace,
             .view = view,
             .angles = angles,
             .level = level,
@@ -86,29 +158,31 @@ pub const Frame = struct {
             .arithmetic = arithmetic,
             .ticks = ticks,
             .depth = depth_buffer,
-            .edges = edges,
-            .top_y = top_y,
-            .bottom_y = bottom_y,
-            .cached = cached,
-            .active = active,
-            .visited = visited,
-            .model_sectors = model_sectors,
-            .completed = completed,
+            .edges = &workspace.edges,
+            .top_y = workspace.top_y[0..width],
+            .bottom_y = workspace.bottom_y[0..width],
+            .cached = workspace.cached[0..sectors],
+            .active = workspace.active[0..sectors],
+            .visited = workspace.visited[0..sectors],
+            .model_sectors = workspace.model_sectors[0..sectors],
+            .completed = workspace.completed[0..sectors],
             .dynamic_depths = dynamic_depths,
         };
     }
 
+    /// Hands the workspace back. `visited` and the other workspace views are
+    /// not valid afterwards.
     pub fn deinit(self: *Frame) void {
-        self.arena.deinit();
+        std.debug.assert(self.workspace.in_use);
+        self.workspace.in_use = false;
         self.* = undefined;
     }
 
     pub fn draw(self: *Frame, sector: usize) !void {
         if (sector >= self.level.sectors.len) return error.InvalidCameraSector;
-        const a = self.arena.allocator();
         const width: usize = @intCast(self.view.width);
-        const top = try a.alloc(i16, width);
-        const bottom = try a.alloc(i16, width);
+        const top = self.workspace.view_top[0..width];
+        const bottom = self.workspace.view_bottom[0..width];
         @memset(top, @intCast(self.view.top));
         @memset(bottom, @intCast(self.view.bottom));
         const dynamic_depth = self.dynamic_depths[0..width];
@@ -128,11 +202,12 @@ pub const Frame = struct {
 
     fn projected(self: *Frame, sector_index: usize) ![]visibility.Wall {
         if (self.cached[sector_index]) |cached| return cached;
-        const a = self.arena.allocator();
         const sector = self.level.sectors[sector_index];
-        const transformed = try a.alloc(projection.Vec2, sector.vertices.len);
+        const transformed = self.workspace.transformed[0..sector.vertices.len];
         try projection.transform(self.view, sector.vertices, transformed);
-        const result = try a.alloc(visibility.Wall, sector.walls.len);
+        // Walls past the frame limit are still counted, so running out
+        // fails below exactly when the total goes over it.
+        const result = self.workspace.projected[self.total_projected..];
         var count: usize = 0;
         const own = self.scene.sectors[sector_index];
         const own_slope = own.floor_slope != null or own.ceiling_slope != null;
@@ -145,18 +220,17 @@ pub const Frame = struct {
                 }
             }
             if (try projection.project(self.view, transformed[wall.v1], transformed[wall.v2], state.length, index, slopes)) |p| {
-                result[count] = .{ .projected = p, .first = transformed[wall.v1], .second = transformed[wall.v2] };
+                if (count < result.len) result[count] = .{ .projected = p, .first = transformed[wall.v1], .second = transformed[wall.v2] };
                 count += 1;
             }
         }
         self.total_projected += count;
-        if (self.total_projected > 0x568) return error.MaximumProjectedWalls;
+        if (self.total_projected > max_frame_walls) return error.MaximumProjectedWalls;
         self.cached[sector_index] = result[0..count];
         return result[0..count];
     }
 
     fn drawSector(self: *Frame, sector_index: usize, window: planes.ClipWindow, entrance: ?visibility.Wall, minimum_z: f32, depth: usize, inherited_dynamic: bool, dynamic_depth: []i16) anyerror!void {
-        const a = self.arena.allocator();
         self.visited[sector_index] = true;
         self.sector_visits += 1;
         var sector = self.level.sectors[sector_index];
@@ -172,7 +246,8 @@ pub const Frame = struct {
         const dynamic = inherited_dynamic or self.model_sectors[sector_index];
         const source = try self.projected(sector_index);
         for (source) |*wall| wall.active = self.active[sector_index][wall.projected.wall_index];
-        const filtered = try a.alloc(visibility.Wall, 0x568 - self.total_filtered);
+        // Visible walls of sectors further in follow this sector's in the same list.
+        const filtered = self.workspace.filtered[self.total_filtered..];
         const bounds = visibility.Window{ .left = window.left, .right = window.right, .minimum_z = minimum_z };
         const count = if (state.runtime_flags & 0x40000000 != 0)
             visibility.convex(source, filtered, bounds, entrance)
@@ -264,11 +339,12 @@ pub const Frame = struct {
         }
         try planes.draw(plane_ctx, &sector, .ceiling, state.ceiling_slope, ceiling_override);
         try planes.draw(plane_ctx, &sector, .floor, state.floor_slope, floor_override);
-        if (portals.count != 0 and depth < 0x8c) {
-            const top = try a.dupe(i16, window.top_clip);
-            const bottom = try a.dupe(i16, window.bottom_clip);
-            const alternate_top = if (double_adjoins) try a.dupe(i16, window.top_clip) else top;
-            const alternate_bottom = if (double_adjoins) try a.dupe(i16, window.bottom_clip) else bottom;
+        if (portals.count != 0 and depth < max_portal_depth) {
+            const clips = &self.workspace.portal_clips[depth];
+            const top = copyClip(&clips[0], window.top_clip);
+            const bottom = copyClip(&clips[1], window.bottom_clip);
+            const alternate_top = if (double_adjoins) copyClip(&clips[2], window.top_clip) else top;
+            const alternate_bottom = if (double_adjoins) copyClip(&clips[3], window.bottom_clip) else bottom;
             for (portals.entries[0..portals.count]) |portal| {
                 clipPortal(portal.edge, window, if (portal.flags == 8) alternate_top else top, if (portal.flags == 8) alternate_bottom else bottom);
             }
@@ -386,6 +462,12 @@ fn lessThan(_: void, first: visibility.Wall, second: visibility.Wall) bool {
     return first.projected.visible_left < second.projected.visible_left;
 }
 
+fn copyClip(storage: *[max_view_width]i16, clip: []const i16) []i16 {
+    const copy = storage[0..clip.len];
+    @memcpy(copy, clip);
+    return copy;
+}
+
 fn findSource(source: []const visibility.Wall, index: usize) visibility.Wall {
     for (source) |wall| if (wall.projected.wall_index == index) return wall;
     unreachable;
@@ -443,12 +525,17 @@ fn checkGeometryReference(initial_state: bool) !void {
     const pixels = try allocator.alloc(u8, 640 * 480);
     defer allocator.free(pixels);
     @memset(pixels, 0);
-    var frame = try Frame.init(allocator, &view, &angles, &level, &scene, textures, pixels, .{ .force_depth = 0, .depth_bias = 0, .depth_strength = 0, .ambient_bias = 0, .ambient = 0, .ambient_min = 0, .color_map = cmap, .depth_map = &dmap }, .scalar, 0);
-    defer frame.deinit();
+    const workspace = try Workspace.create(allocator);
+    defer workspace.destroy(allocator);
+    const lighting = walls.Lighting{ .force_depth = 0, .depth_bias = 0, .depth_strength = 0, .ambient_bias = 0, .ambient = 0, .ambient_min = 0, .color_map = cmap, .depth_map = &dmap };
+    var frame = try Frame.init(workspace, &view, &angles, &level, &scene, textures, pixels, lighting, .scalar, 0);
+    var frame_open = true;
+    defer if (frame_open) frame.deinit();
     try frame.draw(410);
     try std.testing.expectEqual(@as(usize, 65), frame.sector_visits);
     try std.testing.expectEqual(@as(usize, if (initial_state) 101 else 100), frame.total_projected);
     try std.testing.expectEqual(@as(usize, if (initial_state) 97 else 96), frame.total_filtered);
+    const frame_counts = [3]usize{ frame.sector_visits, frame.total_projected, frame.total_filtered };
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pixels, &hash, .{});
     var expected: [32]u8 = undefined;
@@ -457,6 +544,55 @@ fn checkGeometryReference(initial_state: bool) !void {
     else
         "43c6694773cf169c571eaf2a8a3b83b5e735634f40bd29a63cc22d2e73b1371b");
     try std.testing.expectEqualSlices(u8, &expected, &hash);
+    frame.deinit();
+    frame_open = false;
+
+    // A second frame reuses the same storage and draws the same picture.
+    @memset(pixels, 0);
+    var again = try Frame.init(workspace, &view, &angles, &level, &scene, textures, pixels, lighting, .scalar, 0);
+    defer again.deinit();
+    try again.draw(410);
+    try std.testing.expectEqual(frame_counts, [3]usize{ again.sector_visits, again.total_projected, again.total_filtered });
+    var hash_again: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(pixels, &hash_again, .{});
+    try std.testing.expectEqualSlices(u8, &expected, &hash_again);
+}
+
+test "render workspace: one frame at a time, a level and a view that fit" {
+    const a = std.testing.allocator;
+    var level = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    const angles = camera.Angles.init();
+    var scene = try scene_module.Scene.init(a, &level, &angles);
+    defer scene.deinit();
+    var view = try camera.View.init(a, &angles, 64, 48);
+    defer view.deinit(a);
+    var pixels: [64 * 48]u8 = undefined;
+    const lighting = walls.Lighting{ .force_depth = 0, .depth_bias = 0, .depth_strength = 0, .ambient_bias = 0, .ambient = 0, .ambient_min = 0, .color_map = null, .depth_map = null };
+    const workspace = try Workspace.create(a);
+    defer workspace.destroy(a);
+
+    var frame = try Frame.init(workspace, &view, &angles, &level, &scene, &.{}, &pixels, lighting, .scalar, 0);
+    try std.testing.expectError(error.RenderWorkspaceInUse, Frame.init(workspace, &view, &angles, &level, &scene, &.{}, &pixels, lighting, .scalar, 0));
+    frame.deinit();
+    var reopened = try Frame.init(workspace, &view, &angles, &level, &scene, &.{}, &pixels, lighting, .scalar, 0);
+    reopened.deinit();
+
+    var wide = try camera.View.init(a, &angles, max_view_width + 1, 2);
+    defer wide.deinit(a);
+    var wide_pixels: [(max_view_width + 1) * 2]u8 = undefined;
+    try std.testing.expectError(error.ViewTooWideForRenderWorkspace, Frame.init(workspace, &wide, &angles, &level, &scene, &.{}, &wide_pixels, lighting, .scalar, 0));
+
+    // One vertex more than the biggest shipped sector has.
+    var big_walls = [_]level_module.Wall{std.mem.zeroes(level_module.Wall)};
+    var big_vertices: [max_sector_vertices + 1]level_module.Vec2 = @splat(.{ .x = 0, .z = 0 });
+    var big_sectors = [_]level_module.Sector{std.mem.zeroes(level_module.Sector)};
+    big_sectors[0].walls = &big_walls;
+    big_sectors[0].vertices = &big_vertices;
+    var big = std.mem.zeroInit(level_module.Level, .{ .arena = std.heap.ArenaAllocator.init(a) });
+    big.sectors = &big_sectors;
+    try std.testing.expectError(error.LevelTooLargeForRenderWorkspace, Workspace.checkLevel(&big));
+    try std.testing.expectError(error.LevelTooLargeForRenderWorkspace, Frame.init(workspace, &view, &angles, &big, &scene, &.{}, &pixels, lighting, .scalar, 0));
+    try std.testing.expect(!workspace.in_use);
 }
 
 fn testAsset(comptime name: []const u8) ![]u8 {

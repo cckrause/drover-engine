@@ -29,6 +29,8 @@ test "secret discovery matches player ticks and one-shot ordering" {
     var sectors = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
     var scene: scene_module.Scene = undefined;
     scene.sectors = &sectors;
+    var collision_check: u32 = 0;
+    scene.collision_check = &collision_check;
     for (parsed.value.samples) |sample| {
         sectors[0].runtime_flags = sample.initial[0];
         var state = secrets.State{ .found = sample.initial[1] };
@@ -58,7 +60,7 @@ test "Hideout secret discovery updates the live HUD once and retains primary fla
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     try std.testing.expectEqual(@as(u32, 4), session.secrets.total);
     const sector = session.player.sector;

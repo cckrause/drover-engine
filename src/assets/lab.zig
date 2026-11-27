@@ -108,6 +108,24 @@ pub const Archive = struct {
     }
 };
 
+/// Longest resource name a lookup buffer holds; the save format stores names
+/// with a one-byte length.
+pub const max_name_len = 255;
+
+pub const NameBuffer = [max_name_len]u8;
+
+/// Upper-cases `name` into `buffer`, for cache keys that are only copied
+/// when a new entry is stored.
+pub fn upperName(buffer: *NameBuffer, name: []const u8) ![]const u8 {
+    if (name.len > buffer.len) return error.ResourceNameTooLong;
+    return std.ascii.upperString(buffer[0..name.len], name);
+}
+
+/// Formats a resource name into `buffer` without keeping a copy.
+pub fn printName(buffer: *NameBuffer, comptime format: []const u8, args: anytype) ![]const u8 {
+    return std.fmt.bufPrint(buffer, format, args) catch error.ResourceNameTooLong;
+}
+
 fn read32(bytes: []const u8, offset: usize) u32 {
     return std.mem.readInt(u32, bytes[offset..][0..4], .little);
 }
@@ -181,4 +199,13 @@ test "directory, string and payload extents are validated before lookup" {
     try std.testing.expectError(error.TruncatedArchive, Archive.init(&data));
     std.mem.writeInt(u32, data[8..12], 0xffffffff, .little);
     try std.testing.expectError(error.TruncatedArchive, Archive.init(&data));
+}
+
+test "lookup names are built in a fixed buffer and refused when too long" {
+    var buffer: NameBuffer = undefined;
+    try std.testing.expectEqualStrings("PDYNAM.3DO", try upperName(&buffer, "pdynam.3do"));
+    try std.testing.expectEqualStrings("bang.wav", try printName(&buffer, "{s}.wav", .{"bang"}));
+    const long = "x" ** (max_name_len + 1);
+    try std.testing.expectError(error.ResourceNameTooLong, upperName(&buffer, long));
+    try std.testing.expectError(error.ResourceNameTooLong, printName(&buffer, "{s}", .{long}));
 }

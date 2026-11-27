@@ -16,11 +16,20 @@ const Runtime = @import("../audio/runtime.zig").Runtime;
 const Device = @import("audio.zig").Device;
 const c = sdl.c;
 
+/// The save menu's view of the nine slots: each title and thumbnail, read
+/// from the start of the file. A save's full body is read only when it is
+/// chosen.
 pub const Catalog = struct {
     arena: std.heap.ArenaAllocator,
     directory: []const u8,
     slots: [9]native.Slot = @splat(.{}),
-    files: [9]?[]const u8 = @splat(null),
+    present: [9]bool = @splat(false),
+
+    /// Bytes before the body: the module marker, the title, the thumbnail
+    /// size and a thumbnail of the size the menu shows.
+    const header_bytes = 12 + 15 + 4 + 4 + native.thumbnail_width * native.thumbnail_height;
+    /// Largest save file accepted when one is loaded.
+    const max_save_bytes = 64 * 1024 * 1024;
 
     pub fn open(a: std.mem.Allocator, io: std.Io) !Catalog {
         var result: Catalog = .{ .arena = std.heap.ArenaAllocator.init(a), .directory = undefined };
@@ -28,17 +37,24 @@ pub const Catalog = struct {
         const arena = result.arena.allocator();
         const executable_directory = try std.process.executableDirPathAlloc(io, arena);
         result.directory = try std.fs.path.join(arena, &.{ executable_directory, "SAVE" });
+        var header: [header_bytes]u8 = undefined;
         for (0..9) |slot| {
-            const path = try result.filename(arena, slot);
-            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+            var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+            const path = try result.filenameInto(&path_buffer, slot);
+            const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
                 error.FileNotFound => continue,
                 else => return err,
             };
-            result.slots[slot] = readSlot(bytes) catch |err| {
+            defer file.close(io);
+            const size = try file.length(io);
+            const length = try file.readPositionalAll(io, header[0..@intCast(@min(size, header_bytes))], 0);
+            var slot_value = readSlot(header[0..length], size) catch |err| {
                 std.log.err("save slot {d}: {s}", .{ slot, @errorName(err) });
                 continue;
             };
-            result.files[slot] = bytes;
+            if (slot_value.thumbnail) |thumbnail| slot_value.thumbnail = try arena.dupe(u8, thumbnail);
+            result.slots[slot] = slot_value;
+            result.present[slot] = true;
         }
         return result;
     }
@@ -47,18 +63,27 @@ pub const Catalog = struct {
         self.arena.deinit();
     }
 
-    pub fn write(self: *const Catalog, a: std.mem.Allocator, io: std.Io, slot: usize, bytes: []const u8) !void {
-        const path = try self.filename(a, slot);
-        defer a.free(path);
+    /// Reads the whole save in `slot`; the caller frees it.
+    pub fn read(self: *const Catalog, a: std.mem.Allocator, io: std.Io, slot: usize) ![]u8 {
+        if (slot >= 9 or !self.present[slot]) return error.EmptySaveSlot;
+        var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try self.filenameInto(&path_buffer, slot);
+        return std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(max_save_bytes));
+    }
+
+    pub fn write(self: *const Catalog, io: std.Io, slot: usize, bytes: []const u8) !void {
+        var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try self.filenameInto(&path_buffer, slot);
         try std.Io.Dir.cwd().createDirPath(io, self.directory);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
     }
 
-    fn filename(self: *const Catalog, a: std.mem.Allocator, slot: usize) ![]u8 {
+    fn filenameInto(self: *const Catalog, buffer: *[std.fs.max_path_bytes]u8, slot: usize) ![]const u8 {
         if (slot >= 9) return error.InvalidSaveSlot;
         var name: [11]u8 = "SAVE000.OSG".*;
         name[6] = '0' + @as(u8, @intCast(slot));
-        return std.fs.path.join(a, &.{ self.directory, &name });
+        var allocator = std.heap.FixedBufferAllocator.init(buffer);
+        return std.fs.path.join(allocator.allocator(), &.{ self.directory, &name }) catch error.NameTooLong;
     }
 };
 
@@ -122,7 +147,8 @@ pub fn run(a: std.mem.Allocator, archive: lab.Archive, mode: native.Mode, catalo
     }
 }
 
-fn readSlot(bytes: []const u8) !native.Slot {
+/// `bytes` is the start of a save whose whole file is `file_size` bytes long.
+fn readSlot(bytes: []const u8, file_size: u64) !native.Slot {
     var reader: stream.Reader = .{ .bytes = bytes };
     try reader.marker(0x42534c4f, 1, 2);
     var slot: native.Slot = .{};
@@ -137,8 +163,28 @@ fn readSlot(bytes: []const u8) !native.Slot {
     const width = try reader.integer(u32);
     const height = try reader.integer(u32);
     const count = std.math.mul(u32, width, height) catch return error.InvalidSaveThumbnail;
-    if (count > bytes.len - reader.position) return error.TruncatedSaveGame;
+    if (count > file_size - reader.position) return error.TruncatedSaveGame;
     if (width == native.thumbnail_width and height == native.thumbnail_height)
         slot.thumbnail = bytes[reader.position..][0..count];
     return slot;
+}
+
+test "a slot is read from the start of its file alone" {
+    var bytes: [Catalog.header_bytes]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], 0x42534c4f, .little);
+    std.mem.writeInt(u32, bytes[4..8], 1, .little);
+    std.mem.writeInt(u32, bytes[8..12], 2, .little);
+    @memcpy(bytes[12..18], "saved\x01");
+    std.mem.writeInt(u32, bytes[27..31], native.thumbnail_width, .little);
+    std.mem.writeInt(u32, bytes[31..35], native.thumbnail_height, .little);
+    bytes[35] = 7;
+    const slot = try readSlot(&bytes, bytes.len + 1000);
+    try std.testing.expectEqualStrings("SAVED", slot.description[0..5]);
+    try std.testing.expectEqual(@as(u8, 0), slot.description[5]);
+    try std.testing.expectEqual(@as(u8, 7), slot.thumbnail.?[0]);
+    try std.testing.expectError(error.TruncatedSaveGame, readSlot(bytes[0..35], 40));
+    std.mem.writeInt(u32, bytes[27..31], 1, .little);
+    std.mem.writeInt(u32, bytes[31..35], 1, .little);
+    const small = try readSlot(bytes[0..35], 36);
+    try std.testing.expect(small.thumbnail == null);
 }

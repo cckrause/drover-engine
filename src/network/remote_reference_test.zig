@@ -26,7 +26,7 @@ test "router sends to and receives from other machines as the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var driver: Driver = .{ .allocator = a };
     defer driver.deinit();
@@ -65,6 +65,8 @@ test "router sends to and receives from other machines as the reference" {
             try std.testing.expectEqual(int(op, "result"), @as(u32, switch (posted) {
                 .queued, .sent, .multiplexed => 0,
                 .invalid_client, .no_session => 1,
+                // The reference never posts a part too large to multiplex.
+                .too_large => return error.TestUnexpectedResult,
             }));
             try std.testing.expectEqual(op.get("logs").?.array.items.len != 0, posted == .invalid_client);
             var after: [0x800]u8 = undefined;
@@ -127,14 +129,14 @@ test "router sends to and receives from other machines as the reference" {
 
 test "the router refuses network packets too short to hold what it reads" {
     const a = std.testing.allocator;
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     const Short = struct {
         var packets = [_][]const u8{ "G", "G0123456789abcde", "S", "G0123456789abcdef" };
 
         var next: usize = 0;
 
-        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) void {}
+        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) anyerror!void {}
 
         fn get(_: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {
             if (next == packets.len) return 0;

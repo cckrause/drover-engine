@@ -9,6 +9,17 @@
 //! STOP still stops the script.
 
 const std = @import("std");
+const FixedList = @import("../util/fixed_list.zig").FixedList;
+
+/// Textures and sounds one advance may report: more than ten seconds of
+/// catching up at the fastest shipped rate (24 frames a second).
+pub const max_events = 256;
+pub const Events = FixedList(Event, error{TooManyAtxEvents});
+pub const EventBuffer = [max_events]Event;
+
+/// Steps an advance may take between two textures before it must have
+/// repeated itself. No script in the test suite needed more than one.
+const max_control_steps = 256;
 
 pub const Instruction = union(enum) {
     go_to: i32,
@@ -75,7 +86,7 @@ pub const State = struct {
     last_tick: u32 = 0,
     flags: u16,
 
-    pub fn tick(self: *State, program: Animation, now: u32, events: *std.array_list.Managed(Event)) !void {
+    pub fn tick(self: *State, program: Animation, now: u32, events: *Events) !void {
         if (now < self.last_tick) return error.AtxClockMovedBackwards;
         const count = ((now - self.last_tick) *% @as(u32, @bitCast(self.rate))) / 1000;
         if (count != 0) {
@@ -84,7 +95,7 @@ pub const State = struct {
         }
     }
 
-    pub fn message(self: *State, program: Animation, code: u32, arg1: i32, now: u32, events: *std.array_list.Managed(Event)) !void {
+    pub fn message(self: *State, program: Animation, code: u32, arg1: i32, now: u32, events: *Events) !void {
         const destination: i32 = switch (code) {
             0x7d7, 0x7e7, 0x7ea => -1,
             0x7d8, 0x7e9 => -2,
@@ -106,26 +117,18 @@ pub const State = struct {
         try self.advance(program, -1, now, events);
     }
 
-    pub fn advance(self: *State, program: Animation, amount: i32, now: u32, events: *std.array_list.Managed(Event)) !void {
+    pub fn advance(self: *State, program: Animation, amount: i32, now: u32, events: *Events) !void {
         const sign: u32 = @bitCast(amount >> 31);
         const requested = (@as(u32, @bitCast(amount)) ^ sign) -% sign;
         var remaining = requested;
         const last: u32 = @intCast(program.instructions.len - 1);
-        const ControlState = struct {
-            pc: u32,
-            rate: i32,
-            last_tick: u32,
-            remaining: u32,
-        };
-        var controls = std.AutoHashMap(ControlState, void).init(events.allocator);
-        defer controls.deinit();
+        var controls: ControlSteps = .{};
         while (remaining != 0 and (amount < 0 or self.flags & 0x100 == 0)) {
             if (self.pc >= program.instructions.len) return error.InvalidAtxInstructionIndex;
             if (program.instructions[self.pc] == .texture) {
-                controls.clearRetainingCapacity();
+                controls.count = 0;
             } else if (program.instructions[self.pc] != .stop) {
-                const previous = try controls.getOrPut(.{ .pc = self.pc, .rate = self.rate, .last_tick = self.last_tick, .remaining = remaining });
-                if (previous.found_existing) return error.InvalidAtxControlFlow;
+                try controls.visit(.{ .pc = self.pc, .rate = self.rate, .last_tick = self.last_tick, .remaining = remaining });
             }
             switch (program.instructions[self.pc]) {
                 .go_to => |destination| {
@@ -152,6 +155,30 @@ pub const State = struct {
             }
             self.pc = if (self.pc < last) self.pc + 1 else last;
         }
+    }
+};
+
+/// The steps since the last texture. Reaching one of them again with the same
+/// timing means the script loops without showing anything.
+const ControlSteps = struct {
+    const Step = struct {
+        pc: u32,
+        rate: i32,
+        last_tick: u32,
+        remaining: u32,
+    };
+
+    steps: [max_control_steps]Step = undefined,
+    count: usize = 0,
+
+    fn visit(self: *ControlSteps, step: Step) !void {
+        std.debug.assert(self.count <= self.steps.len);
+        for (self.steps[0..self.count]) |seen| {
+            if (std.meta.eql(seen, step)) return error.InvalidAtxControlFlow;
+        }
+        if (self.count == self.steps.len) return error.AtxControlFlowTooLong;
+        self.steps[self.count] = step;
+        self.count += 1;
     }
 };
 

@@ -40,14 +40,14 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         var startup = try campaign.Startup.prepare(a, system, case[0]);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), io, data_path, system, &startup);
         defer session.deinit(a);
         session.view.bottom = 479;
         try std.testing.expect(session.actors.len >= case[1]);
         try std.testing.expectEqual(@as(usize, 1), startup.skipped_movies);
         try std.testing.expectEqual(@as(i16, 8034), session.view.yaw);
         @memset(pixels, 0);
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         var actual: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         var expected: [32]u8 = undefined;
@@ -55,16 +55,19 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         try std.testing.expectEqualSlices(u8, &expected, &actual);
         try std.testing.expectEqual(@as(usize, 65), session.rendered_sector_visits);
         @memset(pixels, 17);
-        _ = try session.renderWorld(a, pixels, 0);
+        // A frame that reveals nothing new allocates nothing at all.
+        const level_storage = session.arena.queryCapacity();
+        _ = try session.renderWorld(pixels, 0);
+        try std.testing.expectEqual(level_storage, session.arena.queryCapacity());
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         try std.testing.expectEqualSlices(u8, &expected, &actual);
         const yaw = session.player.yaw;
         session.player.yaw +%= 0x2000;
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try std.testing.expect(session.actors.len > case[1]);
         const loaded_count = session.actors.len;
         session.player.yaw = yaw;
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try std.testing.expectEqual(loaded_count, session.actors.len);
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         try std.testing.expectEqualSlices(u8, &expected, &actual);
@@ -91,19 +94,19 @@ test "campaign HUD and weapon use the reference viewport and independently rende
         var startup = try campaign.Startup.prepare(a, system, case[0]);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
         defer session.deinit(a);
         try std.testing.expectEqual(@as(i32, 439), session.view.bottom);
         try std.testing.expectEqual(@as(i32, 240), session.view.center_y);
         @memset(pixels, 0);
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try expectFrameHash(pixels, case[1]);
         @memset(pixels, 0);
-        _ = try session.render(a, pixels, 0);
+        _ = try session.render(pixels, 0);
         try expectFrameHash(pixels, case[2]);
         session.animation_time = 500;
         @memset(pixels, 0);
-        _ = try session.render(a, pixels, 0);
+        _ = try session.render(pixels, 0);
         try expectFrameHash(pixels, case[3]);
     }
 }
@@ -124,7 +127,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     session.view.bottom = 479;
     for (session.scene.sectors) |*sector| {
@@ -134,7 +137,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
     @memset(pixels, 0);
-    var frame = try @import("backends/software/world.zig").Frame.init(a, &session.view, &session.angles, &session.level, &session.scene, session.textures, pixels, .{
+    var frame = try @import("backends/software/world.zig").Frame.init(session.render_workspace, &session.view, &session.angles, &session.level, &session.scene, session.textures, pixels, .{
         .force_depth = 0,
         .depth_bias = 0,
         .depth_strength = 0,
@@ -192,7 +195,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const instance = for (session.texture_animations.instances) |*instance| {
         if (instance.target.wall != null and instance.slot == 1 and std.ascii.eqlIgnoreCase(session.level.textures[instance.resource], "HAWIN2.ATX")) break instance;
@@ -203,7 +206,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
     const untouched = session.level.sectors[sibling.target.sector].walls[sibling.target.wall.?].mid.texture;
     const animation = session.textures[instance.resource].animation.?;
     for (samples[0..7]) |sample| {
-        if (sample.action.message) |code| try session.inf.pending.append(session.inf.arena.allocator(), .{ .message = .{
+        if (sample.action.message) |code| try session.inf.pending.append(.{ .message = .{
             .value = .{ .target = .{ .sector = instance.target.sector, .wall = instance.target.wall }, .code = code, .event_mask = 0x2000, .arg1 = sample.action.arg1 },
             .entity_mask = 0xffffffff,
         } });
@@ -243,7 +246,7 @@ test "player input advances the loaded level and updates the software camera" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const before = session.player.position;
     var input: @import("../player/input.zig").State = .{ .previous_time = 1000 };
@@ -262,7 +265,7 @@ test "player input advances the loaded level and updates the software camera" {
     try std.testing.expectEqual(session.player.eyePosition().y, session.view.y);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, now);
+    _ = try session.render(pixels, now);
     try std.testing.expect(session.rendered_sector_visits > 0);
     const player_before = session.player;
     try session.advance(a, &.{}, 0);
@@ -281,7 +284,7 @@ test "walking past adjoining Hideout sectors keeps collision and rendering activ
     var startup = try campaign.Startup.prepare(a, system, .bad);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
@@ -292,12 +295,12 @@ test "walking past adjoining Hideout sectors keeps collision and rendering activ
     for (0..240) |tick| {
         try session.advance(a, &packet, 16);
         if (tick == 218) try std.testing.expectEqual(@as(usize, 405), session.player.sector);
-        if (tick >= 215 and tick <= 220) _ = try session.render(a, pixels, @intCast(tick * 16));
+        if (tick >= 215 and tick <= 220) _ = try session.render(pixels, @intCast(tick * 16));
     }
     try std.testing.expect(session.player.position.z < 189);
     try std.testing.expectEqual(session.player.position.x, session.view.x);
     try std.testing.expectEqual(session.player.position.z, session.view.z);
-    _ = try session.render(a, pixels, 240 * 16);
+    _ = try session.render(pixels, 240 * 16);
 }
 
 test "backward walking and left strafing reveal animated decorations after turning" {
@@ -313,7 +316,7 @@ test "backward walking and left strafing reveal animated decorations after turni
         var startup = try campaign.Startup.prepare(a, system, .good);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
         defer session.deinit(a);
         const pixels = try a.alloc(u8, 640 * 480);
         defer a.free(pixels);
@@ -332,7 +335,7 @@ test "backward walking and left strafing reveal animated decorations after turni
             }
             const packet = try input.sample(now, .{});
             try session.advance(a, &packet, 16);
-            _ = try session.render(a, pixels, now);
+            _ = try session.render(pixels, now);
             now += 16;
         }
         try std.testing.expectEqual(@as(usize, 410), session.player.sector);

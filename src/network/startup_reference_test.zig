@@ -50,14 +50,14 @@ test "single-player start-up requests match the reference server" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var server: server_module.Server = .{};
     var game_type: u32 = 0;
     var mode: u32 = 0;
     var loaded = false;
-    var user_messages: std.ArrayList(i32) = .empty;
-    defer user_messages.deinit(a);
+    var user_messages_buffer: server_module.UserMessageBuffer = undefined;
+    var user_messages = server_module.UserMessages.init(&user_messages_buffer);
     var stopped = false;
     for (root.get("ops").?.array.items) |item| {
         const op = item.object;

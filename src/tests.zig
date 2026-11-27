@@ -8,6 +8,10 @@
 const std = @import("std");
 
 test {
+    _ = @import("memory/layout.zig");
+    _ = @import("util/fixed_list.zig");
+    _ = @import("platform/MemoryBudget.zig");
+    _ = @import("platform/c_memory.zig");
     _ = @import("audio/registration.zig");
     _ = @import("audio/level_ownership.zig");
     _ = @import("save/sound.zig");
@@ -29,12 +33,14 @@ test {
     _ = @import("save/game_test.zig");
     _ = @import("projectile/runtime_test.zig");
     _ = @import("player/inventory_interaction_test.zig");
+    _ = @import("render/play_memory_test.zig");
     _ = @import("enemy/config_test.zig");
     _ = @import("enemy/generator.zig");
     _ = @import("enemy/sanchez_test.zig");
     _ = @import("enemy/perception_test.zig");
     _ = @import("enemy/broadcast_test.zig");
     _ = @import("enemy/physics_test.zig");
+    _ = @import("enemy/lifecycle_test.zig");
     _ = @import("enemy/blood_test.zig");
     _ = @import("enemy/blood_nan_test.zig");
     _ = @import("enemy/explosion_fragment_test.zig");
@@ -56,6 +62,7 @@ test {
     _ = @import("audio/rail.zig");
     _ = @import("platform/audio_mix.zig");
     _ = @import("platform/mission.zig");
+    _ = @import("platform/saved_game.zig");
     _ = @import("video/san.zig");
     _ = @import("video/audio_stream.zig");
     _ = @import("video/playback.zig");
@@ -111,6 +118,7 @@ test {
     _ = @import("render/backends/software/walls.zig");
     _ = @import("render/backends/software/world.zig");
     _ = @import("render/session.zig");
+    _ = @import("render/network_actors.zig");
     _ = @import("render/texture_animation.zig");
     _ = @import("render/actor_links.zig");
     _ = @import("render/objects.zig");
@@ -132,6 +140,7 @@ test {
     _ = @import("ui/loading_display.zig");
     _ = @import("network/message.zig");
     _ = @import("network/router.zig");
+    _ = @import("network/message_store.zig");
     _ = @import("network/server.zig");
     _ = @import("network/router_reference_test.zig");
     _ = @import("network/startup_reference_test.zig");
@@ -246,7 +255,7 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         try std.testing.expectEqual(@as(u32, 4), startup.engine.previous_scenario);
         try std.testing.expectEqual(@as(u32, 1), startup.engine.game_type);
         try std.testing.expectEqual(@as(u32, 0), startup.mode);
-        for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.items.len);
+        for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);
 
         try std.testing.expectEqualStrings("Outlaws Story", startup.recipe.name);
         try std.testing.expectEqual(@as(u32, 0), startup.recipe.modes);

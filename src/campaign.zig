@@ -220,7 +220,7 @@ pub const Startup = struct {
     pub fn prepare(allocator: std.mem.Allocator, archive: lab.Archive, difficulty: Difficulty) !Startup {
         const filename = try singleStory(archive);
         const dot = std.mem.lastIndexOfScalar(u8, filename, '.') orelse return error.InvalidCampaignFilename;
-        var self: Startup = .{ .request = try StartRequest.init(filename[0..dot]), .difficulty = difficulty, .recipe = undefined, .first_event = undefined, .router = network_router.Router.init(allocator), .database = network_database.Database.init(allocator) };
+        var self: Startup = .{ .request = try StartRequest.init(filename[0..dot]), .difficulty = difficulty, .recipe = undefined, .first_event = undefined, .router = try network_router.Router.init(allocator), .database = network_database.Database.init(allocator) };
         errdefer self.router.deinit();
         errdefer self.database.deinit();
         try self.database.reset(&self.router);
@@ -250,7 +250,7 @@ pub const Startup = struct {
             .difficulty = .bad,
             .recipe = undefined,
             .first_event = undefined,
-            .router = network_router.Router.init(allocator),
+            .router = try network_router.Router.init(allocator),
             .database = network_database.Database.init(allocator),
             .mode = choice.mode,
             .team = choice.team,
@@ -387,13 +387,13 @@ pub const Startup = struct {
     }
 
     pub fn networkStep(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try self.networkStepWith(allocator, now, level, self.server_on, &user_messages);
         if (user_messages.items.len != 0) return error.UnexpectedUserMessage;
     }
 
-    pub fn networkStepWith(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel, server_on: bool, user_messages: *std.ArrayList(i32)) !void {
+    pub fn networkStepWith(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel, server_on: bool, user_messages: *network_server.UserMessages) !void {
         self.router.now = now;
         try self.router.process();
         if (level) |found| if (self.router.session_open) try found.dead_reckoning(found.context);
@@ -435,7 +435,7 @@ pub const Startup = struct {
             .request = .{},
             .recipe = undefined,
             .first_event = undefined,
-            .router = network_router.Router.init(allocator),
+            .router = try network_router.Router.init(allocator),
             .database = network_database.Database.init(allocator),
         };
         errdefer self.router.deinit();
@@ -557,7 +557,8 @@ pub const Startup = struct {
         if (recipe.story[index].kind != .level) return error.InvalidSaveCampaignPosition;
         var request: StartRequest = .{};
         @memcpy(request.filename[0..filename.len], filename);
-        var self: Startup = .{ .request = request, .difficulty = difficulty, .recipe = recipe, .recipe_loaded = true, .first_event = recipe.story[0], .story_index = index, .router = network_router.Router.init(allocator), .database = network_database.Database.init(allocator) };
+        var self: Startup = .{ .request = request, .difficulty = difficulty, .recipe = recipe, .recipe_loaded = true, .first_event = recipe.story[0], .story_index = index, .router = try network_router.Router.init(allocator), .database = network_database.Database.init(allocator) };
+        errdefer self.router.deinit();
         errdefer self.database.deinit();
         try self.database.reset(&self.router);
         self.server.reset();
@@ -840,8 +841,8 @@ pub const Startup = struct {
     }
 
     fn serverDrain(self: *Startup, allocator: std.mem.Allocator) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try network_server.processRequests(&self.server, &self.router, .{ .now = null, .game_type = self.engine.game_type, .mode = self.mode, .level_loaded = false, .allocator = allocator, .user_messages = &user_messages });
         if (user_messages.items.len != 0) return error.UnexpectedStartupMessage;
     }
@@ -979,7 +980,7 @@ test "v1.1.1 host request uses the reference mode table and RCM name" {
     try std.testing.expectError(error.InvalidMultiplayerMode, StartRequest.initHost("DRYGULCH", 0, false));
     try std.testing.expectError(error.MultiplayerFilenameTooLong, StartRequest.initHost("12345678901234567890", 6, false));
 
-    var router = network_router.Router.init(std.testing.allocator);
+    var router = try network_router.Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     const request = try StartRequest.initHost("DRYGULCH", 6, false);

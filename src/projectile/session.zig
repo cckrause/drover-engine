@@ -6,6 +6,7 @@
 //! lowest priority.
 
 const std = @import("std");
+const lab = @import("../assets/lab.zig");
 const runtime = @import("runtime.zig");
 const Item = @import("../assets/item.zig").Item;
 const Actor = @import("../render/objects.zig").Actor;
@@ -59,7 +60,8 @@ fn Contact(comptime Session: type) type {
 
 pub fn configuration(session: anytype, name: []const u8) !*const runtime.Config {
     const a = session.arena.allocator();
-    const path = try runtime.configName(a, name);
+    var path_buffer: runtime.ConfigNameBuffer = undefined;
+    const path = try runtime.configNameInto(&path_buffer, name);
     if (session.projectile_configs.get(path)) |existing| return existing;
     var item = try Item.parse(a, try factory.resource(session, path));
     defer item.deinit();
@@ -99,7 +101,8 @@ pub fn launch(session: anytype, source: usize, owner: runtime.Owner, fraction: f
 pub fn ensureMap(session: anytype, source: usize) !void {
     if (session.projectile_slots[source] != null) return;
     if (source >= session.objects.entries.len) return error.MissingProjectileConfiguration;
-    const path = try std.fmt.allocPrint(session.arena.allocator(), "{s}.ITM", .{std.fs.path.stem(session.objects.entries[source].name)});
+    var path_buffer: lab.NameBuffer = undefined;
+    const path = try lab.printName(&path_buffer, "{s}.ITM", .{std.fs.path.stem(session.objects.entries[source].name)});
     var item = try Item.parse(session.arena.allocator(), try factory.resource(session, path));
     defer item.deinit();
     try initializeMap(session, source, &item);
@@ -357,15 +360,15 @@ pub fn emitEnemyProjectile(session: anytype, target: *@import("../player/target.
     session.actor_slots[source] = actor.*;
     session.targets[source] = target.*;
     session.syncActor(source);
-    var local = inventory.Effects.init(session.allocator);
-    defer local.deinit();
+    var local_buffer: inventory.EffectBuffer = undefined;
+    var local = inventory.Effects.init(&local_buffer);
     const effects = session.active_effects orelse &local;
     if (ctx.actors.runtime) |native| if (native.effects != effects) {
         try effects.appendSlice(native.effects.items);
         native.effects.clearRetainingCapacity();
     };
     try enemyThrow(session, target, actor, ctx, effects);
-    if (session.active_effects == null) try session.enemy_native_effects.appendSlice(session.arena.allocator(), local.items);
+    if (session.active_effects == null) try session.enemy_native_effects.appendSlice(local.items);
     session.actor_slots[source] = actor.*;
     session.targets[source] = target.*;
     session.syncActor(source);
@@ -403,7 +406,7 @@ fn aggregate(session: anytype, target: usize, damage: shooting.DamageInput, posi
     };
     var pending = shooting.PendingHit.initFrom(target, sender, &session.angles, damage, hit);
     pending.position.x = position.x;
-    try session.pending_hits.append(session.arena.allocator(), pending);
+    try session.pending_hits.append(pending);
 }
 
 fn f(value: f64) f32 {
@@ -411,7 +414,7 @@ fn f(value: f64) f32 {
 }
 
 fn gameFlags(session: anytype, effects: *inventory.Effects) u32 {
-    var shots = weapon.Shots.init(session.arena.allocator());
-    defer shots.deinit();
+    var shots_buffer: weapon.ShotBuffer = undefined;
+    var shots = weapon.Shots.init(&shots_buffer);
     return session.weaponContext(effects, &shots, false).game_flags;
 }

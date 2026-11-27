@@ -45,7 +45,7 @@ const Case = struct {
 };
 
 fn queueHit(session: *Session, source: usize, serial: ?u64) !void {
-    try session.queued_hits.append(session.arena.allocator(), .{
+    try session.queued_hits.append(.{
         .target = source,
         .queue_serial = serial,
         .count = 1,
@@ -110,7 +110,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "town");
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const visible = try a.alloc(bool, session.level.sectors.len);
     @memset(visible, false);
@@ -121,7 +121,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
         try town_bottles.append(a, source);
     }
     try std.testing.expectEqual(@as(usize, 11), town_bottles.items.len);
-    _ = try session.loadActorsInSectors(a, visible);
+    _ = try session.loadActorsInSectors(visible);
     for (town_bottles.items) |source| {
         const actor = session.actor_slots[source].?;
         try std.testing.expectEqualStrings("Inv_Object", actor.logic_name);
@@ -131,8 +131,8 @@ test "Town bottle hits retain queued selections sound frames and removal" {
     const original_slots = try a.dupe(?Actor, session.actor_slots);
     @memset(session.removed_actors, true);
     for (session.actor_slots, 0..) |_, source| session.syncActor(source);
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     session.active_effects = &effects;
     defer session.active_effects = null;
 

@@ -3,7 +3,8 @@
 //!
 //! The driver is looked up by name and bound by entry point, so the game
 //! calls the same list of functions whatever the driver is. An error from a
-//! driver call stands for whatever the driver reported.
+//! driver call stands for whatever the driver reported, and is passed on to
+//! the caller rather than read as "nothing sent" or "nothing received".
 
 const std = @import("std");
 const message = @import("message.zig");
@@ -15,7 +16,7 @@ pub const Provider = struct {
 
 pub const Driver = struct {
     context: *anyopaque,
-    send: *const fn (context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) void,
+    send: *const fn (context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) anyerror!void,
     get: *const fn (context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize,
     close: *const fn (context: *anyopaque) void = closeNothing,
     describe: *const fn (context: *anyopaque, data: []const u8) anyerror!void = noDescription,
@@ -76,11 +77,11 @@ pub const Network = struct {
         self.session = null;
     }
 
-    pub fn send(self: *Network, data: []const u8, to: ?*const message.Address, flags: u32) void {
+    pub fn send(self: *Network, data: []const u8, to: ?*const message.Address, flags: u32) !void {
         const driver = self.session orelse return;
         self.sent_count +%= 1;
         self.sent_bytes +%= @as(u16, @intCast(data.len));
-        driver.send(driver.context, data, to, flags);
+        try driver.send(driver.context, data, to, flags);
     }
 
     pub fn describe(self: *Network, data: []const u8) !void {
@@ -89,12 +90,9 @@ pub const Network = struct {
         try driver.describe(driver.context, data);
     }
 
-    pub fn get(self: *Network, buffer: []u8, sender: *message.Address) usize {
+    pub fn get(self: *Network, buffer: []u8, sender: *message.Address) !usize {
         const driver = self.session orelse return 0;
-        const length = driver.get(driver.context, buffer, sender) catch |err| {
-            std.log.debug("Network GetBuffer: {t}", .{err});
-            return 0;
-        };
+        const length = try driver.get(driver.context, buffer, sender);
         if (length == 0) return 0;
         self.received_bytes +%= @as(u16, @intCast(length));
         self.received_count +%= 1;
