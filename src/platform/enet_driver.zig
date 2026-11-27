@@ -943,8 +943,8 @@ test "a joiner connects to a host's game through the driver and both send each o
     try testing.expectEqual(0xffffffff, joined.own_client);
 
     var server: server_module.Server = .{};
-    var user_messages: std.ArrayList(i32) = .empty;
-    defer user_messages.deinit(a);
+    var user_messages_buffer: server_module.UserMessageBuffer = undefined;
+    var user_messages = server_module.UserMessages.init(&user_messages_buffer);
     const end = for (0..2000) |_| {
         host_session.service(1);
         join_session.service(1);

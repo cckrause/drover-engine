@@ -172,8 +172,8 @@ test "dry surface contact damage sounds and death reports" {
     const shriek_name = (try item.stringValue("SND_SHRIEK")) orelse "shriek.wav";
     const local_messages = try system.find("LOCAL.MSG", 0);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     var frame_count: usize = 0;
     for (fixture.value.cases) |case| {
         const config = case.config;

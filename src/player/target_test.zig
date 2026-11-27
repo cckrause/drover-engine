@@ -160,10 +160,10 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     try std.testing.expectEqual(@as(f32, 2), session.targets[source_index].?.damage.health);
 
     const weapon = @import("weapon.zig");
-    var effects = @import("inventory.zig").Effects.init(a);
-    defer effects.deinit();
-    var shots = weapon.Shots.init(a);
-    defer shots.deinit();
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
+    var shots_buffer: weapon.ShotBuffer = undefined;
+    var shots = weapon.Shots.init(&shots_buffer);
     var context = weapon.Context{ .state = &session.weapon_state, .inventory = &session.inventory, .player = &session.player, .random = &session.contact_state.random, .effects = &effects, .shots = &shots, .now = session.animation_time, .ready = true, .angles = &session.angles };
     const animation = session.hud.weaponAnimation().?;
     try context.event(animation.playback, animation.costume, 1, &.{}, session.animation_time);

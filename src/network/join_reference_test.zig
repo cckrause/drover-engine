@@ -36,8 +36,8 @@ test "the join's server answer and router queue match the reference" {
     router.network.session = driver.session();
     router.game = game.hooks();
     router.sender_check = false;
-    var user_messages: std.ArrayList(i32) = .empty;
-    defer user_messages.deinit(a);
+    var user_messages_buffer: server_module.UserMessageBuffer = undefined;
+    var user_messages = server_module.UserMessages.init(&user_messages_buffer);
     var loaded = false;
     var buffer: [0x800]u8 = undefined;
     var address: message.Address = undefined;

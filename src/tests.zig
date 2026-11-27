@@ -9,6 +9,7 @@ const std = @import("std");
 
 test {
     _ = @import("memory/layout.zig");
+    _ = @import("util/fixed_list.zig");
     _ = @import("platform/MemoryBudget.zig");
     _ = @import("platform/c_memory.zig");
     _ = @import("audio/registration.zig");

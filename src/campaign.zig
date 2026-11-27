@@ -387,13 +387,13 @@ pub const Startup = struct {
     }
 
     pub fn networkStep(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try self.networkStepWith(allocator, now, level, self.server_on, &user_messages);
         if (user_messages.items.len != 0) return error.UnexpectedUserMessage;
     }
 
-    pub fn networkStepWith(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel, server_on: bool, user_messages: *std.ArrayList(i32)) !void {
+    pub fn networkStepWith(self: *Startup, allocator: std.mem.Allocator, now: u32, level: ?NetworkLevel, server_on: bool, user_messages: *network_server.UserMessages) !void {
         self.router.now = now;
         try self.router.process();
         if (level) |found| if (self.router.session_open) try found.dead_reckoning(found.context);
@@ -840,8 +840,8 @@ pub const Startup = struct {
     }
 
     fn serverDrain(self: *Startup, allocator: std.mem.Allocator) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try network_server.processRequests(&self.server, &self.router, .{ .now = null, .game_type = self.engine.game_type, .mode = self.mode, .level_loaded = false, .allocator = allocator, .user_messages = &user_messages });
         if (user_messages.items.len != 0) return error.UnexpectedStartupMessage;
     }

@@ -72,8 +72,8 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
         session.syncActor(source);
         const slots_before = session.actor_slots.ptr;
         const initial_count = session.actor_slots.len;
-        var effects = inventory.Effects.init(a);
-        defer effects.deinit();
+        var effects_buffer: inventory.EffectBuffer = undefined;
+        var effects = inventory.Effects.init(&effects_buffer);
         for (case.steps) |step| {
             errdefer std.debug.print("lamp {s} {s} at{d}\n", .{ case.name, step.operation, step.now });
             effects.clearRetainingCapacity();

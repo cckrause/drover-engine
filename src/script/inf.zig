@@ -18,6 +18,7 @@ const audio_occlusion = @import("../audio/occlusion.zig");
 const network_message = @import("../network/message.zig");
 const network_server = @import("../network/server.zig");
 const Router = @import("../network/router.zig").Router;
+const FixedList = @import("../util/fixed_list.zig").FixedList;
 
 pub const Kind = enum(u32) {
     ceiling = 0,
@@ -138,6 +139,32 @@ pub const Pending = union(enum) {
     actor_impulse: @FieldType(Effect, "actor_impulse"),
 };
 
+/// Messages one pass may queue, counting the ones its delivery queues in
+/// turn, and effects it may collect. A busy frame with plenty of room: the
+/// test suite never went past 159 messages or 6 effects.
+pub const max_pending = 4096;
+pub const max_effects = 1024;
+pub const PendingList = FixedList(Pending, error{TooManyInfMessages});
+pub const EffectList = FixedList(Effect, error{TooManyInfEffects});
+
+/// A runtime's message and effect lists, reserved once when the level's INF
+/// is prepared and lent to the short runtimes that start elevators.
+pub const Lists = struct {
+    pending: PendingList,
+    effects: EffectList,
+
+    pub fn reserve(allocator: std.mem.Allocator) !Lists {
+        const pending = try allocator.alloc(Pending, max_pending);
+        errdefer allocator.free(pending);
+        return .{ .pending = .init(pending), .effects = .init(try allocator.alloc(Effect, max_effects)) };
+    }
+
+    pub fn free(self: Lists, allocator: std.mem.Allocator) void {
+        allocator.free(self.pending.items.ptr[0..self.pending.capacity]);
+        allocator.free(self.effects.items.ptr[0..self.effects.capacity]);
+    }
+};
+
 pub const TickContext = struct {
     random: *u32,
     textures: []const texture.Texture = &.{},
@@ -201,8 +228,9 @@ pub const Runtime = struct {
     restored_links: []const DbLink = &.{},
     elevator_clock: u32 = 0,
     base_vertices: []const []const level_module.Vec2 = &.{},
-    effects: std.ArrayList(Effect) = .empty,
-    pending: std.ArrayList(Pending) = .empty,
+    /// Empty with no room until `reserveLists` or a load gives it storage.
+    effects: EffectList = .init(&.{}),
+    pending: PendingList = .init(&.{}),
     router: ?*Router = null,
     marks: ?geometry.Marks = null,
     task_time: u32 = 0,
@@ -227,7 +255,16 @@ pub const Runtime = struct {
         elevators: std.ArrayList(Elevator),
         triggers: std.ArrayList(Trigger),
         classes: std.ArrayList(Class),
+        lists: Lists,
     };
+
+    /// Gives a runtime built by hand its message and effect lists, from its
+    /// own arena.
+    pub fn reserveLists(self: *Runtime) !void {
+        const lists = try Lists.reserve(self.arena.allocator());
+        self.pending = lists.pending;
+        self.effects = lists.effects;
+    }
 
     pub fn planeSpeed(self: *const Runtime, level: *const level_module.Level, sector: usize, ceiling: bool) f32 {
         var index = self.elevators.len;
@@ -270,7 +307,7 @@ pub const Runtime = struct {
         var elevators = prepared.elevators;
         var triggers = prepared.triggers;
         var classes = prepared.classes;
-        return .{ .arena = arena, .elevators = try elevators.toOwnedSlice(a), .triggers = try triggers.toOwnedSlice(a), .classes = try classes.toOwnedSlice(a), .base_vertices = prepared.base_vertices, .task_time = now };
+        return .{ .arena = arena, .elevators = try elevators.toOwnedSlice(a), .triggers = try triggers.toOwnedSlice(a), .classes = try classes.toOwnedSlice(a), .base_vertices = prepared.base_vertices, .task_time = now, .effects = prepared.lists.effects, .pending = prepared.lists.pending };
     }
 
     pub fn prepareGeometry(allocator: std.mem.Allocator, level: *level_module.Level, random: *u32, scene: ?*scene_module.Scene, angles: *const camera.Angles, now: u32) !GeometryClasses {
@@ -279,6 +316,7 @@ pub const Runtime = struct {
         const a = arena.allocator();
         const base_vertices = try a.alloc([]const level_module.Vec2, level.sectors.len);
         for (level.sectors, base_vertices) |sector, *original| original.* = try a.dupe(level_module.Vec2, sector.vertices);
+        var lists = try Lists.reserve(a);
         var elevators: std.ArrayList(Elevator) = .empty;
         var triggers: std.ArrayList(Trigger) = .empty;
         var classes: std.ArrayList(Class) = .empty;
@@ -307,7 +345,7 @@ pub const Runtime = struct {
                 wall.flags |= 0x40;
                 if (wall.adjoin >= 0) level.sectors[@intCast(wall.adjoin)].walls[@intCast(wall.mirror)].flags |= 0x40;
             }
-            try finishStartup(allocator, level, &elevator, scene, angles, base_vertices, now);
+            try finishStartup(allocator, level, &elevator, scene, angles, base_vertices, now, &lists);
             try classes.append(a, .{ .elevator = elevators.items.len });
             try elevators.append(a, elevator);
         }
@@ -326,7 +364,7 @@ pub const Runtime = struct {
                 }
             }
         }
-        return .{ .arena = arena, .base_vertices = base_vertices, .elevators = elevators, .triggers = triggers, .classes = classes };
+        return .{ .arena = arena, .base_vertices = base_vertices, .elevators = elevators, .triggers = triggers, .classes = classes, .lists = lists };
     }
 
     pub fn loadPrepared(allocator: std.mem.Allocator, level: *level_module.Level, bytes: []const u8, scene: ?*scene_module.Scene, angles: *const camera.Angles, now: u32, prepared: GeometryClasses) !Runtime {
@@ -342,7 +380,8 @@ pub const Runtime = struct {
         var elevators = prepared.elevators;
         var triggers = prepared.triggers;
         var classes = prepared.classes;
-        var pending: std.ArrayList(Pending) = .empty;
+        var pending = prepared.lists.pending;
+        var effect_scratch = prepared.lists.effects;
         var lines = item.Lines{ .bytes = bytes };
         if (!infVersionOne(try lines.next() orelse return error.MissingInfHeader)) return error.UnsupportedInfVersion;
         var count: ?usize = null;
@@ -385,7 +424,7 @@ pub const Runtime = struct {
                 in_sequence = true;
             } else if (eq(key, "CLASS:")) {
                 if (!in_sequence) return error.InvalidInfSequence;
-                if (active) |old| if (old == .elevator) try finishStartupWithWorld(a, level, &elevators.items[old.elevator], scene, angles, base_vertices, now, context, &pending);
+                if (active) |old| if (old == .elevator) try finishStartupWithWorld(a, level, &elevators.items[old.elevator], scene, angles, base_vertices, now, context, &pending, &effect_scratch);
                 const class = words.next() orelse return error.MissingInfClass;
                 const subtype = words.next() orelse return error.MissingInfClassSubtype;
                 if (eq(class, "ELEVATOR")) {
@@ -400,7 +439,7 @@ pub const Runtime = struct {
                     if (eq(subtype, "EXPLODE")) {
                         try elevator.stops.append(a, .{ .value = level.sectors[elevator.sector].floor.height, .delay = -1 });
                         try elevator.stops.append(a, .{ .value = level.sectors[elevator.sector].ceiling.height, .delay = -2 });
-                        try finishStartupWithWorld(a, level, &elevator, scene, angles, base_vertices, now, context, &pending);
+                        try finishStartupWithWorld(a, level, &elevator, scene, angles, base_vertices, now, context, &pending, &effect_scratch);
                     }
                     active = .{ .elevator = elevators.items.len };
                     try elevators.append(a, elevator);
@@ -421,7 +460,7 @@ pub const Runtime = struct {
                 try classes.append(a, active.?);
             } else if (eq(key, "SEQEND")) {
                 if (!in_sequence) return error.InvalidInfSequence;
-                if (active) |old| if (old == .elevator) try finishStartupWithWorld(a, level, &elevators.items[old.elevator], scene, angles, base_vertices, now, context, &pending);
+                if (active) |old| if (old == .elevator) try finishStartupWithWorld(a, level, &elevators.items[old.elevator], scene, angles, base_vertices, now, context, &pending, &effect_scratch);
                 active = null;
                 target = null;
                 in_sequence = false;
@@ -431,7 +470,7 @@ pub const Runtime = struct {
             } else return error.InvalidInfDirectiveOrder;
         }
         if (count == null or in_sequence) return error.TruncatedInf;
-        return .{ .arena = arena, .elevators = try elevators.toOwnedSlice(a), .triggers = try triggers.toOwnedSlice(a), .classes = try classes.toOwnedSlice(a), .base_vertices = base_vertices, .task_time = now, .pending = pending };
+        return .{ .arena = arena, .elevators = try elevators.toOwnedSlice(a), .triggers = try triggers.toOwnedSlice(a), .classes = try classes.toOwnedSlice(a), .base_vertices = base_vertices, .task_time = now, .pending = pending, .effects = prepared.lists.effects };
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -449,14 +488,14 @@ pub const Runtime = struct {
         return .{ .elevators = elevators, .triggers = triggers, .effects_len = self.effects.items.len, .task_time = self.task_time, .geometry_dirty = self.geometry_dirty, .pending = pending };
     }
 
-    pub fn restore(self: *Runtime, snapshot: Snapshot) void {
+    pub fn restore(self: *Runtime, snapshot: Snapshot) !void {
         @memcpy(self.elevators, snapshot.elevators);
         @memcpy(self.triggers, snapshot.triggers);
         self.effects.shrinkRetainingCapacity(snapshot.effects_len);
         self.task_time = snapshot.task_time;
         self.geometry_dirty = snapshot.geometry_dirty;
         self.pending.clearRetainingCapacity();
-        self.pending.appendSliceAssumeCapacity(snapshot.pending);
+        try self.pending.appendSlice(snapshot.pending);
     }
 
     pub fn applyScene(self: *const Runtime, level: *const level_module.Level, scene: *scene_module.Scene) void {
@@ -505,7 +544,7 @@ pub const Runtime = struct {
             if (index >= 65536) return error.InfMessageRecursion;
             const pending = self.pending.items[index];
             switch (pending) {
-                .actor_impulse => |impulse| try self.effects.append(self.arena.allocator(), .{ .actor_impulse = impulse }),
+                .actor_impulse => |impulse| try self.effects.append(.{ .actor_impulse = impulse }),
                 .message => |delivery| {
                     const message = delivery.value;
                     if (message.target.object) |id| {
@@ -520,7 +559,7 @@ pub const Runtime = struct {
                     try self.dispatch(level, scene, message, .{ .sector = message.target.sector.?, .mask = message.event_mask, .entity_mask = delivery.entity_mask, .from_player = false, .now_ms = now_ms +% self.movie_elapsed, .inventory_ids = inventory_ids, .game_mode_mask = game_mode_mask }, 0);
                     if (self.restored_links.len == 0 and delivery.entity_mask != 0 and (message.event_mask == 0 or message.event_mask & 0x2000 != 0) and
                         (message.code == 0x7d7 or message.code == 0x7d8 or message.code == 0x7da or (message.code >= 0x7e7 and message.code <= 0x7ea)))
-                        try self.effects.append(self.arena.allocator(), .{ .wall_frame = .{ .sector = message.target.sector.?, .wall = message.target.wall, .code = message.code, .arg1 = message.arg1 } });
+                        try self.effects.append(.{ .wall_frame = .{ .sector = message.target.sector.?, .wall = message.target.wall, .code = message.code, .arg1 = message.arg1 } });
                 },
             }
         }
@@ -549,7 +588,7 @@ pub const Runtime = struct {
         if (self.message_log) |log| try log.append(message);
         if (message.target.sector == null and message.target.object == null) {
             try self.postSystem(message);
-        } else try self.pending.append(self.arena.allocator(), .{ .message = .{ .value = message, .entity_mask = entity_mask } });
+        } else try self.pending.append(.{ .message = .{ .value = message, .entity_mask = entity_mask } });
     }
 
     fn changeBits(level: *level_module.Level, scene: *scene_module.Scene, message: Message, marks: ?geometry.Marks) !void {
@@ -595,7 +634,7 @@ pub const Runtime = struct {
                     .atx => {
                         if (message.event_mask != 0 and message.event_mask & link.event_mask == 0) continue;
                         if (ev.entity_mask & link.entity_mask == 0) continue;
-                        try self.effects.append(self.arena.allocator(), .{ .wall_frame = .{ .sector = link.target.sector.?, .wall = link.target.wall, .code = message.code, .arg1 = message.arg1, .instance = link.index } });
+                        try self.effects.append(.{ .wall_frame = .{ .sector = link.target.sector.?, .wall = link.target.wall, .code = message.code, .arg1 = message.arg1, .instance = link.index } });
                     },
                 }
             }
@@ -697,13 +736,13 @@ pub const Runtime = struct {
             for (owned_inventory.slots[1..]) |slot| if (slot) |owned| {
                 if (@as(u32, @bitCast(owned.definition.use_id)) != object) continue;
                 const name = if (success) owned.definition.use_success_sound else owned.definition.use_failure_sound;
-                if (name) |sound_name| try self.effects.append(self.arena.allocator(), .{ .sound = .{ .name = sound_name, .mode = .once, .priority = 64, .volume = 127, .flags = 4 } });
+                if (name) |sound_name| try self.effects.append(.{ .sound = .{ .name = sound_name, .mode = .once, .priority = 64, .volume = 127, .flags = 4 } });
                 return;
             };
             return;
         }
         if (object != 0 and from_player and std.mem.indexOfScalar(u32, inventory, object) != null)
-            try self.effects.append(self.arena.allocator(), .{ .inventory_use = .{ .object_id = object, .success = success } });
+            try self.effects.append(.{ .inventory_use = .{ .object_id = object, .success = success } });
     }
 
     fn inventoryIds(self: *const Runtime, buffer: *[25]u32, fallback: []const u32) []const u32 {
@@ -747,7 +786,7 @@ pub const Runtime = struct {
                 const object: u32 = @bitCast(message.arg2);
                 var owned_ids: [25]u32 = undefined;
                 if (!passesObject(trigger.flags, trigger.object_id, trigger.excluded_object, object, true, self.inventoryIds(&owned_ids, ev.inventory_ids), 0x1000, 0x2000)) return;
-                if (trigger.sound) |name| try self.effects.append(self.arena.allocator(), .{ .sound = .{ .name = name, .mode = .once } });
+                if (trigger.sound) |name| try self.effects.append(.{ .sound = .{ .name = name, .mode = .once } });
                 for (trigger.clients.items) |client| if (message.event_mask & client.mask != 0) {
                     var outgoing = trigger.message;
                     outgoing.target = client.target;
@@ -831,7 +870,7 @@ pub const Runtime = struct {
             if (context) |audio| if (mode != .stop) {
                 volume = @intCast(try audio.cache.volume(level, audio.scene, audio.angles, elevator.sector, audio.listener_sector, position, audio.listener_eye, 127, flags, audio.now_ms));
             };
-            try self.effects.append(self.arena.allocator(), .{
+            try self.effects.append(.{
                 .sound = .{
                     .name = name,
                     .source = (@intFromPtr(elevator) - @intFromPtr(self.elevators.ptr)) / @sizeOf(Elevator),
@@ -1008,7 +1047,7 @@ pub const Runtime = struct {
             const magnitude: f32 = if (spinning) 10 else @abs(delta / seconds);
             const angle = world.scene.sectors[hit.wall.sector].walls[hit.wall.index].angle +% 0x1000;
             const trig = world.angles.sinCos(angle);
-            try self.pending.append(self.arena.allocator(), .{ .actor_impulse = .{ .contact = hit, .velocity = .{ .x = magnitude * trig.sin, .y = 0, .z = magnitude * trig.cos } } });
+            try self.pending.append(.{ .actor_impulse = .{ .contact = hit, .velocity = .{ .x = magnitude * trig.sin, .y = 0, .z = magnitude * trig.cos } } });
         }
     }
 };
@@ -1100,13 +1139,15 @@ fn construct(level: *level_module.Level, sector: usize, subtype: []const u8) !El
     return result;
 }
 
-fn finishStartup(allocator: std.mem.Allocator, level: *level_module.Level, elevator: *Elevator, scene: ?*scene_module.Scene, angles: *const camera.Angles, base_vertices: []const []const level_module.Vec2, now: u32) !void {
-    var pending: std.ArrayList(Pending) = .empty;
-    defer pending.deinit(allocator);
-    try finishStartupWithWorld(allocator, level, elevator, scene, angles, base_vertices, now, .{}, &pending);
+/// Starts an elevator and drops the messages it queues; `lists` is scratch
+/// and comes back empty.
+fn finishStartup(allocator: std.mem.Allocator, level: *level_module.Level, elevator: *Elevator, scene: ?*scene_module.Scene, angles: *const camera.Angles, base_vertices: []const []const level_module.Vec2, now: u32, lists: *Lists) !void {
+    std.debug.assert(lists.pending.items.len == 0 and lists.effects.items.len == 0);
+    defer lists.pending.clearRetainingCapacity();
+    try finishStartupWithWorld(allocator, level, elevator, scene, angles, base_vertices, now, .{}, &lists.pending, &lists.effects);
 }
 
-fn finishStartupWithWorld(allocator: std.mem.Allocator, level: *level_module.Level, elevator: *Elevator, scene: ?*scene_module.Scene, angles: *const camera.Angles, base_vertices: []const []const level_module.Vec2, now: u32, context: StartupContext, pending: *std.ArrayList(Pending)) !void {
+fn finishStartupWithWorld(allocator: std.mem.Allocator, level: *level_module.Level, elevator: *Elevator, scene: ?*scene_module.Scene, angles: *const camera.Angles, base_vertices: []const []const level_module.Vec2, now: u32, context: StartupContext, pending: *PendingList, effect_scratch: *const EffectList) !void {
     if (elevator.stops.items.len == 0) return;
     if (elevator.start >= elevator.stops.items.len) return error.InvalidInfStart;
     refreshValue(level, elevator);
@@ -1116,7 +1157,9 @@ fn finishStartupWithWorld(allocator: std.mem.Allocator, level: *level_module.Lev
         var temporary: ?scene_module.Scene = if (scene == null and context.world == null) try scene_module.Scene.init(allocator, level, angles) else null;
         defer if (temporary) |*value| value.deinit();
         var empty_world = geometry.World{ .level = level, .scene = scene orelse if (context.world) |world| world.scene else &temporary.?, .angles = angles, .actors = &.{}, .collision_diameter = 0 };
-        var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(allocator), .elevators = &.{}, .triggers = &.{}, .classes = &.{}, .base_vertices = base_vertices };
+        // The short runtime queues straight into the caller's list; its
+        // effects go to scratch and are dropped.
+        var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(allocator), .elevators = &.{}, .triggers = &.{}, .classes = &.{}, .base_vertices = base_vertices, .pending = pending.*, .effects = effect_scratch.* };
         defer runtime.deinit();
         const speed = elevator.speed;
         const step = elevator.step;
@@ -1129,7 +1172,7 @@ fn finishStartupWithWorld(allocator: std.mem.Allocator, level: *level_module.Lev
         var random: u32 = 0;
         const seconds = if (context.seconds == 0) 1 else context.seconds;
         _ = try runtime.stepElevator(level, elevator, seconds, .{ .random = &random, .world = context.world orelse &empty_world, .textures = context.textures, .now_ms = now });
-        try pending.appendSlice(allocator, runtime.pending.items);
+        pending.* = runtime.pending;
     }
     elevator.next_time = if (stop.delay == -1) 0xffffffff else now +% @as(u32, @bitCast(stop.delay));
     elevator.deleted = stop.delay == -2;
@@ -1394,6 +1437,7 @@ test "movie trigger blocks before switch and completion mutations" {
         var triggers = [_]Trigger{.{ .target = .{ .sector = 20 }, .flags = flags, .message = .{ .code = 0x7da, .event_mask = 0x2000, .arg1 = 7 }, .movie = "RAM.SAN" }};
         var classes = [_]Class{.{ .trigger = 0 }};
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &triggers, .classes = &classes };
+        try runtime.reserveLists();
         defer runtime.deinit();
         var router = Router.init(a);
         defer router.deinit();
@@ -1522,12 +1566,14 @@ test "INF first stops retain the reference absolute restart clock and wrapping d
         .{ @as(u32, 90000), @as(i32, -3), @as(u32, 89997) },
         .{ @as(u32, 0xffffff00), @as(i32, 500), @as(u32, 244) },
     };
+    var lists = try Lists.reserve(a);
+    defer lists.free(a);
     inline for (cases) |sample| {
         var elevator = Elevator{ .sector = 0, .kind = .light, .speed = 1, .value = 0 };
         defer elevator.stops.deinit(a);
         try elevator.stops.append(a, .{ .value = 0, .delay = sample[1] });
         try elevator.stops.append(a, .{ .value = 10, .delay = -1 });
-        try finishStartup(a, &level, &elevator, null, &angles, &.{}, sample[0]);
+        try finishStartup(a, &level, &elevator, null, &angles, &.{}, sample[0], &lists);
         try std.testing.expectEqual(sample[2], elevator.next_time);
         try std.testing.expectEqual(@as(?usize, 1), elevator.target);
     }
@@ -1643,6 +1689,7 @@ test "INF wall and sector bit messages match every flag bit" {
     var collision_check: u32 = 0;
     scene.collision_check = &collision_check;
     var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{} };
+    try runtime.reserveLists();
     defer runtime.deinit();
     for (parsed.value.cases) |sample| {
         const primary = if (sample.wall) &states[0].flags else &sector_states[0].flags;
@@ -1725,6 +1772,7 @@ test "INF reference FIFO drain and shared task wake phases" {
     var level: level_module.Level = undefined;
     level.sectors = &sectors;
     var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = undefined, .triggers = undefined, .classes = undefined };
+    try runtime.reserveLists();
     defer runtime.deinit();
     const mem = runtime.arena.allocator();
     runtime.elevators = try mem.alloc(Elevator, 3);
@@ -1737,12 +1785,14 @@ test "INF reference FIFO drain and shared task wake phases" {
     var scene = try scene_module.Scene.init(a, &level, &angles);
     defer scene.deinit();
     var world = geometry.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = &.{}, .collision_diameter = 0 };
+    var lists = try Lists.reserve(a);
+    defer lists.free(a);
     for (runtime.elevators, 0..) |*elevator, i| {
         elevator.* = try construct(&level, i, if (i == 2) "SCROLL_WALL" else "MOVE_CEILING");
         elevator.speed = if (i == 0) 20 else 60;
         elevator.event_mask = if (i == 0) 0x30 else 0;
         try elevator.stops.appendSlice(mem, stops[i]);
-        try finishStartup(a, &level, elevator, null, &angles, &.{}, 0);
+        try finishStartup(a, &level, elevator, null, &angles, &.{}, 0, &lists);
     }
     try runtime.elevators[1].stops.items[1].messages.append(mem, .{ .target = .{ .sector = 2 }, .code = 0x7d7 });
     try runtime.elevators[2].stops.items[3].messages.append(mem, .{ .target = .{ .sector = 1 }, .code = 0x7da });
@@ -1821,6 +1871,7 @@ test "INF reference selected item success and failure requests" {
     level.sectors = &sectors;
     for (parsed.value.cases) |sample| {
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = undefined, .triggers = &.{}, .classes = &.{} };
+        try runtime.reserveLists();
         defer runtime.deinit();
         const mem = runtime.arena.allocator();
         runtime.elevators = try mem.dupe(Elevator, &.{.{ .sector = 0, .kind = .light, .mode = 0, .object_id = sample.required, .excluded_object = sample.excluded, .speed = 1, .value = 0, .target = 0, .next_time = 0xffffffff, .flags = 0xf00000 | sample.extra_flags }});
@@ -1889,6 +1940,7 @@ test "INF reference scalar stepping and ordered scheduler states" {
     const Helpers = struct {
         fn make(level: *level_module.Level, input: Input) !Runtime {
             var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator), .elevators = undefined, .triggers = &.{}, .classes = undefined };
+            try runtime.reserveLists();
             errdefer runtime.deinit();
             const mem = runtime.arena.allocator();
             runtime.elevators = try mem.alloc(Elevator, 1);
@@ -1978,6 +2030,7 @@ test "INF reference trigger filtering and one-shot state" {
     defer log.deinit();
     for (parsed.value.triggers) |sequence| {
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{}, .message_log = &log };
+        try runtime.reserveLists();
         defer runtime.deinit();
         var trigger = Trigger{ .target = .{ .sector = 3, .wall = 0 }, .flags = sequence.flags, .object_id = sequence.required, .excluded_object = sequence.excluded, .message = .{ .code = 0x7da, .event_mask = 0x2000, .arg1 = 1 } };
         for ([_]u32{ 0x10, 0x20, 0xffffffff }, 0..) |client_mask, i| try trigger.clients.append(runtime.arena.allocator(), .{ .target = .{ .sector = i }, .mask = client_mask });
@@ -2216,6 +2269,7 @@ test "INF reference Train floor and ceiling scrolling" {
         scene.collision_check = &collision_check;
         var world = geometry.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = &.{}, .collision_diameter = 0 };
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{} };
+        try runtime.reserveLists();
         defer runtime.deinit();
         var elevator = try construct(&level, 0, if (ceiling) "SCROLL_CEILING" else "SCROLL_FLOOR");
         const direction = angles.sinCos(sample_case.angle);
@@ -2278,7 +2332,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     try std.testing.expectEqual(@as(u32, 0), runtime.elevators[window_index].runtime_flags);
     try std.testing.expectEqual(@as(u32, 0xffffffff), runtime.elevators[window_index].next_time);
     try std.testing.expectEqual(@as(usize, 0), runtime.pending.items.len);
-    runtime.restore(initial);
+    try runtime.restore(initial);
     try runtime.event(&level, .{ .sector = trigger, .wall = wall, .mask = 0x10, .now_ms = 20 });
     try runtime.flushQueued(&level, null, 21, &.{}, 0x200000);
     try std.testing.expectEqual(@as(u32, 21), runtime.elevators[window_index].next_time);
@@ -2295,7 +2349,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     try std.testing.expectEqual(@as(u32, 23), runtime.elevators[ahead_index].next_time);
     try runtime.advance(&level, 23, 0.1, .{ .random = &random, .world = &world });
     try std.testing.expectEqual(@as(f32, 0), runtime.elevators[ahead_index].value);
-    runtime.restore(initial);
+    try runtime.restore(initial);
     const brass = try findSector(&level, "MHBRASS");
     try runtime.event(&level, .{ .sector = brass, .mask = 0x10, .now_ms = 30, .inventory_ids = &.{101} });
     const queued = try runtime.checkpoint(a);
@@ -2310,19 +2364,19 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     try std.testing.expectEqual(@as(u32, 801), network_message.get(system, network_message.word_offsets[1]));
     router.release(system);
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(network_message.Queue.server));
-    runtime.restore(queued);
+    try runtime.restore(queued);
     try std.testing.expectEqual(@as(usize, 1), runtime.pending.items.len);
     try runtime.flushQueued(&level, null, 33, &.{101}, 0x200000);
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(network_message.Queue.server));
     runtime.effects.clearRetainingCapacity();
-    try runtime.pending.append(runtime.arena.allocator(), .{ .actor_impulse = .{ .contact = .{ .wall = .{ .sector = brass, .index = 0 }, .actor = null }, .velocity = .{ .x = 1, .y = 0, .z = -1 } } });
+    try runtime.pending.append(.{ .actor_impulse = .{ .contact = .{ .wall = .{ .sector = brass, .index = 0 }, .actor = null }, .velocity = .{ .x = 1, .y = 0, .z = -1 } } });
     const impulse = try runtime.checkpoint(a);
     defer impulse.deinit(a);
     try std.testing.expectEqual(@as(usize, 0), runtime.effects.items.len);
     try runtime.flushQueued(&level, null, 34, &.{}, 0x200000);
     try std.testing.expectEqual(@as(usize, 1), runtime.effects.items.len);
     try std.testing.expect(runtime.effects.items[0] == .actor_impulse);
-    runtime.restore(impulse);
+    try runtime.restore(impulse);
     try std.testing.expectEqual(@as(usize, 1), runtime.pending.items.len);
     try std.testing.expectEqual(@as(usize, 0), runtime.effects.items.len);
 }
@@ -2517,6 +2571,7 @@ test "INF blocked Hideout door matches rollback timeout and queued impulse" {
             state.runtime_flags = flags;
         }
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{}, .base_vertices = originals };
+        try runtime.reserveLists();
         defer runtime.deinit();
         var elevator = Elevator{
             .sector = sequence.sector,

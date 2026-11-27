@@ -91,7 +91,8 @@ test "Sanchez constructor template dormant clock and message gate" {
             try std.testing.expectEqual(@as(u32, 15000), target.config.taunt_timer_time);
             var random: u32 = 0x742389ac;
             var shared: controller.Shared = .{ .now = 1000, .total_enemies = 1 };
-            var effects: std.ArrayList(controller.Effect) = .empty;
+            var effects_buffer: [16]controller.Effect = undefined;
+            var effects = controller.Effects.init(&effects_buffer);
             var context: controller.Context = .{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = null, .visibility = &visibility, .random = &random, .now = 9000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects };
             try std.testing.expectEqual(false, try controller.tick(&target, &actor, &context));
             try std.testing.expectEqual(@as(u32, 3000), target.next_tick);
@@ -181,7 +182,8 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         if (std.mem.eql(u8, case.variant, "taunt_wait")) target.ai.taunt_at = 9000;
         var random = entry.random;
         var cache = try occlusion.Cache.init(a, &level);
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var residue: @import("../projectile/contact.zig").Residue = .{};
         for (entry.projection, 0..) |word, index| residue.projection.words[index] = word;
         const sites = [_]@import("sanchez.zig").Site{.{ .source = 0, .sector = actor.sector, .position = actor.position }};
@@ -282,7 +284,8 @@ test "hidden Sanchez selected taunt sound updates projection by actual admission
         var cache = try occlusion.Cache.init(a, &level);
         var random = entry.random;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var residue: @import("../projectile/contact.zig").Residue = .{};
         for (entry.projection, 0..) |word, index| residue.projection.words[index] = word;
         const runtime = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", system);

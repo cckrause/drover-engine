@@ -432,8 +432,8 @@ test "generator sound allocation and driver failure match the reference" {
         session.animation_time = 1000;
         session.scene.sectors[session.player.sector].flags = if (case.outside) 1 else 0;
         try session.generators.append(session.arena.allocator(), &item, object, 0, 1000, &session.contact_state.random);
-        var effects = inventory.Effects.init(a);
-        defer effects.deinit();
+        var effects_buffer: inventory.EffectBuffer = undefined;
+        var effects = inventory.Effects.init(&effects_buffer);
         for (case.frames) |expected| {
             try generate(session, a, &effects, 0);
             const record = session.generators.records.items[0];

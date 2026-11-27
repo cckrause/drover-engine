@@ -78,7 +78,12 @@ const projectile_session = @import("../projectile/session.zig");
 const generator = @import("../enemy/generator.zig");
 const initial = @import("initial_state.zig");
 
-const ActorMessage = struct { target: usize, code: u32, serial: u64 };
+const session_queues = @import("session_queues.zig");
+
+comptime {
+    // Each user message becomes one effect of the frame.
+    std.debug.assert(network_server.max_user_messages == inventory_module.max_effects);
+}
 
 pub const Session = struct {
     active_audio: ?*audio_runtime.Runtime = null,
@@ -92,7 +97,7 @@ pub const Session = struct {
     player_sound_names: [22]?[]const u8 = @splat(null),
     sounds_closed: bool = false,
     active_effects: ?*inventory_module.Effects = null,
-    enemy_native_effects: std.ArrayList(inventory_module.Effect) = .empty,
+    enemy_native_effects: inventory_module.Effects = .init(&.{}),
     rail_audio_state: rail_audio.State = .{},
     impact_state: shot_impact.State = .{},
     arena: std.heap.ArenaAllocator,
@@ -128,7 +133,7 @@ pub const Session = struct {
     enemy_shared: enemy.Shared,
     enemy_nodes: []enemy.Node,
     sanchez_sites: ?[]sanchez.Site,
-    enemy_effects: std.ArrayList(enemy.Effect),
+    enemy_effects: enemy.Effects,
     enemies_loaded: bool,
     corpse_pool: enemy_lifecycle.CorpsePool,
     corpse_sources: [30]?usize,
@@ -139,9 +144,9 @@ pub const Session = struct {
     splash_slots: []?enemy_dynamic.SplashState,
     actor_link_serial: u64,
     player_link_order: u64,
-    pending_hits: std.ArrayList(shooting.PendingHit),
-    queued_hits: std.ArrayList(shooting.PendingHit),
-    actor_messages: std.ArrayList(ActorMessage),
+    pending_hits: session_queues.PendingHits,
+    queued_hits: session_queues.PendingHits,
+    actor_messages: session_queues.ActorMessages,
     projectile_slots: []?projectile.State,
     projectile_configs: std.StringHashMap(*const projectile.Config),
     projectile_blast_sender: ?usize,
@@ -172,7 +177,9 @@ pub const Session = struct {
     contact_state: cmm.ContactState,
     collision_diameter: f32 = 0,
     actor_next_update: []i32,
-    pickup_effects: std.ArrayList(inventory_module.Effect),
+    pickup_effects: inventory_module.Effects,
+    /// Backs the hit, actor message and effect lists above; never moves.
+    queue_storage: session_queues.Storage,
     look: player_input.LookState,
     palette: [256]u32,
     palette_index: u8 = 0,
@@ -566,11 +573,11 @@ pub const Session = struct {
         defer self.active_audio = previous_audio;
         const previous_effects = self.active_effects;
         defer self.active_effects = previous_effects;
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         self.active_effects = &effects;
-        var shots = weapon_module.Shots.init(allocator);
-        defer shots.deinit();
+        var shots_buffer: weapon_module.ShotBuffer = undefined;
+        var shots = weapon_module.Shots.init(&shots_buffer);
         if (self.hud.weaponAnimation()) |animation| {
             var context = self.weaponContext(&effects, &shots, animation.ready);
             context.animation_slot = animation.slot;
@@ -586,19 +593,18 @@ pub const Session = struct {
         self.active_audio = audio;
         defer self.active_audio = previous_audio;
         self.animation_time +%= elapsed_ms;
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         const previous_effects = self.active_effects;
         self.active_effects = &effects;
         defer self.active_effects = previous_effects;
         try self.startup.networkStepWith(allocator, self.animation_time, network_level.level(self), self.server_enabled, &user_messages);
         if (user_messages.items.len != 0) return error.UserMessageOutsideLevelFrame;
         try self.drainDatabase(&effects);
-        try self.pickup_effects.ensureTotalCapacity(self.arena.allocator(), effects.items.len);
         self.pickup_effects.clearRetainingCapacity();
-        self.pickup_effects.appendSliceAssumeCapacity(effects.items);
+        try self.pickup_effects.appendSlice(effects.items);
     }
 
     pub fn advanceWithAudio(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, elapsed_ms: u32, audio: ?*audio_runtime.Runtime) !void {
@@ -611,11 +617,11 @@ pub const Session = struct {
         defer self.active_effects = previous_effects;
         try self.loadEnemies(allocator);
         self.inf.effects.clearRetainingCapacity();
-        var animation_effects = inventory_module.Effects.init(allocator);
+        var animation_effects_buffer: inventory_module.EffectBuffer = undefined;
+        var animation_effects = inventory_module.Effects.init(&animation_effects_buffer);
         self.active_effects = &animation_effects;
-        defer animation_effects.deinit();
-        var shots = weapon_module.Shots.init(allocator);
-        defer shots.deinit();
+        var shots_buffer: weapon_module.ShotBuffer = undefined;
+        var shots = weapon_module.Shots.init(&shots_buffer);
         try self.deliverHits(allocator, audio, &animation_effects);
         try enemy_session.deliverSelections(self, allocator, audio);
         self.animation_time +%= elapsed_ms;
@@ -635,8 +641,8 @@ pub const Session = struct {
             incoming_ids[incoming_count] = @bitCast(owned.definition.use_id);
             incoming_count += 1;
         };
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try self.startup.networkStepWith(allocator, self.animation_time, network_level.level(self), self.server_enabled, &user_messages);
         try self.inf.flushQueued(&self.level, &self.scene, self.animation_time, incoming_ids[0..incoming_count], self.difficulty_mask >> 8);
         try self.drainDatabase(&animation_effects);
@@ -663,16 +669,16 @@ pub const Session = struct {
             },
             .wall_frame => |request| {
                 if (request.instance) |index|
-                    try self.texture_animations.messageInstance(allocator, &self.level, &self.scene, index, request.code, request.arg1, self.animation_time, &animation_effects)
+                    try self.texture_animations.messageInstance(&self.level, &self.scene, index, request.code, request.arg1, self.animation_time, &animation_effects)
                 else
-                    try self.texture_animations.message(allocator, &self.level, &self.scene, .{ .sector = request.sector, .wall = request.wall }, request.code, request.arg1, self.animation_time, &animation_effects);
+                    try self.texture_animations.message(&self.level, &self.scene, .{ .sector = request.sector, .wall = request.wall }, request.code, request.arg1, self.animation_time, &animation_effects);
             },
             .inventory_use => {},
             .sound => |sound| if (!sound.delivered) {
                 try animation_effects.append(.{ .sound = soundRequest(sound) });
             },
         };
-        try self.texture_animations.tick(allocator, &self.level, &self.scene, self.animation_time, &animation_effects);
+        try self.texture_animations.tick(&self.level, &self.scene, self.animation_time, &animation_effects);
         if (self.inf.audio) |context| for (animation_effects.items) |*effect| if (effect.* == .sound) {
             const request = &effect.sound;
             if (request.occlusion_applied or request.sector == null or request.position == null) continue;
@@ -712,8 +718,8 @@ pub const Session = struct {
             try context.selectInput(packet.get(.weapon));
         }
         const control = look.controlForLife(packet, alive);
-        var effects = inventory_module.Effects.init(allocator);
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         enemy_session.syncSchedule(self);
         self.inventory.player_flags = self.player.flags;
         if (logic) self.player.dead = !alive;
@@ -838,7 +844,7 @@ pub const Session = struct {
         try enemy_dynamic.tick(self, allocator, &effects, dynamic_next);
         try projectile_session.flushExplosions(self, allocator, &effects);
         try projectile_session.flushContacts(self, &effects);
-        std.mem.swap(std.ArrayList(shooting.PendingHit), &self.pending_hits, &self.queued_hits);
+        std.mem.swap(session_queues.PendingHits, &self.pending_hits, &self.queued_hits);
         self.weapon_state.reconcileSelection(&self.inventory);
         if (self.hud.weaponAnimation()) |animation| {
             if (self.inventory.slots[self.inventory.selected_weapon] != null) {
@@ -882,9 +888,8 @@ pub const Session = struct {
         try self.damage_flash.advance(self.inventory.health == 0, self.animation_time);
         self.frame_aim_weight = self.weapon_state.aim_weight;
         self.weapon_state.advanceAim(self.animation_time);
-        try self.pickup_effects.ensureTotalCapacity(self.arena.allocator(), effects.items.len);
         self.pickup_effects.clearRetainingCapacity();
-        self.pickup_effects.appendSliceAssumeCapacity(effects.items);
+        try self.pickup_effects.appendSlice(effects.items);
         var messages = self.messages;
         for (effects.items) |effect| switch (effect) {
             .message => |message| if (message.routed)
@@ -956,8 +961,8 @@ pub const Session = struct {
         self.actor_slots[source] = actor.*;
         self.targets[source] = target.*;
         self.syncActor(source);
-        var local = inventory_module.Effects.init(self.allocator);
-        defer local.deinit();
+        var local_buffer: inventory_module.EffectBuffer = undefined;
+        var local = inventory_module.Effects.init(&local_buffer);
         const effects = self.active_effects orelse &local;
         if (ctx.actors.runtime) |runtime| if (runtime.effects != effects) {
             try effects.appendSlice(runtime.effects.items);
@@ -965,7 +970,7 @@ pub const Session = struct {
         };
         try self.castShotsFrom(self.allocator, &.{shot}, effects, source);
         try self.drainSounds(effects);
-        if (self.active_effects == null) try self.enemy_native_effects.appendSlice(self.arena.allocator(), local.items);
+        if (self.active_effects == null) try self.enemy_native_effects.appendSlice(local.items);
         actor.* = self.actor_slots[source].?;
         target.* = self.targets[source].?;
         const runtime = ctx.actors.runtime;
@@ -1083,7 +1088,7 @@ pub const Session = struct {
 
     pub fn enqueueNativeActorMessage(host: *anyopaque, source: usize, code: u32) !void {
         const self: *Session = @ptrCast(@alignCast(host));
-        try self.actor_messages.append(self.arena.allocator(), .{ .target = source, .code = code, .serial = self.enemy_selection_serial });
+        try self.actor_messages.append(.{ .target = source, .code = code, .serial = self.enemy_selection_serial });
         self.enemy_selection_serial += 1;
     }
 
@@ -1094,7 +1099,7 @@ pub const Session = struct {
 
     pub fn enqueueReflectedHit(host: *anyopaque, source: ?usize, damage: shooting.DamageInput) !void {
         const self: *Session = @ptrCast(@alignCast(host));
-        try self.queued_hits.append(self.arena.allocator(), .{ .target = shooting.local_player, .sender = source, .queue_serial = self.enemy_selection_serial, .count = 1, .input = damage });
+        try self.queued_hits.append(.{ .target = shooting.local_player, .sender = source, .queue_serial = self.enemy_selection_serial, .count = 1, .input = damage });
         self.enemy_selection_serial += 1;
     }
 
@@ -1537,12 +1542,12 @@ pub const Session = struct {
         self.player_sound_names = @splat(null);
         self.sounds_closed = false;
         self.active_effects = null;
-        self.enemy_native_effects = .empty;
+        self.enemy_native_effects = .init(&self.queue_storage.enemy_native_effects);
         self.campaign_completion_requested = false;
         self.player_bind_flags = 0;
         self.death_restart_requested = false;
         self.death_restart = .{};
-        self.actor_messages = .empty;
+        self.actor_messages = .init(&self.queue_storage.actor_messages);
         self.projectile_blast_sender = null;
         self.explosion_flash = 0;
         self.scope_explosion_flash = 0;
@@ -1726,7 +1731,7 @@ pub const Session = struct {
         self.enemy_shared = .{ .next_shot = persistent.enemy_next_shot, .next_taunt = persistent.enemy_next_taunt, .crt_random = persistent.crt_random, .now = persistent.enemy_now, .entry_random = persistent.enemy_entry_random, .next_tick = persistent.enemy_next_tick, .animation_message = persistent.enemy_animation_message };
         self.enemy_nodes = &.{};
         self.sanchez_sites = null;
-        self.enemy_effects = .empty;
+        self.enemy_effects = .init(&self.queue_storage.enemy_effects);
         self.enemies_loaded = false;
         self.corpse_pool = .{};
         self.corpse_sources = @splat(null);
@@ -1739,8 +1744,8 @@ pub const Session = struct {
         @memset(self.splash_slots, null);
         self.player_link_order = self.objects.entries.len + 1;
         self.actor_link_serial = self.player_link_order + 1;
-        self.pending_hits = .empty;
-        self.queued_hits = .empty;
+        self.pending_hits = .init(&self.queue_storage.hits[0]);
+        self.queued_hits = .init(&self.queue_storage.hits[1]);
         self.actor_time = persistent.actor_time;
         self.frame_seconds = persistent.frame_seconds;
         self.frame_aim_weight = 0;
@@ -1764,7 +1769,7 @@ pub const Session = struct {
         self.automap_was_separate = false;
         self.framebuffer_initialized = false;
         self.collision_diameter = 0;
-        self.pickup_effects = .empty;
+        self.pickup_effects = .init(&self.queue_storage.pickup_effects);
         self.look = persistent.look;
         if (self.look.pitch_active) {
             self.look.pitch_accumulator = 0;
@@ -2091,7 +2096,7 @@ pub const Session = struct {
                             found = true;
                             break;
                         };
-                        if (!found) try self.pending_hits.append(self.arena.allocator(), shooting.PendingHit.initFrom(source_index, source orelse shooting.local_player, &self.angles, damage, victim));
+                        if (!found) try self.pending_hits.append(shooting.PendingHit.initFrom(source_index, source orelse shooting.local_player, &self.angles, damage, victim));
                     },
                 }
                 if (shot.hit_sound) |sound| {
@@ -2103,7 +2108,7 @@ pub const Session = struct {
         }
     }
 
-    fn deliverActorMessage(self: *Session, allocator: std.mem.Allocator, audio: ?*audio_runtime.Runtime, message: ActorMessage) !void {
+    fn deliverActorMessage(self: *Session, allocator: std.mem.Allocator, audio: ?*audio_runtime.Runtime, message: session_queues.ActorMessage) !void {
         if (message.target == shooting.local_player) return;
         if (message.target >= self.actor_slots.len or self.removed_actors[message.target]) return;
         const actor = self.actor_slots[message.target] orelse return error.MissingScriptActor;
@@ -2196,8 +2201,8 @@ pub const Session = struct {
     }
 
     fn startDrain(self: *Session, allocator: std.mem.Allocator, now: u32) !void {
-        var user_messages: std.ArrayList(i32) = .empty;
-        defer user_messages.deinit(allocator);
+        var user_messages_buffer: network_server.UserMessageBuffer = undefined;
+        var user_messages = network_server.UserMessages.init(&user_messages_buffer);
         try network_server.processRequests(self.server, self.router, .{ .now = now, .game_type = self.game_type, .mode = self.mode, .level_loaded = true, .allocator = allocator, .user_messages = &user_messages });
         if (user_messages.items.len != 0) return error.UnexpectedStartupMessage;
     }
@@ -2799,8 +2804,8 @@ test "queued sounds precede handcar admission and retain their captured listener
     sound.engine.effects_volume = 127;
     const resource = try sound.register("thunk.wav");
     for (0..7) |_| _ = try sound.engine.start(resource, sound.waves.items[resource].sample_rate, .{ .priority = 64 }, 0);
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     var pending = Session.PendingAudio{ .session = session, .effects = &effects };
     var context = rail_audio.Context{ .state = &session.rail_audio_state, .runtime = sound, .now = 0, .before = .{ .context = &pending, .drain = Session.PendingAudio.drain } };
     const position: level_module.Vec3 = .{ .x = 0, .y = 0, .z = 0 };
@@ -2916,6 +2921,7 @@ test "live vertical tasks retain double-mirror wall heights" {
         .value = 0,
         .runtime_flags = 3,
     }}), .classes = &.{}, .triggers = &.{} };
+    try session.inf.reserveLists();
     for (case.slaves) |slave| try session.inf.elevators[0].slaves.append(owned, .{ .sector = slave });
     session.enemies_loaded = true;
     @memset(session.loaded_actor_sectors, true);
@@ -3006,6 +3012,7 @@ test "live runtime flag clears survive unrelated light tasks" {
         .{ .target = .{ .sector = held.sector, .wall = 0 }, .flags = 0x04f00001 },
         .{ .target = .{ .sector = sectors[3] }, .flags = 0x04f00001 },
     }) };
+    try session.inf.reserveLists();
     try session.inf.elevators[1].slaves.append(owned, .{ .sector = sectors[1] });
     session.enemies_loaded = true;
     @memset(session.loaded_actor_sectors, true);
@@ -3032,8 +3039,8 @@ test "live runtime flag clears survive unrelated light tasks" {
     };
     try Check.state(session, held.sector, sectors, fixture.value.initial);
     for (fixture.value.samples) |sample| {
-        try session.inf.pending.append(owned, .{ .message = .{ .value = .{ .target = .{ .sector = held.sector, .wall = 0 }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
-        for (sectors) |sector| try session.inf.pending.append(owned, .{ .message = .{ .value = .{ .target = .{ .sector = sector }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
+        try session.inf.pending.append(.{ .message = .{ .value = .{ .target = .{ .sector = held.sector, .wall = 0 }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
+        for (sectors) |sector| try session.inf.pending.append(.{ .message = .{ .value = .{ .target = .{ .sector = sector }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 }, .entity_mask = 0 } });
         session.inf.elevators[1].speed = sample.speed;
         session.inf.elevators[1].runtime_flags = if (sample.enabled) 3 else 0;
         try session.advance(a, &.{}, sample.now - session.animation_time);

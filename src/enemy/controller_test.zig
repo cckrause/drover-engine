@@ -122,7 +122,8 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
         defer cache.deinit();
         var random = case.initial.random;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         const sound = if (case.audio_active) try audio.Runtime.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", try lab.Archive.init(try read(a, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB"))) else null;
         defer if (sound) |runtime| runtime.deinit();
         var ctx = controller.Context{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = if (living) .{ .position = .{ .x = 20, .y = 0, .z = 0 }, .sector = 0, .height = 6, .radius = 1.5, .yaw = 0, .flags = 1, .secondary_flags = 0x10 } else null, .visibility = &cache, .random = &random, .now = 1000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects, .difficulty = case.difficulty, .audio = sound };
@@ -291,7 +292,8 @@ fn compareStack(path: []const u8) !void {
         var cache = try occlusion.Cache.init(a, &level);
         var random = case.before.random;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var residue = @import("../projectile/contact.zig").Residue{};
         for (case.before.residue, 0..) |word, i| residue.words[i] = word;
         const projection_words = [4]?u32{ 0, 0x3f800000, 0x439c0000, 0x42ac0000 };
@@ -391,7 +393,8 @@ test "enemy throw targeting matches the reference range perturbation and angles"
         defer cache.deinit();
         var random = case.seed;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var ctx = controller.Context{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = .{ .position = .{ .x = case.position[0], .y = case.position[1], .z = case.position[2] }, .sector = 0, .height = 6, .radius = 1.5, .yaw = 0, .flags = 1, .secondary_flags = 0x10 }, .visibility = &cache, .random = &random, .now = 1000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects };
         try std.testing.expectEqual(case.success, try controller.aimThrow(&target, actor, &ctx));
         try std.testing.expectEqual(case.pitch, target.ai.throw_pitch);
@@ -439,7 +442,8 @@ test "enemy impulses activation and hit results retain cached AI clock" {
         defer cache.deinit();
         var random = case.initial.random;
         var shared: controller.Shared = .{ .now = 1000 };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var ctx = controller.Context{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = null, .visibility = &cache, .random = &random, .now = 1050, .elapsed_seconds = 0.05, .shared = &shared, .effects = &effects };
         try expectSnapshot(case.initial, target, actor, random);
         try target.advanceAnimation(&actor, &ctx);
@@ -526,7 +530,8 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
         var cache = try occlusion.Cache.init(a, &level);
         var random: u32 = 1948486060;
         var shared: controller.Shared = .{ .now = 1000, .total_enemies = 10, .killed_enemies = case.killed };
-        var effects: std.ArrayList(controller.Effect) = .empty;
+        var effects_buffer: [16]controller.Effect = undefined;
+        var effects = controller.Effects.init(&effects_buffer);
         var sink: Sink = .{ .allocator = a };
         const player: controller.Subject = .{ .position = .{ .x = 20, .y = 0, .z = 0 }, .sector = 0, .height = 6, .radius = 1.5, .yaw = 0, .flags = if (case.dead_player) 0x4001 else 1, .secondary_flags = case.sender };
         var ctx = controller.Context{

@@ -206,7 +206,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
     const untouched = session.level.sectors[sibling.target.sector].walls[sibling.target.wall.?].mid.texture;
     const animation = session.textures[instance.resource].animation.?;
     for (samples[0..7]) |sample| {
-        if (sample.action.message) |code| try session.inf.pending.append(session.inf.arena.allocator(), .{ .message = .{
+        if (sample.action.message) |code| try session.inf.pending.append(.{ .message = .{
             .value = .{ .target = .{ .sector = instance.target.sector, .wall = instance.target.wall }, .code = code, .event_mask = 0x2000, .arg1 = sample.action.arg1 },
             .entity_mask = 0xffffffff,
         } });

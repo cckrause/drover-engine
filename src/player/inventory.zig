@@ -10,8 +10,14 @@ const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const nwx = @import("../assets/nwx.zig");
 const cmm = @import("../script/cmm.zig");
+const FixedList = @import("../util/fixed_list.zig").FixedList;
 
-pub const Effects = std.array_list.Managed(Effect);
+/// Messages and sounds one pass may collect before they are handed on: a
+/// sound for every shot a pass may hold, and 16 more. The test suite never
+/// went past 5.
+pub const max_effects = @import("weapon.zig").max_shots + 16;
+pub const Effects = FixedList(Effect, error{TooManyEffects});
+pub const EffectBuffer = [max_effects]Effect;
 
 pub const Effect = union(enum) {
     message: struct { index: i32, parameter: ?i32 = null, routed: bool = false },
@@ -936,7 +942,8 @@ test "inventory startup and twenty pickups match the reference" {
         "GAMBOXC", "GAMBOXC", "GAMBELT", "GBRSSKEY", "GBRSSKEY", "GIRONKEY", "GSTEEKEY", "GDOCBAG", "GSATCHEL",
         "GOIL",    "GRIFLE",
     };
-    var effects = Effects.init(a);
+    var effects_buffer: EffectBuffer = undefined;
+    var effects = Effects.init(&effects_buffer);
     for (names, 0..) |name, i| {
         effects.clearRetainingCapacity();
         const path = try std.fmt.allocPrint(a, "{s}.ITM", .{name});
@@ -978,7 +985,8 @@ test "Death Match accepts an existing full weapon pickup as in" {
     const network_pickup = try Pickup.parse(a, &archives, &weapon_pickup, 0x200000, 5);
     const maximum = inventory.slots[slot].?.definition.max_count;
     inventory.slots[slot].?.count = maximum;
-    var effects = Effects.init(a);
+    var effects_buffer: EffectBuffer = undefined;
+    var effects = Effects.init(&effects_buffer);
     try std.testing.expect(!try inventory.take(&campaign_pickup, 0, &effects));
     try std.testing.expect(try inventory.take(&network_pickup, 0, &effects));
     try std.testing.expectEqual(maximum, inventory.slots[slot].?.count);
@@ -1016,7 +1024,8 @@ test "inventory instant pickup and sheriff task match handlers" {
     const elixir = try Pickup.parse(a, &archives, &elixir_item, 0x100000, 1);
     const badge = try Pickup.parse(a, &archives, &badge_item, 0x100000, 1);
     var inventory: Inventory = .{};
-    var effects = Effects.init(a);
+    var effects_buffer: EffectBuffer = undefined;
+    var effects = Effects.init(&effects_buffer);
     try std.testing.expect(!try inventory.take(&canteen, 0, &effects));
     try std.testing.expectEqual(@as(usize, 0), effects.items.len);
     inventory.health = 9.5;
@@ -1118,7 +1127,8 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     const instant = try Pickup.parse(a, &archives, &health, 0x100000, 1);
     try std.testing.expectEqual(@as(u8, 0), instant.health_bonus);
     var inventory: Inventory = .{ .health = 9 };
-    var effects = Effects.init(a);
+    var effects_buffer: EffectBuffer = undefined;
+    var effects = Effects.init(&effects_buffer);
     try std.testing.expect(try inventory.take(&instant, 0, &effects));
     try std.testing.expectEqual(@as(f32, 9), inventory.health);
     var fractional = try Item.parse(a, "ITEM 1.0\nFUNC Inv_InstantGroundObject\nDATA 1\nINT HEALTH_B 9\n");

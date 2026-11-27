@@ -236,8 +236,8 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
             const old_target_array = session.targets.ptr;
             const first = session.actor_slots.len;
             const selection = session.enemy_selection_serial;
-            var effects = inventory.Effects.init(a);
-            defer effects.deinit();
+            var effects_buffer: inventory.EffectBuffer = undefined;
+            var effects = inventory.Effects.init(&effects_buffer);
             session.active_effects = &effects;
             defer session.active_effects = null;
             var ctx = enemy_session.context(session, a, null, null);
@@ -347,10 +347,10 @@ test "alternating player and enemy pellets share the shared random stream" {
             errdefer std.debug.print("shared native RNG case {d}, {s} at {d}\n", .{ case_index, frame.kind, frame.now });
             session.animation_time = frame.now;
             session.enemy_shared.now = frame.now;
-            var effects = inventory.Effects.init(a);
-            defer effects.deinit();
-            var shots = weapon.Shots.init(a);
-            defer shots.deinit();
+            var effects_buffer: inventory.EffectBuffer = undefined;
+            var effects = inventory.Effects.init(&effects_buffer);
+            var shots_buffer: weapon.ShotBuffer = undefined;
+            var shots = weapon.Shots.init(&shots_buffer);
             var capture = PacketCapture{ .allocator = a };
             if (std.mem.eql(u8, frame.kind, "enemy")) {
                 var context = enemy_session.context(session, a, null, null);

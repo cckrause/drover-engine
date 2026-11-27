@@ -82,7 +82,8 @@ test "fighting between machines matches the reference's messages, texts and poin
             const bytes = try std.fmt.hexToBytes(&sent, op.get("sent").?.string);
             _ = try router.post(0x100800, 0x3f6, bytes);
             var server: server_module.Server = .{};
-            var users: std.ArrayList(i32) = .empty;
+            var users_buffer: server_module.UserMessageBuffer = undefined;
+            var users = server_module.UserMessages.init(&users_buffer);
             var context: u8 = 0;
             const Hooks = struct {
                 fn create(_: *anyopaque, _: message.HaveServerCreate) anyerror!void {
@@ -142,7 +143,8 @@ test "fighting between machines matches the reference's messages, texts and poin
             const events = op.get("events").?.array.items;
             var health: f32 = 10;
             var feedback: shot_damage.NetworkResult = .none;
-            var effects = inventory_module.Effects.init(a);
+            var effects_buffer: inventory_module.EffectBuffer = undefined;
+            var effects = inventory_module.Effects.init(&effects_buffer);
             if (!network_combat.justStartedAt(@intCast(op.get("start").?.integer), @intCast(op.get("clock").?.integer))) {
                 const value = try message.readDamage(bytes);
                 var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = .{ .x = 10, .y = 2, .z = -4 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });

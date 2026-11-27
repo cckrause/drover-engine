@@ -173,7 +173,7 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
     const health = session.targets[victim].?.damage.health;
     var pending = pendingHit(&session.angles, fixture.impacts[0], victim);
     pending.blood.sector = session.player.sector;
-    try session.pending_hits.append(session.arena.allocator(), pending);
+    try session.pending_hits.append(pending);
     const first = session.actor_slots.len;
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(first + 3, session.actor_slots.len);

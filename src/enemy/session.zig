@@ -132,8 +132,8 @@ pub fn run(session: anytype, allocator: std.mem.Allocator, sound: ?*audio.Runtim
     }
     const target = if (session.targets[source]) |*value| value else return false;
     const actor = if (session.actor_slots[source]) |*value| value else return error.MissingEnemyActor;
-    var effects = inventory.Effects.init(allocator);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     var runtime = scriptContext(session, &effects, actor.secondary_flags);
     runtime.linked_actor = source;
     runtime.link_order = &actor.sector_link_order;
@@ -253,10 +253,10 @@ pub fn deliverSelectionsBefore(session: anytype, allocator: std.mem.Allocator, s
         const index = source orelse break;
         if (serial >= before) break;
         if (object) {
-            var effects = inventory.Effects.init(allocator);
-            defer effects.deinit();
+            var effects_buffer: inventory.EffectBuffer = undefined;
+            var effects = inventory.Effects.init(&effects_buffer);
             try object_logic.deliverNext(session, session.active_effects orelse &effects);
-            try session.enemy_native_effects.appendSlice(session.arena.allocator(), effects.items);
+            try session.enemy_native_effects.appendSlice(effects.items);
         } else if (splash) {
             session.splash_slots[index].?.selection_serial = null;
             if (try blood.selectSplash(&session.actor_slots[index].?, session.animation_time)) session.removed_actors[index] = true;

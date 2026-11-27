@@ -67,8 +67,8 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
         var state: lamp.State = .{ .fuel_elapsed = case.config.fuel_elapsed, .flicker_time = case.config.flicker_time };
         var random = case.config.random;
         var actor_flags: u32 = 0x8000004f;
-        var effects = inventory_module.Effects.init(a);
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         for (case.actions, case.frames, 0..) |action, expected, frame| {
             effects.clearRetainingCapacity();
             const parts = action.array.items;

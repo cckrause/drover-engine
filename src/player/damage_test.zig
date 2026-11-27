@@ -135,7 +135,8 @@ fn checkEnvironmentReference(fixture_path: []const u8) !void {
     const physics = try movement.Physics.parse(try archives[0].find("AIR.PHY", 0x50485953));
     const audio_config = try player_audio.Config.fromItem(&item);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         errdefer std.debug.print("drowning case {s}\n", .{case.name});
         var player = try movement.Player.init(&item, physics, .{ .sector = 0, .position = .{ .x = case.config.position[0], .y = case.config.position[1], .z = case.config.position[2] }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });
@@ -191,8 +192,8 @@ test "fall damage threshold health feedback and dead movement" {
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
     const spawn: level_module.Spawn = .{ .sector = 0, .position = .{ .x = 0, .y = 0.01, .z = 0 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     const fixture_bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/player-damage-reference.json", a, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
@@ -359,7 +360,8 @@ test "solid ceiling crushing records and compressed player motion" {
     var collision_check: u32 = 0;
     var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
-    var effects = inventory_module.Effects.init(a);
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     for (fixture.value.movement_cases) |case| {
         sectors[0].ceiling.height = case.config.ceiling;
         scene_sectors[0].flags = case.config.sector_flags;

@@ -11,6 +11,8 @@ const pcm = @import("../video/audio.zig");
 const codec = @import("../video/smush_codec.zig");
 const MemoryBudget = @import("../platform/MemoryBudget.zig");
 const world = @import("../render/backends/software/world.zig");
+const session_queues = @import("../render/session_queues.zig");
+const inf = @import("../script/inf.zig");
 
 // Native master pointers grow with the target ABI; encoded asset data does not.
 pub const resource_handles_bytes: u64 = limits.current.resource_handles * @as(u64, @sizeOf(?[*]u8));
@@ -21,6 +23,10 @@ pub const framebuffer_bytes: u64 = 640 * 480;
 // The software renderer's frame storage, reserved once in main, sized for a
 // 640-wide view and the largest shipped level.
 pub const software_frame_bytes: u64 = @sizeOf(world.Workspace);
+// Queues each level session holds from frame to frame, allocated with the
+// session; two sessions overlap while a level changes.
+pub const session_queue_bytes: u64 = @sizeOf(session_queues.Storage) +
+    inf.max_pending * @sizeOf(inf.Pending) + inf.max_effects * @sizeOf(inf.Effect);
 pub const known_storage_bytes: u64 = limits.current.resource_bytes + resource_handles_bytes +
     limits.current.movie_input_bytes + sound_state_bytes + movie_audio_bytes +
     movie_decoder_bytes + framebuffer_bytes + software_frame_bytes;

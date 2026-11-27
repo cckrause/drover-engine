@@ -45,7 +45,7 @@ const Case = struct {
 };
 
 fn queueHit(session: *Session, source: usize, serial: ?u64) !void {
-    try session.queued_hits.append(session.arena.allocator(), .{
+    try session.queued_hits.append(.{
         .target = source,
         .queue_serial = serial,
         .count = 1,
@@ -131,8 +131,8 @@ test "Town bottle hits retain queued selections sound frames and removal" {
     const original_slots = try a.dupe(?Actor, session.actor_slots);
     @memset(session.removed_actors, true);
     for (session.actor_slots, 0..) |_, source| session.syncActor(source);
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     session.active_effects = &effects;
     defer session.active_effects = null;
 

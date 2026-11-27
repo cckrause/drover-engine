@@ -126,6 +126,7 @@ fn verifyVerticalFixture(path: []const u8, digest: []const u8, startup: bool, ex
             .collision_diameter = 0,
         };
         var runtime = inf.Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = undefined, .triggers = &.{}, .classes = &.{} };
+        try runtime.reserveLists();
         defer runtime.deinit();
         runtime.elevators = try runtime.arena.allocator().dupe(inf.Elevator, &.{.{
             .sector = case.primary,
@@ -151,7 +152,8 @@ fn verifyVerticalFixture(path: []const u8, digest: []const u8, startup: bool, ex
                 defer a.free(text);
                 const originals = try mem.alloc([]const level_module.Vec2, level.sectors.len);
                 for (level.sectors, originals) |sector, *original| original.* = try mem.dupe(level_module.Vec2, sector.vertices);
-                var initial = try inf.Runtime.loadPreparedWithWorld(a, &level, text, &scene, &angles, 90000, .{ .arena = arena, .base_vertices = originals, .elevators = .empty, .triggers = .empty, .classes = .empty }, .{ .world = &world });
+                const lists = try inf.Lists.reserve(mem);
+                var initial = try inf.Runtime.loadPreparedWithWorld(a, &level, text, &scene, &angles, 90000, .{ .arena = arena, .base_vertices = originals, .elevators = .empty, .triggers = .empty, .classes = .empty, .lists = lists }, .{ .world = &world });
                 defer initial.deinit();
                 try std.testing.expectEqual(sample.result_bits, @as(u32, @bitCast(initial.elevators[0].value)));
                 try std.testing.expectEqual(sample.speed_bits, @as(u32, @bitCast(initial.elevators[0].speed)));
@@ -221,6 +223,7 @@ test "plane speed reads live heights and newest matching receiver" {
         var level: level_module.Level = undefined;
         level.sectors = &sectors;
         var runtime = inf.Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = undefined, .triggers = &.{}, .classes = &.{} };
+        try runtime.reserveLists();
         defer runtime.deinit();
         const mem = runtime.arena.allocator();
         runtime.elevators = try mem.alloc(inf.Elevator, case.classes.len);

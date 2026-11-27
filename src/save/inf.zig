@@ -570,6 +570,7 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
         try r.end();
         try std.testing.expectEqualDeep(instance, restored);
         var native = inf.Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &.{}, .classes = &.{} };
+        try native.reserveLists();
         defer native.deinit();
         native.triggers = try a.dupe(inf.Trigger, &.{ .{ .target = .{ .sector = 410 }, .flags = 0x04f00001, .object_id = 1 }, .{ .target = .{ .sector = 410 }, .flags = 0x04f00001, .object_id = 2 } });
         native.classes = try a.dupe(inf.Class, &.{ .{ .trigger = 0 }, .{ .trigger = 1 } });

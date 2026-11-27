@@ -450,10 +450,10 @@ pub fn apply(session: anytype, audio: anytype, value: State) !void {
     for (value.inventory, 1..) |item, index| inventory.slots[index] = if (item) |owned| try restoreInventory(owned, audio) else null;
     if (value.flags & 0x20000000 != 0) {
         inventory.player_flags &= ~@as(u32, 0x20000000);
-        var effects = inventory_module.Effects.init(session.arena.allocator());
-        defer effects.deinit();
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         try session.lamp_state.toggle(inventory, &session.lamp_config, &effects);
-        try session.pickup_effects.appendSlice(session.arena.allocator(), effects.items);
+        try session.pickup_effects.appendSlice(effects.items);
         session.player.flags = inventory.player_flags;
     }
 }

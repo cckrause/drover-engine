@@ -81,7 +81,8 @@ test "rail mode angles slopes collision and sound timing" {
     const config = try player_audio.Config.fromItem(&item);
     const runtime = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[0]);
     defer runtime.deinit();
-    var effects = @import("inventory.zig").Effects.init(a);
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     for (reference.value.cases) |case| {
         var scene = try scene_module.Scene.init(a, &level, &angles);
         defer scene.deinit();

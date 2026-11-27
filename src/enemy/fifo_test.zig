@@ -107,8 +107,8 @@ test "session drains older WAX selections before queued enemy damage" {
     session.player.sector = expected.sector;
     const original_target = session.targets[source].?;
     const original_actor = session.actor_slots[source].?;
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     for (expected.cases) |case| {
         errdefer std.debug.print("original FIFO choreography {d}, damage {d}\n", .{ case.choreography, case.damage });
         session.targets[source] = original_target;
@@ -123,7 +123,7 @@ test "session drains older WAX selections before queued enemy damage" {
         try expectSnapshot(case.initial, target.*, actor.*, session.contact_state.random);
         try std.testing.expect(try target.select(actor, case.choreography));
         try expectSnapshot(case.queued, target.*, actor.*, session.contact_state.random);
-        try session.queued_hits.append(session.arena.allocator(), .{
+        try session.queued_hits.append(.{
             .target = source,
             .count = 1,
             .input = .{ .kind = case.damage_input.kind, .damage = @bitCast(case.damage_input.damage_bits), .mass = 0, .speed = 1000, .pitch = 0, .yaw = 4096, .lateral = 0, .height = @bitCast(case.damage_input.height_bits) },

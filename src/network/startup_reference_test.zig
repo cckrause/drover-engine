@@ -56,8 +56,8 @@ test "single-player start-up requests match the reference server" {
     var game_type: u32 = 0;
     var mode: u32 = 0;
     var loaded = false;
-    var user_messages: std.ArrayList(i32) = .empty;
-    defer user_messages.deinit(a);
+    var user_messages_buffer: server_module.UserMessageBuffer = undefined;
+    var user_messages = server_module.UserMessages.init(&user_messages_buffer);
     var stopped = false;
     for (root.get("ops").?.array.items) |item| {
         const op = item.object;

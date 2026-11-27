@@ -360,15 +360,15 @@ pub fn emitEnemyProjectile(session: anytype, target: *@import("../player/target.
     session.actor_slots[source] = actor.*;
     session.targets[source] = target.*;
     session.syncActor(source);
-    var local = inventory.Effects.init(session.allocator);
-    defer local.deinit();
+    var local_buffer: inventory.EffectBuffer = undefined;
+    var local = inventory.Effects.init(&local_buffer);
     const effects = session.active_effects orelse &local;
     if (ctx.actors.runtime) |native| if (native.effects != effects) {
         try effects.appendSlice(native.effects.items);
         native.effects.clearRetainingCapacity();
     };
     try enemyThrow(session, target, actor, ctx, effects);
-    if (session.active_effects == null) try session.enemy_native_effects.appendSlice(session.arena.allocator(), local.items);
+    if (session.active_effects == null) try session.enemy_native_effects.appendSlice(local.items);
     session.actor_slots[source] = actor.*;
     session.targets[source] = target.*;
     session.syncActor(source);
@@ -406,7 +406,7 @@ fn aggregate(session: anytype, target: usize, damage: shooting.DamageInput, posi
     };
     var pending = shooting.PendingHit.initFrom(target, sender, &session.angles, damage, hit);
     pending.position.x = position.x;
-    try session.pending_hits.append(session.arena.allocator(), pending);
+    try session.pending_hits.append(pending);
 }
 
 fn f(value: f64) f32 {
@@ -414,7 +414,7 @@ fn f(value: f64) f32 {
 }
 
 fn gameFlags(session: anytype, effects: *inventory.Effects) u32 {
-    var shots = weapon.Shots.init(session.arena.allocator());
-    defer shots.deinit();
+    var shots_buffer: weapon.ShotBuffer = undefined;
+    var shots = weapon.Shots.init(&shots_buffer);
     return session.weaponContext(effects, &shots, false).game_flags;
 }

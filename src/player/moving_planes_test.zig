@@ -135,7 +135,8 @@ test "moving planes player transport jump and ceiling relative response" {
     const air = try movement.Physics.parse(try system.find("AIR.PHY", 0));
     const audio_config = try player_audio.Config.fromItem(&item);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     var inventory: inventory_module.Inventory = .{};
     var native: @import("../script/cmm.zig").ContactState = .{};
     for (corpus.players) |case| {

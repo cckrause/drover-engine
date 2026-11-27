@@ -51,8 +51,8 @@ test "player bullets projectiles armor impulse blood and health feedback" {
     const physics = try movement.Physics.parse(try system.find("AIR.PHY", 0));
     const audio_config = try player_audio.Config.fromItem(&item);
     const angles = camera.Angles.init();
-    var effects = inventory_module.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory_module.EffectBuffer = undefined;
+    var effects = inventory_module.Effects.init(&effects_buffer);
     for (corpus.cases) |case| {
         errdefer std.debug.print("reference player shot case {s}\n", .{case.name});
         const config = case.config;

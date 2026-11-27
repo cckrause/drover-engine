@@ -94,7 +94,8 @@ test "pickup contacts retain reference ordering bounds and slide filter changes"
         @memset(pickups, null);
         const removed = try a.alloc(bool, actors.len);
         @memset(removed, false);
-        var effects = std.array_list.Managed(inventory_module.Effect).init(a);
+        var effects_buffer: inventory_module.EffectBuffer = undefined;
+        var effects = inventory_module.Effects.init(&effects_buffer);
         var contacts = std.array_list.Managed(usize).init(a);
         var contact_state: cmm.ContactState = .{};
         var context: runtime.Context = .{

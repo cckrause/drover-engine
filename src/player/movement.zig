@@ -808,7 +808,8 @@ fn checkWaterReference(fixture_path: []const u8) !void {
     defer scene.deinit();
     startup.applyScene(&level, &scene);
     const config = try player_audio.Config.fromItem(&item);
-    var effects = @import("inventory.zig").Effects.init(a);
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     const runtime_module = @import("../script/runtime.zig");
     const Capture = struct {
         value: ?Bubble = null,
@@ -929,8 +930,8 @@ test "player audio matches 539 frames and rolls back failed movement" {
     var scene = std.mem.zeroInit(scene_module.Scene, .{ .arena = std.heap.ArenaAllocator.init(a), .collision_check = &collision_check });
     scene.sectors = &scene_sectors;
     const angles = camera.Angles.init();
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     const Chunk = struct {
         slots: []const [3]i16 = &.{},
         count: usize = 1,
@@ -1305,8 +1306,8 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
     };
 
     const config = try player_audio.Config.fromItem(&item);
-    var effects = @import("inventory.zig").Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: @import("inventory.zig").EffectBuffer = undefined;
+    var effects = @import("inventory.zig").Effects.init(&effects_buffer);
     for ([_]usize{ 214, 70 }) |sector| for ([_]f32{ -10, -38 }) |velocity| {
         var player = try Player.init(&item, physics, .{ .sector = sector, .position = .{ .x = 465.5, .y = 1.6, .z = if (sector == 214) 458 else 460 }, .rotation = .{ .x = 0, .y = 0, .z = 0 } });
         player.velocity.y = velocity;

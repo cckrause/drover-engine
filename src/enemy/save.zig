@@ -553,7 +553,8 @@ test "generator logic and enemy save bytes match the reference" {
         if (case.hit) {
             var cache = try @import("../audio/occlusion.zig").Cache.init(a, &level);
             var random: u32 = 0x742389ac;
-            var effects: std.ArrayList(controller.Effect) = .empty;
+            var effects_buffer: [16]controller.Effect = undefined;
+            var effects = controller.Effects.init(&effects_buffer);
             const player: controller.Subject = .{ .position = .{ .x = 20, .y = 0, .z = 0 }, .sector = 0, .height = 6, .radius = 1.5, .yaw = 0, .flags = 1, .secondary_flags = 0x10 };
             var context = controller.Context{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} }, .player = player, .hit_sender = player, .visibility = &cache, .random = &random, .now = 1000, .elapsed_seconds = 0.016, .shared = &shared, .effects = &effects };
             const Reflection = struct {

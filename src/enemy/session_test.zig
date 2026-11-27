@@ -89,7 +89,8 @@ test "live collision dispatch wakes every enemy wrapper and preserves Sanchez ga
         if (target != null) break index;
     } else return error.MissingOriginalEnemyPlacement;
     const original = session.targets[source].?;
-    var effects = @import("../player/inventory.zig").Effects.init(a);
+    var effects_buffer: @import("../player/inventory.zig").EffectBuffer = undefined;
+    var effects = @import("../player/inventory.zig").Effects.init(&effects_buffer);
     const cmm = @import("../script/cmm.zig");
     for (fixture.contacts) |entry| {
         const native = try cmm.resolve(entry.name);
@@ -149,7 +150,8 @@ test "player noise preserves radii recipient masks and synchronous order" {
     try std.testing.expectEqual(fixture.value.cases[0].bodies.len, sources.items.len);
     const saved = try a.alloc(@import("../player/target.zig").Target, sources.items.len);
     for (sources.items, saved) |source, *target| target.* = session.targets[source].?;
-    var effects = @import("../player/inventory.zig").Effects.init(a);
+    var effects_buffer: @import("../player/inventory.zig").EffectBuffer = undefined;
+    var effects = @import("../player/inventory.zig").Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         for (case.layers, 0..) |layer, sector| session.level.sectors[sector].layer = layer;
         session.enemy_visibility.lists[0] = try session.arena.allocator().dupe(u16, case.connected);
@@ -234,7 +236,7 @@ test "live Hideout session schedules enemies and completes death playback" {
     try std.testing.expect(!session.removed_actors[victim]);
     try std.testing.expectEqual(@as(f32, 0), session.enemy_shared.killed_enemies);
     const actor = session.actor_slots[victim].?;
-    try session.queued_hits.append(session.arena.allocator(), .{
+    try session.queued_hits.append(.{
         .target = victim,
         .count = 1,
         .input = .{ .kind = 1, .damage = 100, .mass = 0.03, .speed = 1000, .pitch = 0, .yaw = 4096, .lateral = 0, .height = actor.height * 0.75, .shooter_position = .{ .x = session.player.position.x, .z = session.player.position.z } },
@@ -338,8 +340,8 @@ test "map scenery and pickups receive sector removal before appended actors" {
     } else return error.MissingOriginalSceneryPlacement;
     const original = session.actor_slots[source].?;
     @memset(session.removed_actors, true);
-    var effects = @import("../player/inventory.zig").Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: @import("../player/inventory.zig").EffectBuffer = undefined;
+    var effects = @import("../player/inventory.zig").Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         session.actor_slots[source] = original;
         session.actor_slots[source].?.flags = case.actor_flags;

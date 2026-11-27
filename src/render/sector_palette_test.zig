@@ -58,8 +58,8 @@ test "player sector changes switch palettes as the reference relinks do" {
     const session = try Session.open(a, @import("test_workspace.zig").get(), io, path, archive, &startup);
     defer session.deinit(a);
 
-    var effects = inventory.Effects.init(a);
-    defer effects.deinit();
+    var effects_buffer: inventory.EffectBuffer = undefined;
+    var effects = inventory.Effects.init(&effects_buffer);
     for (fixture.value.cases) |case| {
         errdefer std.debug.print("sector palette case {s} {d}->{d} number={d} flags={x}\n", .{ case.routine, case.start, case.target, case.number, case.flags });
         try std.testing.expectEqual(case.target_palette, session.level.sectors[case.target].palette);
