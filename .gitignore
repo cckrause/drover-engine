@@ -9,6 +9,5 @@ zig-out/
 /patches
 
 *.ppm
-*.png
 REGISTRY.INI
 /bin

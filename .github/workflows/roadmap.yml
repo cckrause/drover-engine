@@ -1,0 +1,45 @@
+name: Roadmap cards
+
+# Redraws the README roadmap from the issues and puts the images on the
+# roadmap-cards branch. That branch holds only the images and is
+# replaced on every run.
+
+on:
+  workflow_dispatch:
+  issues:
+    types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/roadmap_cards.py
+      - .github/workflows/roadmap.yml
+
+concurrency:
+  group: roadmap-cards
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  cards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Draw cards
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/roadmap_cards.py --out "$RUNNER_TEMP/cards"
+
+      - name: Replace the roadmap-cards branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch --orphan roadmap-cards
+          git clean -fdx
+          cp "$RUNNER_TEMP/cards/"*.svg .
+          git add -- *.svg
+          git commit -m "redraw roadmap cards"
+          git push --force origin roadmap-cards
