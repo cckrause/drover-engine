@@ -31,6 +31,9 @@ pub const Window = struct {
         errdefer c.SDL_Quit();
         const window = c.SDL_CreateWindow(window_caption, c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED, @intCast(width), @intCast(height), c.SDL_WINDOW_SHOWN) orelse return fail();
         errdefer c.SDL_DestroyWindow(window);
+        // SDL2 turns text input on by default, which makes macOS show its
+        // letter and accent popup while keys are held. The game reads raw keys.
+        c.SDL_StopTextInput();
         const surface = c.SDL_CreateRGBSurfaceFrom(pixels.ptr, @intCast(width), @intCast(height), 8, @intCast(width), 0, 0, 0, 0) orelse return fail();
         return .{ .handle = window, .surface = surface };
     }
