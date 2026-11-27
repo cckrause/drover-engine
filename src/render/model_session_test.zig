@@ -74,12 +74,12 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
         }
         try std.testing.expectEqual(session.player.crouch_height, session.player.eye_height);
         @memset(shown, 0);
-        _ = try session.renderWorld(a, shown, 0);
+        _ = try session.renderWorld(shown, 0);
         const flags = session.actor_slots[source].?.flags;
         session.actor_slots[source].?.flags &= ~@as(u32, 4);
         session.syncActor(source);
         @memset(hidden, 0);
-        _ = try session.renderWorld(a, hidden, 0);
+        _ = try session.renderWorld(hidden, 0);
         try std.testing.expect(!std.mem.eql(u8, shown, hidden));
         session.actor_slots[source].?.flags = flags;
         session.syncActor(source);

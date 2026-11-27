@@ -143,13 +143,13 @@ test "Town and Train missions load actors and advance at every difficulty" {
             try std.testing.expectEqual(@as(f32, 0), session.spawn.position.y);
             try std.testing.expectEqual(@as(f32, 36.39), session.spawn.position.z);
         }
-        _ = try session.render(allocator, pixels, 0);
+        _ = try session.render(pixels, 0);
         var input: @import("../player/input.zig").State = .{ .previous_time = 1000 };
         for (0..if (std.mem.eql(u8, name, "town")) @as(usize, 120) else 3) |tick| {
             const now: u32 = 1016 + @as(u32, @intCast(tick)) * 16;
             const packet = try input.sample(now, .{});
             try session.advance(allocator, &packet, 16);
-            _ = try session.render(allocator, pixels, now);
+            _ = try session.render(pixels, now);
         }
         var civilians: usize = 0;
         var bloodeye: usize = 0;

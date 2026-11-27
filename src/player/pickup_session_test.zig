@@ -133,7 +133,7 @@ test "Hideout pickup session dispatches real canteen and ammunition contacts" {
     try std.testing.expectEqualStrings("12 Bullets", session.messages.entries[1].string());
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
+    _ = try session.render(pixels, 0);
     try std.testing.expectEqualStrings("", session.messages.entries[2].string());
 }

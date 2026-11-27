@@ -166,7 +166,7 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
     const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     const victim = for (session.targets, 0..) |optional, index| {
         if (optional) |target| if (!target.dead and target.native == .enemy) break index;
     } else return error.MissingOriginalEnemyPlacement;
@@ -184,11 +184,11 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
         try std.testing.expect(!session.removed_actors[index]);
         try std.testing.expectEqual(@as(u32, 0), actor.flags & 0x400);
     }
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try session.advance(a, &.{}, 16);
     try std.testing.expect(session.targets[victim].?.damage.health < health);
     for (first..first + 3) |index| try std.testing.expect(session.removed_actors[index]);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try session.advance(a, &.{}, 16);
     for (first..first + 3) |index| try std.testing.expect(session.removed_actors[index]);
 }

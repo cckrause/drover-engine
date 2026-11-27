@@ -123,7 +123,7 @@ fn liveSaveRoundTrip(a: std.mem.Allocator, io: std.Io, path: []const u8, archive
     try std.testing.expectEqual(@as(usize, 0), audio.ambient.?.sources.len);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try fresh.render(a, pixels, fresh.animation_time);
+    _ = try fresh.render(pixels, fresh.animation_time);
     try std.testing.expectEqual(saved.clock + 16, fresh.animation_time);
     try fresh.closeSounds();
 }

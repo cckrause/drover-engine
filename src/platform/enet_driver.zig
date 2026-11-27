@@ -310,12 +310,15 @@ pub const Session = struct {
         errdefer stop();
         const slots = try allocator.alloc(Waiting, contract.waiting_messages);
         errdefer allocator.free(slots);
+        // One entry for every peer ENet lets in, so a join asks for no memory.
+        var players: std.ArrayList(Player) = try .initCapacity(allocator, peers);
+        errdefer players.deinit(allocator);
         const enet = c.enet_host_create(address, peers, channels, 0, 0) orelse return error.CannotOpen;
         // A peer may hold back no more than an inbox of messages while they
         // are put together. Oversized messages still arrive and are refused
         // by the driver, so they cannot block the rest of that peer's channel.
         enet.*.maximumWaitingData = contract.waiting_messages * (header + contract.max_data);
-        return .{ .allocator = allocator, .enet = enet, .hosting = false, .own = 0, .inbox = .{ .slots = slots } };
+        return .{ .allocator = allocator, .enet = enet, .hosting = false, .own = 0, .players = players, .inbox = .{ .slots = slots } };
     }
 
     fn destroy(self: *Session) void {
@@ -389,7 +392,8 @@ pub const Session = struct {
 
     fn welcome(self: *Session, peer: *c.ENetPeer, asked: u32) void {
         if (asked != protocol or self.next_id == std.math.maxInt(u32)) return c.enet_peer_disconnect_now(peer, 0);
-        self.players.append(self.allocator, .{ .id = self.next_id, .peer = peer }) catch return c.enet_peer_disconnect_now(peer, 0);
+        if (self.players.items.len == self.players.capacity) return c.enet_peer_disconnect_now(peer, 0);
+        self.players.appendAssumeCapacity(.{ .id = self.next_id, .peer = peer });
         c.enet_peer_timeout(peer, 0, contract.silence_ms, contract.silence_ms);
         self.postOwn(peer, kind_welcome, self.next_id, "", true);
         self.next_id += 1;
@@ -606,6 +610,18 @@ test "memory budget ENet callbacks release storage and report exhaustion" {
     }
     try testing.expectEqual(@as(usize, 0), c_memory.count());
     try testing.expectEqual(@as(usize, 0), budget.stats().used);
+}
+
+test "a player joins the host without the host asking for memory" {
+    var watch = testing.FailingAllocator.init(testing.allocator, .{});
+    var server = try Session.host(watch.allocator(), .{ .port = 0 });
+    defer server.close();
+    watch.fail_index = watch.alloc_index;
+    watch.resize_fail_index = watch.resize_index;
+    var joiner = try joinSoon(&server);
+    defer closeSoon(&server, &joiner);
+    try testing.expectEqual(1, server.players.items.len);
+    try testing.expectEqual(contract.max_players - 1, server.players.capacity);
 }
 
 fn stop() void {

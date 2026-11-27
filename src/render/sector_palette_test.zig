@@ -91,7 +91,7 @@ test "player sector changes switch palettes as the reference relinks do" {
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(@as(usize, 66), session.player.sector);
     try std.testing.expectEqual(@as(u8, 1), session.palette_index);
-    const under = try session.render(a, pixels, 0);
+    const under = try session.render(pixels, 0);
     try std.testing.expectEqualSlices(u32, system[0..16], under[0..16]);
     try std.testing.expectEqualSlices(u32, wet[16..], under[16..]);
 
@@ -101,7 +101,7 @@ test "player sector changes switch palettes as the reference relinks do" {
     try session.advance(a, &.{}, 16);
     try std.testing.expectEqual(@as(usize, 70), session.player.sector);
     try std.testing.expectEqual(@as(u8, 0), session.palette_index);
-    const above = try session.render(a, pixels, 0);
+    const above = try session.render(pixels, 0);
     try std.testing.expectEqualSlices(u32, system[0..16], above[0..16]);
     try std.testing.expectEqualSlices(u32, dry[16..], above[16..]);
 }

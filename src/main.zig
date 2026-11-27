@@ -140,9 +140,6 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
             explicit_patch = true;
         } else if (std.mem.eql(u8, arg, "--installer")) {
             installer_requested = true;
-        } else if (std.mem.eql(u8, arg, "--memory-mib")) {
-            std.log.err("memory limits are selected at build time with -Dmemory-profile; runtime overrides are disabled", .{});
-            return error.MemoryBudgetIsBuildTime;
         } else if (std.mem.eql(u8, arg, "--help")) {
             std.debug.print("drover [--data DATA.LAB] [--patch none|1.1|2.0] [--snapshot frame.ppm] [--frames N]\n" ++
                 "        [--menu main|difficulty] [--headless [--start good|bad|ugly]]\n" ++
@@ -236,7 +233,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
             const diagnostic_level = try shell.startup.?.levelForDiagnostics();
             try mounts.selectDisc(init.io, diagnostic_level.disc);
             session = try Session.openWithState(init.gpa, render_workspace, init.io, mounts.path(), mounts.system(), &shell.startup.?, 0, .{ .base_palette = palette });
-            palette = try session.?.render(init.gpa, pixels, 0);
+            palette = try session.?.render(pixels, 0);
             reportStartup(&shell.startup.?, session.?);
         }
         if (snapshot) |path| try writeSnapshot(init, path, pixels, &palette);
@@ -357,7 +354,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                 try audio.beginLevel(init.io, &next.level, next.geometry_archive, c.SDL_GetTicks());
                 try audio.beginAmbient(&next.level, &next.objects, startup.difficulty);
                 try audio_device.sync(audio);
-                palette = try next.render(init.gpa, pixels, c.SDL_GetTicks());
+                palette = try next.render(pixels, c.SDL_GetTicks());
                 try window.present(&palette);
                 player_input.clearLevelKeys();
                 player_input.last_sample = opened_at;
@@ -464,7 +461,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                                 const links = save_player_module.TaskLinks.of(&loaded.inventory);
                                 const bytes_out = try save_game.write(init.gpa, loaded, &shell.startup.?, audio, mounts.active, engine_now, selected.description, .{ .width = save_menu.thumbnail_width, .height = save_menu.thumbnail_height, .pixels = selected.thumbnail orelse return error.MissingSaveThumbnail });
                                 defer init.gpa.free(bytes_out);
-                                catalog.write(init.gpa, init.io, selected.slot, bytes_out) catch |err| {
+                                catalog.write(init.io, selected.slot, bytes_out) catch |err| {
                                     links.restore(&loaded.inventory);
                                     return err;
                                 };
@@ -523,7 +520,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                 try audio.engine.updateListener(loaded.audioListener());
             }
 
-            palette = try loaded.render(init.gpa, pixels, c.SDL_GetTicks());
+            palette = try loaded.render(pixels, c.SDL_GetTicks());
             player_input.capture_map_arrows = loaded.automap.capture_arrows;
 
             if (loaded.hud.sound_request) |effect| {
@@ -626,7 +623,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                                         .quit, .frame_limit => break :main_loop,
                                         .playing => {},
                                     }
-                                    palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                                    palette = try session.?.render(pixels, c.SDL_GetTicks());
                                     try window.present(&palette);
                                     reportNetworkStartup(startup, session.?);
                                     player_input.capture_map_arrows = session.?.automap.capture_arrows;
@@ -671,7 +668,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                                             .quit, .frame_limit => break :main_loop,
                                             .playing => {},
                                         }
-                                        palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                                        palette = try session.?.render(pixels, c.SDL_GetTicks());
                                         try window.present(&palette);
                                         reportNetworkStartup(startup, session.?);
                                         player_input.capture_map_arrows = session.?.automap.capture_arrows;
@@ -705,7 +702,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                 try audio.beginAmbient(&session.?.level, &session.?.objects, startup.difficulty);
                 try audio_device.sync(audio);
                 {
-                    palette = try session.?.render(init.gpa, pixels, c.SDL_GetTicks());
+                    palette = try session.?.render(pixels, c.SDL_GetTicks());
                     try window.present(&palette);
                 }
                 reportStartup(startup, session.?);

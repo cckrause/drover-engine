@@ -151,7 +151,7 @@ test "automap live Session combines explored walls weapon HUD and secret text li
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
     @memset(pixels, 0);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try expectPixels(pixels, expected);
     try session.advance(a, &packet, 16);
     try std.testing.expectEqual(@as(u32, 0), session.automap.mode);

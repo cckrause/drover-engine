@@ -447,11 +447,11 @@ pub const Session = struct {
         allocator.destroy(self);
     }
 
-    pub fn render(self: *Session, allocator: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
+    pub fn render(self: *Session, pixels: []u8, ticks: u32) ![256]u32 {
         if (pixels.len != 640 * 480) return error.InvalidFramebuffer;
         if (!self.framebuffer_initialized) @memset(pixels, 0);
         try self.hud.update(&self.inventory, self.player.energy, self.player.underwater_elapsed, self.animation_time);
-        const palette = try self.renderWorld(allocator, pixels, ticks);
+        const palette = try self.renderWorld(pixels, ticks);
         self.hud.blend_table = self.blend();
         self.hud.color_map = self.color_map;
         var weapon_options: weapon_render.Options = .{
@@ -502,9 +502,8 @@ pub const Session = struct {
         return self.damage_flash.palette(palette);
     }
 
-    /// Drawing the world allocates nothing; the allocator stays in the
-    /// signature only for the callers that pass one.
-    pub fn renderWorld(self: *Session, _: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
+    /// Drawing the world allocates nothing.
+    pub fn renderWorld(self: *Session, pixels: []u8, ticks: u32) ![256]u32 {
         return self.renderView(&self.view, pixels, ticks);
     }
 
@@ -2376,7 +2375,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try audio.beginAmbient(&session.level, &session.objects, startup.difficulty);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try std.testing.expect(!startup.server.started);
     try std.testing.expect(session.stand_in);
     try std.testing.expectEqual(@as(usize, 0), session.player.sector);

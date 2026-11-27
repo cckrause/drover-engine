@@ -95,7 +95,7 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
     try std.testing.expect(elevator.runtime_flags & 1 == 0);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
     try std.testing.expect(session.rendered_sector_visits > 0);
 }
 
@@ -186,7 +186,7 @@ test "Train starting room door and first moving-ground gap work with audio" {
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     const audio = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
     try audio.engine.updateListener(session.audioListener());
@@ -219,7 +219,7 @@ test "Train starting room door and first moving-ground gap work with audio" {
             else => {},
         };
         try audio.engine.updateListener(session.audioListener());
-        _ = try session.render(a, pixels, now);
+        _ = try session.render(pixels, now);
         try audio.advanceMusic(std.testing.io, now);
         try audio.advanceAmbient(now, session.level.sectors[session.player.sector].layer);
     }
@@ -263,7 +263,7 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     const audio = try @import("../audio/runtime.zig").Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
     try audio.engine.updateListener(session.audioListener());
@@ -307,7 +307,7 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
             },
         };
         try audio.engine.updateListener(session.audioListener());
-        _ = try session.render(a, pixels, now);
+        _ = try session.render(pixels, now);
         try audio.advanceMusic(std.testing.io, now);
         try audio.advanceAmbient(now, session.level.sectors[session.player.sector].layer);
 

@@ -64,7 +64,7 @@ test "Hideout toilet seat jumps cross the dry opening and return with audio and 
                 else => {},
             };
             try audio.engine.updateListener(session.audioListener());
-            _ = try session.render(a, pixels, now);
+            _ = try session.render(pixels, now);
             try std.testing.expect(session.rendered_sector_visits > 0);
         }
         try std.testing.expect(visited_seat);

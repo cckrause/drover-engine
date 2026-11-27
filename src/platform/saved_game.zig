@@ -71,8 +71,7 @@ pub const Catalog = struct {
         return std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(max_save_bytes));
     }
 
-    pub fn write(self: *const Catalog, a: std.mem.Allocator, io: std.Io, slot: usize, bytes: []const u8) !void {
-        _ = a;
+    pub fn write(self: *const Catalog, io: std.Io, slot: usize, bytes: []const u8) !void {
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
         const path = try self.filenameInto(&path_buffer, slot);
         try std.Io.Dir.cwd().createDirPath(io, self.directory);

@@ -226,7 +226,7 @@ test "live Hideout session schedules enemies and completes death playback" {
     } else return error.MissingOriginalEnemyPlacement;
     const costume = session.actor_slots[victim].?.costume;
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     try session.advance(a, &.{}, 50);
     var scheduled = false;
     for (session.targets) |slot| if (slot) |target| {
@@ -257,7 +257,7 @@ test "live Hideout session schedules enemies and completes death playback" {
         if (corpse.costume == costume and corpse.secondary_flags == 0x800) corpse_found = true;
     };
     try std.testing.expect(corpse_found);
-    _ = try session.render(a, pixels, session.animation_time);
+    _ = try session.render(pixels, session.animation_time);
 }
 
 test "left turn and strafe then walk toward Hideout road enemy keeps alerts live" {
@@ -278,7 +278,7 @@ test "left turn and strafe then walk toward Hideout road enemy keeps alerts live
         if (std.mem.eql(u8, object.name, "GDYNAM")) break index;
     } else return error.MissingOriginalDynamitePlacement;
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
     var input: @import("../player/input.zig").State = .{ .previous_time = 1000 };
     input.key(75, true, 1000);
     var now: u32 = 1000;
@@ -305,7 +305,7 @@ test "left turn and strafe then walk toward Hideout road enemy keeps alerts live
         now += 16;
         const packet = try input.sample(now, .{});
         try session.advance(a, &packet, 16);
-        _ = try session.render(a, pixels, now);
+        _ = try session.render(pixels, now);
         if (session.targets[road_enemy].?.ai.target) |target| {
             acquired_player = acquired_player or target == .player;
         }

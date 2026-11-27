@@ -47,7 +47,7 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         try std.testing.expectEqual(@as(usize, 1), startup.skipped_movies);
         try std.testing.expectEqual(@as(i16, 8034), session.view.yaw);
         @memset(pixels, 0);
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         var actual: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         var expected: [32]u8 = undefined;
@@ -57,17 +57,17 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         @memset(pixels, 17);
         // A frame that reveals nothing new allocates nothing at all.
         const level_storage = session.arena.queryCapacity();
-        _ = try session.renderWorld(std.testing.failing_allocator, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try std.testing.expectEqual(level_storage, session.arena.queryCapacity());
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         try std.testing.expectEqualSlices(u8, &expected, &actual);
         const yaw = session.player.yaw;
         session.player.yaw +%= 0x2000;
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try std.testing.expect(session.actors.len > case[1]);
         const loaded_count = session.actors.len;
         session.player.yaw = yaw;
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try std.testing.expectEqual(loaded_count, session.actors.len);
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         try std.testing.expectEqualSlices(u8, &expected, &actual);
@@ -99,14 +99,14 @@ test "campaign HUD and weapon use the reference viewport and independently rende
         try std.testing.expectEqual(@as(i32, 439), session.view.bottom);
         try std.testing.expectEqual(@as(i32, 240), session.view.center_y);
         @memset(pixels, 0);
-        _ = try session.renderWorld(a, pixels, 0);
+        _ = try session.renderWorld(pixels, 0);
         try expectFrameHash(pixels, case[1]);
         @memset(pixels, 0);
-        _ = try session.render(a, pixels, 0);
+        _ = try session.render(pixels, 0);
         try expectFrameHash(pixels, case[2]);
         session.animation_time = 500;
         @memset(pixels, 0);
-        _ = try session.render(a, pixels, 0);
+        _ = try session.render(pixels, 0);
         try expectFrameHash(pixels, case[3]);
     }
 }
@@ -265,7 +265,7 @@ test "player input advances the loaded level and updates the software camera" {
     try std.testing.expectEqual(session.player.eyePosition().y, session.view.y);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
-    _ = try session.render(a, pixels, now);
+    _ = try session.render(pixels, now);
     try std.testing.expect(session.rendered_sector_visits > 0);
     const player_before = session.player;
     try session.advance(a, &.{}, 0);
@@ -295,12 +295,12 @@ test "walking past adjoining Hideout sectors keeps collision and rendering activ
     for (0..240) |tick| {
         try session.advance(a, &packet, 16);
         if (tick == 218) try std.testing.expectEqual(@as(usize, 405), session.player.sector);
-        if (tick >= 215 and tick <= 220) _ = try session.render(a, pixels, @intCast(tick * 16));
+        if (tick >= 215 and tick <= 220) _ = try session.render(pixels, @intCast(tick * 16));
     }
     try std.testing.expect(session.player.position.z < 189);
     try std.testing.expectEqual(session.player.position.x, session.view.x);
     try std.testing.expectEqual(session.player.position.z, session.view.z);
-    _ = try session.render(a, pixels, 240 * 16);
+    _ = try session.render(pixels, 240 * 16);
 }
 
 test "backward walking and left strafing reveal animated decorations after turning" {
@@ -335,7 +335,7 @@ test "backward walking and left strafing reveal animated decorations after turni
             }
             const packet = try input.sample(now, .{});
             try session.advance(a, &packet, 16);
-            _ = try session.render(a, pixels, now);
+            _ = try session.render(pixels, now);
             now += 16;
         }
         try std.testing.expectEqual(@as(usize, 410), session.player.sector);

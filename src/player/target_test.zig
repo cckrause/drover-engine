@@ -134,7 +134,7 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
-    _ = try session.render(a, pixels, 0);
+    _ = try session.render(pixels, 0);
 
     session.player.position = .{ .x = expected.player_position[0], .y = expected.player_position[1], .z = expected.player_position[2] };
     session.player.sector = expected.sector;

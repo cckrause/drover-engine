@@ -93,7 +93,7 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
         try playVoices(session, audio);
         try std.testing.expectEqualStrings("", session.messages.entries[0].string());
         try std.testing.expectEqualDeep(original_inventory.slots, session.inventory.slots);
-        const tinted = try session.render(a, pixels, 0);
+        const tinted = try session.render(pixels, 0);
         try std.testing.expect(!std.mem.eql(u32, &session.palette, &tinted));
         try std.testing.expectEqual(@as(i32, if (lethal) -1 else 5), session.hud.health_group.value);
         const loss = session.inventory.statistics.damage;
@@ -151,14 +151,14 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
             try std.testing.expectEqualStrings("You fell to your death!", session.messages.entries[0].string());
             try std.testing.expectEqualStrings("", session.messages.entries[1].string());
             try expectAbsentVoice(session, "RIFLOUT.WAV");
-            const dead_palette = try session.render(a, pixels, 0);
+            const dead_palette = try session.render(pixels, 0);
             try std.testing.expectEqualSlices(u32, &tinted, &dead_palette);
             try std.testing.expectEqual(@as(i32, -1), session.hud.health_group.value);
         } else {
             try std.testing.expect(!session.player.dead);
             try std.testing.expect(session.player.position.x != position.x or session.player.position.z != position.z);
             try std.testing.expect(session.inventory.selected_weapon != 0);
-            _ = try session.render(a, pixels, 0);
+            _ = try session.render(pixels, 0);
             try std.testing.expectEqual(@as(i32, 5), session.hud.health_group.value);
         }
         try expectAbsentVoice(session, "CRUNCH.WAV");
