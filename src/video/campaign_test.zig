@@ -26,7 +26,7 @@ fn parsedStartup(text: []const u8) !campaign.Startup {
         .recipe = recipe,
         .recipe_loaded = true,
         .first_event = recipe.story[0],
-        .router = .init(std.testing.allocator),
+        .router = try .init(std.testing.allocator),
         .database = .init(std.testing.allocator),
     };
 }

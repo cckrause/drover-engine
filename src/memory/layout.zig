@@ -13,6 +13,8 @@ const MemoryBudget = @import("../platform/MemoryBudget.zig");
 const world = @import("../render/backends/software/world.zig");
 const session_queues = @import("../render/session_queues.zig");
 const inf = @import("../script/inf.zig");
+const router = @import("../network/router.zig");
+const message_store = @import("../network/message_store.zig");
 
 // Native master pointers grow with the target ABI; encoded asset data does not.
 pub const resource_handles_bytes: u64 = limits.current.resource_handles * @as(u64, @sizeOf(?[*]u8));
@@ -27,6 +29,8 @@ pub const software_frame_bytes: u64 = @sizeOf(world.Workspace);
 // session; two sessions overlap while a level changes.
 pub const session_queue_bytes: u64 = @sizeOf(session_queues.Storage) +
     inf.max_pending * @sizeOf(inf.Pending) + inf.max_effects * @sizeOf(inf.Effect);
+// The router's message storage, allocated with each new game's router.
+pub const router_storage_bytes: u64 = message_store.MessageStore.storageBytes(router.max_queued_bytes, router.max_queued_messages);
 pub const known_storage_bytes: u64 = limits.current.resource_bytes + resource_handles_bytes +
     limits.current.movie_input_bytes + sound_state_bytes + movie_audio_bytes +
     movie_decoder_bytes + framebuffer_bytes + software_frame_bytes;

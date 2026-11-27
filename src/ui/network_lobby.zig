@@ -181,7 +181,7 @@ test "Death Match lobby: texts, enabled buttons, the player list and ENTER GAME"
     try std.testing.expectEqualStrings("James Anderson", screen.find(9).?.data.text.text.?);
     for ([_]struct { u32, i32 }{ .{ 1000, 0 }, .{ 1001, 1 }, .{ 6, 0 }, .{ 7, 0 }, .{ 5, 1 }, .{ 8, 1 } }) |entry|
         try std.testing.expectEqual(entry[1], screen.find(entry[0]).?.state);
-    var router = router_module.Router.init(a);
+    var router = try router_module.Router.init(a);
     defer router.deinit();
     router.reset();
     router.clients[1].player = .{ .code = 'J', .flags = 0x1000090 };

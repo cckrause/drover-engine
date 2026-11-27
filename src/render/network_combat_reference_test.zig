@@ -75,7 +75,7 @@ test "fighting between machines matches the reference's messages, texts and poin
             try expectHex(op, "frag_delta", &message.fragDelta(3, .{ .client = 3, .team = 0xffffffff, .points = 1 }));
             try expectHex(op, "damage", &message.damage(3, .{ .kind = 0x10003, .damage = 4.5, .mass = 1, .speed = 2400, .yaw = -0x456, .pitch = 0x123, .position = .{ 1.5, -2.25, 300 }, .lateral = 0.25, .height = 3.5 }));
         } else if (std.mem.eql(u8, kind, "server_corpse")) {
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             router.reset();
             var sent: [message.corpse_capacity]u8 = undefined;
@@ -98,7 +98,7 @@ test "fighting between machines matches the reference's messages, texts and poin
             }
             try testing.expectEqual(@as(?[]u8, null), try router.read(message.Queue.database));
         } else if (std.mem.eql(u8, kind, "frag")) {
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             var database = database_module.Database.init(a);
             defer database.deinit();
@@ -112,9 +112,8 @@ test "fighting between machines matches the reference's messages, texts and poin
             router.clients[3].setName("Joiner");
             router.clients[3].player = if (op.get("team").? == .integer) .{ .code = 'J', .flags = 0x90 | @as(u32, @intCast(op.get("team").?.integer)) } else null;
             try network_combat.postFragDelta(&router, mode, client, points);
-            const queued = router.queues[message.Queue.database].items;
-            try testing.expectEqual(@as(usize, 1), queued.len);
-            try testing.expectEqualStrings(op.get("posted").?.array.items[0].string, try hex(a, queued[0]));
+            try testing.expectEqual(@as(usize, 1), router.queues[message.Queue.database].count);
+            try testing.expectEqualStrings(op.get("posted").?.array.items[0].string, try hex(a, router.peek(message.Queue.database).?));
             const posted = (try database.next(&router, true, 0)) orelse return error.MissingFragDelta;
             try database.applyFragDelta(&router, posted.frag_delta, .{ .now = 0, .game_type = 5, .mode = mode, .game_state = 0 });
             for (op.get("scores").?.array.items, 0..) |expected, index| {
@@ -126,7 +125,7 @@ test "fighting between machines matches the reference's messages, texts and poin
         } else if (std.mem.eql(u8, kind, "player")) {
             errdefer std.debug.print("reference network player case {s}\n", .{op.get("name").?.string});
             players += 1;
-            var router = Router.init(a);
+            var router = try Router.init(a);
             defer router.deinit();
             router.reset();
             router.own_client = 3;

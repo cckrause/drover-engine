@@ -831,7 +831,7 @@ fn atoi(text: []const u8) u32 {
 }
 
 test "PostFragDelta adds to the client and, outside mode 1, to its team" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     var database = Database.init(std.testing.allocator);
     defer database.deinit();
@@ -856,7 +856,7 @@ test "PostFragDelta adds to the client and, outside mode 1, to its team" {
 }
 
 test "a joining client's number table is owned until it leaves" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     var database = Database.init(std.testing.allocator);
     defer database.deinit();

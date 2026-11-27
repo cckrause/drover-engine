@@ -26,7 +26,7 @@ test "router sends to and receives from other machines as the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var driver: Driver = .{ .allocator = a };
     defer driver.deinit();
@@ -129,7 +129,7 @@ test "router sends to and receives from other machines as the reference" {
 
 test "the router refuses network packets too short to hold what it reads" {
     const a = std.testing.allocator;
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     const Short = struct {
         var packets = [_][]const u8{ "G", "G0123456789abcde", "S", "G0123456789abcdef" };

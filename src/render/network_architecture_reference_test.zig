@@ -234,7 +234,7 @@ test "architecture changes match the reference's packers, scan, marks, sends and
         try testing.expectEqual(@as(usize, case.short), try dead_reckoning.packOne(change, out[0 .. case.size - 1]));
     }
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     router.reset();
     router.session_open = true;

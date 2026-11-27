@@ -902,7 +902,7 @@ test "a joiner connects to a host's game through the driver and both send each o
 
     var host_game: reference.Game = .{ .allocator = a };
     defer host_game.deinit();
-    var hosting = Router.init(a);
+    var hosting = try Router.init(a);
     defer hosting.deinit();
     hosting.reset();
     hosting.game = host_game.hooks();
@@ -916,7 +916,7 @@ test "a joiner connects to a host's game through the driver and both send each o
 
     var join_game: reference.Game = .{ .allocator = a };
     defer join_game.deinit();
-    var joined = Router.init(a);
+    var joined = try Router.init(a);
     defer joined.deinit();
     joined.reset();
     joined.game = join_game.hooks();
@@ -1018,7 +1018,7 @@ test "a joiner's router is told to leave when the host closes" {
     var server = try Session.host(testing.allocator, .{ .port = 0 });
     var joiner = try joinSoon(&server);
     defer joiner.close();
-    var joined = Router.init(testing.allocator);
+    var joined = try Router.init(testing.allocator);
     defer joined.deinit();
     joined.reset();
     joined.own_client = 3;

@@ -1439,7 +1439,7 @@ test "movie trigger blocks before switch and completion mutations" {
         var runtime = Runtime{ .arena = std.heap.ArenaAllocator.init(a), .elevators = &.{}, .triggers = &triggers, .classes = &classes };
         try runtime.reserveLists();
         defer runtime.deinit();
-        var router = Router.init(a);
+        var router = try Router.init(a);
         defer router.deinit();
         runtime.router = &router;
         try triggers[0].clients.append(runtime.arena.allocator(), .{ .target = .{ .sector = 21 }, .mask = 0x30 });
@@ -1455,7 +1455,7 @@ test "movie trigger blocks before switch and completion mutations" {
                 try std.testing.expectEqualStrings("RAM.SAN", name);
                 try std.testing.expectEqual(@as(u32, 1), movie_flags);
                 try std.testing.expectEqual(self.flags, self.runtime.triggers[0].flags);
-                try std.testing.expectEqual(@as(usize, 0), self.runtime.router.?.queues[network_message.Queue.server].items.len);
+                try std.testing.expectEqual(@as(usize, 0), self.runtime.router.?.queues[network_message.Queue.server].count);
                 try std.testing.expectEqual(@as(usize, 1), self.runtime.message_log.?.items.len);
                 try std.testing.expectEqual(@as(?usize, 21), self.runtime.message_log.?.items[0].target.sector);
                 self.called += 1;
@@ -1485,7 +1485,7 @@ test "movie trigger blocks before switch and completion mutations" {
         try std.testing.expectEqual(movie_count, capture.called);
         try std.testing.expectEqual(movie_count * 250, runtime.movie_elapsed);
         try std.testing.expectEqual(message_index, messages.items.len);
-        try std.testing.expectEqual(complete_count, router.queues[network_message.Queue.server].items.len);
+        try std.testing.expectEqual(complete_count, router.queues[network_message.Queue.server].count);
         try std.testing.expectEqual(@as(u32, @intCast(case.object.get("result_flags").?.integer)), triggers[0].flags);
     }
     var trigger: Trigger = .{ .target = .{ .sector = 20 }, .flags = 0x08f00001, .message = .{ .code = 0x7da, .arg1 = 7 } };
@@ -1626,7 +1626,7 @@ test "breakable wall triggers and both-sided destruction match sequences" {
         const angles = camera.Angles.init();
         var runtime = try Runtime.loadWithScene(a, &level, "INF 1.0\nITEMS 0\n", &random, &scene, &angles);
         defer runtime.deinit();
-        var router = Router.init(a);
+        var router = try Router.init(a);
         defer router.deinit();
         runtime.router = &router;
         try std.testing.expectEqual(@as(usize, 2), runtime.triggers.len);
@@ -2306,7 +2306,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     defer level.deinit();
     var runtime = try Runtime.load(a, &level, try archive.find("HIDEOUT.INF", 0));
     defer runtime.deinit();
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     router.reset();
     runtime.router = &router;
@@ -2398,7 +2398,7 @@ test "Train initial sliding doors and queued END_LEVEL match startup" {
     var runtime = try Runtime.loadWithScene(a, &level, try archive.find("TRAIN.INF", 0), &random, &scene, &angles);
     defer runtime.deinit();
     runtime.applyScene(&level, &scene);
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     router.reset();
     runtime.router = &router;

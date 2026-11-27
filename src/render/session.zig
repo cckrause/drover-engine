@@ -2444,7 +2444,7 @@ test "mission restart restores the current level with retained globals and const
     defer old.deinit(a);
     try std.testing.expect(startup.server.started);
     try std.testing.expectEqual(@as(u32, 0x36a11), startup.server.starts[0][0]);
-    for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.items.len);
+    for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);
     const selected = old.inventory.selected_weapon;
     const loaded = old.inventory.slots[selected].?.loaded;
     old.inventory.health = 2;

@@ -32,7 +32,7 @@ test "object number tables match the reference" {
     const root = parsed.value.object;
     try std.testing.expectEqualStrings("f71a8db8743d12a14317393148a0ade05e2f86d7d80a98d4a76f1bffa20a52d1", root.get("executable_sha256").?.string);
 
-    var router = @import("router.zig").Router.init(a);
+    var router = try @import("router.zig").Router.init(a);
     defer router.deinit();
     var db = Database.init(a);
     defer db.deinit();

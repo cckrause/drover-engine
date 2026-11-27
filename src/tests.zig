@@ -140,6 +140,7 @@ test {
     _ = @import("ui/loading_display.zig");
     _ = @import("network/message.zig");
     _ = @import("network/router.zig");
+    _ = @import("network/message_store.zig");
     _ = @import("network/server.zig");
     _ = @import("network/router_reference_test.zig");
     _ = @import("network/startup_reference_test.zig");
@@ -254,7 +255,7 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         try std.testing.expectEqual(@as(u32, 4), startup.engine.previous_scenario);
         try std.testing.expectEqual(@as(u32, 1), startup.engine.game_type);
         try std.testing.expectEqual(@as(u32, 0), startup.mode);
-        for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.items.len);
+        for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);
 
         try std.testing.expectEqualStrings("Outlaws Story", startup.recipe.name);
         try std.testing.expectEqual(@as(u32, 0), startup.recipe.modes);

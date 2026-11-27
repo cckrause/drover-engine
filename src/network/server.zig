@@ -307,7 +307,7 @@ fn rejectJoin(router: *Router, request: []const u8, address: *const message.Addr
 }
 
 test "server queue is emptied while the switch is off" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var request: [message.header_size]u8 = @splat(0);
@@ -320,7 +320,7 @@ test "server queue is emptied while the switch is off" {
 }
 
 test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var server: Server = .{};
@@ -356,7 +356,7 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
 }
 
 test "v1.1.1 Death Match start matches the reference server reply" {
-    var router = Router.init(std.testing.allocator);
+    var router = try Router.init(std.testing.allocator);
     defer router.deinit();
     router.reset();
     var server: Server = .{};

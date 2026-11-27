@@ -43,7 +43,7 @@ const Feed = struct {
 };
 
 fn replay(a: std.mem.Allocator, root: std.json.ObjectMap, sender_check: bool) !u32 {
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var driver: reference.Driver = .{ .allocator = a };
     defer driver.deinit();
@@ -213,7 +213,7 @@ fn expectState(state: std.json.ObjectMap, router: *Router) !void {
     if (state.get("own_address").? == .string) _ = try std.fmt.hexToBytes(&address, state.get("own_address").?.string);
     try std.testing.expectEqual(address, router.own_address);
     var queued: u32 = 0;
-    for (router.queues) |list| queued += @intFromBool(list.items.len != 0);
+    for (router.queues) |list| queued += @intFromBool(list.count != 0);
     try std.testing.expectEqual(int(state, "queued"), queued);
     for (state.get("scores").?.array.items, router.scores) |expected, score| {
         try std.testing.expectEqual(expected.array.items[0].integer, @as(i64, score.points));
@@ -272,7 +272,7 @@ test "the router refuses messages that do not come from the client they name" {
     const four: message.Address = @splat(4);
     const five: message.Address = @splat(5);
 
-    var router = Router.init(a);
+    var router = try Router.init(a);
     defer router.deinit();
     var recorded: reference.Game = .{ .allocator = a };
     defer recorded.deinit();
@@ -322,7 +322,7 @@ test "the router refuses messages that do not come from the client they name" {
     try std.testing.expectEqual(@as(u32, 5), router.rejected);
     try std.testing.expectEqual(three, router.clients[3].address);
 
-    var joiner = Router.init(a);
+    var joiner = try Router.init(a);
     defer joiner.deinit();
     joiner.game = recorded.hooks();
     var arriving: Feed = .{ .host = host };

@@ -1,9 +1,6 @@
-//! Playing a level asks for no memory: the frame allocator fails every
-//! request and the level's own storage never grows.
-//!
-//! TODO: Also count the session's allocator once the network router keeps
-//! its queued messages in storage of its own; today each message it queues
-//! is copied into new memory.
+//! Playing a level asks for no memory: once the level is open, the frame
+//! allocator and the session's own allocator (which the router shares) fail
+//! every request, and the level's storage never grows.
 //!
 //! Needs the installed game data; skips without it.
 
@@ -21,7 +18,8 @@ fn press(packet: *input.Packet, slot: input.Slot, frame: usize, period: usize, o
 }
 
 test "memory budget: Hideout plays twelve thousand frames of walking, shooting and using without asking for memory" {
-    const a = std.testing.allocator;
+    var watch = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const a = watch.allocator();
     const io = std.testing.io;
     const data_path = "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB";
     const system_bytes = std.Io.Dir.cwd().readFileAlloc(io, data_path, a, .limited(128 * 1024 * 1024)) catch |err| switch (err) {
@@ -36,6 +34,12 @@ test "memory budget: Hideout plays twelve thousand frames of walking, shooting a
     const session = try Session.open(a, @import("test_workspace.zig").get(), io, data_path, system, &startup);
     defer session.deinit(a);
 
+    watch.fail_index = watch.alloc_index;
+    watch.resize_fail_index = watch.resize_index;
+    defer {
+        watch.fail_index = std.math.maxInt(usize);
+        watch.resize_fail_index = std.math.maxInt(usize);
+    }
     const level_storage = session.arena.queryCapacity();
     const health = session.inventory.health;
     const actors = session.actors.len;

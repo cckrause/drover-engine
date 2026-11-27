@@ -46,14 +46,9 @@ pub fn answerObjectRequest(session: anytype, sender: u32) !void {
     const client: u16 = @truncate(message.client(sender));
     const order = try globalOrder(session);
     defer session.allocator.free(order);
-    const table = try router.newMultiplex(client);
-    const previous = router.multiplex;
-    router.multiplex = table;
+    const previous = router.beginMultiplex(client);
     {
-        errdefer {
-            router.multiplex = previous;
-            table.destroy(router.allocator);
-        }
+        errdefer router.cancelMultiplex(previous);
         for (order) |listed| {
             const number = switch (listed) {
                 .player => session.player_number,
@@ -67,8 +62,7 @@ pub fn answerObjectRequest(session: anytype, sender: u32) !void {
             }
         }
     }
-    router.multiplex = previous;
-    router.queueMultiplex(table);
+    router.endMultiplex(previous);
     try network_level.sendArchitecture(session, client);
 }
 
