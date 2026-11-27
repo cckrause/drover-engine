@@ -3,6 +3,7 @@
 //! into the game.
 
 const std = @import("std");
+
 const message = @import("message.zig");
 const network_layer = @import("network.zig");
 const router_module = @import("router.zig");
@@ -30,16 +31,34 @@ pub const Driver = struct {
     }
 
     pub fn session(self: *Driver) network_layer.Driver {
-        return .{ .context = self, .send = send, .get = get, .close = close, .describe = describe, .host_address = self.host_address };
+        return .{
+            .context = self,
+            .send = send,
+            .get = get,
+            .close = close,
+            .describe = describe,
+            .host_address = self.host_address,
+        };
     }
 
     pub fn expectSends(self: *const Driver, expected: []const std.json.Value) !void {
         try std.testing.expectEqual(expected.len, self.sends.items.len);
         var buffer: [0x800]u8 = undefined;
+
         for (expected, self.sends.items) |value, sent| {
             const object = value.object;
-            try std.testing.expectEqualSlices(u8, try std.fmt.hexToBytes(&buffer, object.get("bytes").?.string), sent.bytes);
-            try std.testing.expectEqual(@as(u32, @intCast(object.get("flags").?.integer)), sent.flags);
+
+            try std.testing.expectEqualSlices(
+                u8,
+                try std.fmt.hexToBytes(&buffer, object.get("bytes").?.string),
+                sent.bytes,
+            );
+
+            try std.testing.expectEqual(
+                @as(u32, @intCast(object.get("flags").?.integer)),
+                sent.flags,
+            );
+
             if (object.get("to").? == .string) {
                 var to: message.Address = undefined;
                 _ = try std.fmt.hexToBytes(&to, object.get("to").?.string);
@@ -54,19 +73,31 @@ pub const Driver = struct {
         try self.description.appendSlice(self.allocator, data);
     }
 
-    fn send(context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) anyerror!void {
+    fn send(
+        context: *anyopaque,
+        data: []const u8,
+        to: ?*const message.Address,
+        flags: u32,
+    ) anyerror!void {
         const self: *Driver = @ptrCast(@alignCast(context));
         try self.sends.ensureUnusedCapacity(self.allocator, 1);
         const bytes = try self.allocator.dupe(u8, data);
-        self.sends.appendAssumeCapacity(.{ .bytes = bytes, .to = if (to) |address| address.* else null, .flags = flags });
+        self.sends.appendAssumeCapacity(.{
+            .bytes = bytes,
+            .to = if (to) |address| address.* else null,
+            .flags = flags,
+        });
     }
 
     fn get(context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {
         const self: *Driver = @ptrCast(@alignCast(context));
         if (self.next == self.incoming.len) return 0;
+
         const packet = self.incoming[self.next].object;
+
         self.next += 1;
         _ = try std.fmt.hexToBytes(sender, packet.get("sender").?.string);
+
         return (try std.fmt.hexToBytes(buffer, packet.get("bytes").?.string)).len;
     }
 
@@ -86,11 +117,20 @@ pub const Opener = struct {
         return .{ .context = self, .open = open };
     }
 
-    fn open(context: *anyopaque, hosting: bool, name: []const u8, player: []const u8, address: *message.Address) anyerror!network_layer.Driver {
+    fn open(
+        context: *anyopaque,
+        hosting: bool,
+        name: []const u8,
+        player: []const u8,
+        address: *message.Address,
+    ) anyerror!network_layer.Driver {
         const self: *Opener = @ptrCast(@alignCast(context));
+
         self.game.note("open {d} {s}|{s}", .{ @intFromBool(hosting), name, player });
         if (self.fail) return error.ReferenceDriverCannotOpen;
+
         address.* = self.address;
+
         return self.driver.session();
     }
 };
@@ -112,20 +152,43 @@ pub const Game = struct {
     }
 
     pub fn hooks(self: *Game) router_module.Game {
-        return .{ .context = self, .players = players, .addClient = addClient, .removeClient = removeClient, .describe = describe, .scores = scores, .departed = departed, .connecting = connecting, .leave = leave, .local = local, .text = text, .forget = forget };
+        return .{
+            .context = self,
+            .players = players,
+            .addClient = addClient,
+            .removeClient = removeClient,
+            .describe = describe,
+            .scores = scores,
+            .departed = departed,
+            .connecting = connecting,
+            .leave = leave,
+            .local = local,
+            .text = text,
+            .forget = forget,
+        };
     }
 
     pub fn note(self: *Game, comptime format: []const u8, values: anytype) void {
-        const line = std.fmt.allocPrint(self.allocator, format, values) catch @panic("out of memory");
+        const line = std.fmt.allocPrint(
+            self.allocator,
+            format,
+            values,
+        ) catch @panic("out of memory");
+
         self.calls.append(self.allocator, line) catch @panic("out of memory");
     }
 
     pub fn expectCalls(self: *const Game, expected: []const std.json.Value) !void {
         var index: usize = 0;
         var buffer: [0x200]u8 = undefined;
+
         for (expected) |value| {
             const object = value.object;
-            if (object.get("popup") != null or object.get("box") != null or object.get("log") != null) continue;
+
+            if (object.get(
+                "popup",
+            ) != null or object.get("box") != null or object.get("log") != null) continue;
+
             const line = if (object.get("players") != null)
                 "players"
             else if (object.get("describe") != null)
@@ -147,17 +210,34 @@ pub const Game = struct {
             else if (object.get("text")) |id|
                 try std.fmt.bufPrint(&buffer, "text {d}", .{id.integer})
             else if (object.get("announce")) |words|
-                try std.fmt.bufPrint(&buffer, "announce {d} {s}", .{ object.get("to").?.integer, words.string })
+                try std.fmt.bufPrint(
+                    &buffer,
+                    "announce {d} {s}",
+                    .{ object.get("to").?.integer, words.string },
+                )
             else if (object.get("open")) |open| blk: {
                 const arguments = open.object;
+
                 try std.testing.expectEqualStrings("LEC-OL-B22", arguments.get("tag").?.string);
                 try std.testing.expectEqual(@as(i64, 0), arguments.get("last").?.integer);
-                break :blk try std.fmt.bufPrint(&buffer, "open {d} {s}|{s}", .{ arguments.get("hosting").?.integer, arguments.get("name").?.string, arguments.get("player").?.string });
+
+                break :blk try std.fmt.bufPrint(
+                    &buffer,
+                    "open {d} {s}|{s}",
+                    .{
+                        arguments.get("hosting").?.integer,
+                        arguments.get("name").?.string,
+                        arguments.get("player").?.string,
+                    },
+                );
             } else return error.UnknownReferenceCall;
+
             try std.testing.expect(index < self.calls.items.len);
             try std.testing.expectEqualStrings(line, self.calls.items[index]);
+
             index += 1;
         }
+
         try std.testing.expectEqual(index, self.calls.items.len);
     }
 
@@ -192,8 +272,16 @@ pub const Game = struct {
     fn departed(context: *anyopaque, name: []const u8, destination: u32) anyerror!void {
         const self = from(context);
         self.note("text 5123", .{});
-        const place = std.mem.indexOf(u8, self.left_text, "%s") orelse return error.MalformedReference;
-        self.note("announce {d} {s}{s}{s}", .{ destination, self.left_text[0..place], name, self.left_text[place + 2 ..] });
+        const place = std.mem.indexOf(
+            u8,
+            self.left_text,
+            "%s",
+        ) orelse return error.MalformedReference;
+
+        self.note(
+            "announce {d} {s}{s}{s}",
+            .{ destination, self.left_text[0..place], name, self.left_text[place + 2 ..] },
+        );
     }
 
     fn leave(context: *anyopaque) anyerror!void {
@@ -213,6 +301,7 @@ pub const Game = struct {
 
     fn text(context: *anyopaque, id: u32, buffer: []u8) void {
         from(context).note("text {d}", .{id});
+
         var made: [32]u8 = undefined;
         const value: []const u8 = switch (id) {
             7777 => return,
@@ -220,8 +309,11 @@ pub const Game = struct {
             5119 => "INVALID PASSWORD!",
             else => std.fmt.bufPrint(&made, "Text {d}", .{id}) catch unreachable,
         };
+
         const length = @min(value.len, buffer.len);
+
         @memcpy(buffer[0..length], value[0..length]);
+
         if (length < buffer.len) buffer[length] = 0;
     }
 };

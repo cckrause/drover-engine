@@ -5,14 +5,20 @@
 //! restore creates a fresh instance and links it as the newest.
 
 const std = @import("std");
-const stream = @import("stream.zig");
-const nwx = @import("../assets/nwx.zig");
 
-pub const Instance = struct { resource: []const u8, playback: nwx.Playback, native: []const u8 = "" };
+const nwx = @import("../assets/nwx.zig");
+const stream = @import("stream.zig");
+
+pub const Instance = struct {
+    resource: []const u8,
+    playback: nwx.Playback,
+    native: []const u8 = "",
+};
 
 pub fn write(writer: *stream.Writer, instance: ?Instance) !void {
     try writer.boolean(instance != null);
     const value = instance orelse return;
+
     try writer.string(value.resource);
     try writer.integer(u32, value.playback.last_time);
     try writer.integer(i16, value.playback.angle_offset);
@@ -27,6 +33,7 @@ pub fn write(writer: *stream.Writer, instance: ?Instance) !void {
 
 pub fn read(reader: *stream.Reader, allocator: std.mem.Allocator) !?Instance {
     if (!try reader.boolean()) return null;
+
     var buffer: [255]u8 = undefined;
     const resource = try allocator.dupe(u8, try reader.string(&buffer));
     errdefer allocator.free(resource);
@@ -40,8 +47,11 @@ pub fn read(reader: *stream.Reader, allocator: std.mem.Allocator) !?Instance {
         .flags = try reader.integer(u32),
         .terminated = try reader.boolean(),
     };
+
     const binding = try reader.string(&buffer);
     if (binding.len > 32) return error.InvalidSavedWaxBinding;
+
     const native = try allocator.dupe(u8, binding);
+
     return .{ .resource = resource, .playback = playback, .native = native };
 }

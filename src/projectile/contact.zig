@@ -16,13 +16,24 @@ pub const Projection = struct {
     }
 
     pub fn write(self: *Projection, direction: Vec2, origin: Vec2) void {
-        self.words = .{ @bitCast(direction.x), @bitCast(direction.z), @bitCast(origin.x), @bitCast(origin.z) };
+        self.words = .{
+            @bitCast(direction.x),
+            @bitCast(direction.z),
+            @bitCast(origin.x),
+            @bitCast(origin.z),
+        };
     }
 
     pub fn values(self: Projection) ?struct { direction: Vec2, origin: Vec2 } {
         return .{
-            .direction = .{ .x = @bitCast(self.words[0] orelse return null), .z = @bitCast(self.words[1] orelse return null) },
-            .origin = .{ .x = @bitCast(self.words[2] orelse return null), .z = @bitCast(self.words[3] orelse return null) },
+            .direction = .{
+                .x = @bitCast(self.words[0] orelse return null),
+                .z = @bitCast(self.words[1] orelse return null),
+            },
+            .origin = .{
+                .x = @bitCast(self.words[2] orelse return null),
+                .z = @bitCast(self.words[3] orelse return null),
+            },
         };
     }
 };
@@ -56,9 +67,15 @@ pub const Residue = struct {
 
     pub fn position(self: Residue) !Vec3 {
         return .{
-            .x = @bitCast(self.words[1] orelse return error.UnresolvedOriginalProjectileContactStack),
-            .y = @bitCast(self.words[2] orelse return error.UnresolvedOriginalProjectileContactStack),
-            .z = @bitCast(self.words[3] orelse return error.UnresolvedOriginalProjectileContactStack),
+            .x = @bitCast(
+                self.words[1] orelse return error.UnresolvedOriginalProjectileContactStack,
+            ),
+            .y = @bitCast(
+                self.words[2] orelse return error.UnresolvedOriginalProjectileContactStack,
+            ),
+            .z = @bitCast(
+                self.words[3] orelse return error.UnresolvedOriginalProjectileContactStack,
+            ),
         };
     }
 };

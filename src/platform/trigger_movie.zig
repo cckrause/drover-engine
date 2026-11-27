@@ -6,11 +6,12 @@
 //! adds the elapsed interval itself - do not sample it twice.
 
 const std = @import("std");
-const sdl = @import("sdl.zig");
-const movie = @import("movie.zig");
-const mission = @import("mission.zig");
+
 const audio_runtime = @import("../audio/runtime.zig");
 const audio_platform = @import("audio.zig");
+const mission = @import("mission.zig");
+const movie = @import("movie.zig");
+const sdl = @import("sdl.zig");
 
 pub const Host = struct {
     allocator: std.mem.Allocator,
@@ -29,21 +30,42 @@ pub const Host = struct {
     pub fn play(context: *anyopaque, name: []const u8, flags: u32) anyerror!u32 {
         const self: *Host = @ptrCast(@alignCast(context));
         if (flags != 1) return error.UnsupportedTriggeredMovieFlags;
+
         const started = sdl.c.SDL_GetTicks();
+
         self.input.suspendMenu();
         self.audio.stopAll();
         try self.device.sync(self.audio);
-        const path = try mission.moviePath(self.allocator, self.initial_data_path, .{ .kind = .movie, .disc = self.disc, .name = name });
+
+        const path = try mission.moviePath(
+            self.allocator,
+            self.initial_data_path,
+            .{ .kind = .movie, .disc = self.disc, .name = name },
+        );
+
         defer self.allocator.free(path);
-        const result = try movie.playWithInput(self.allocator, self.io, path, self.window, self.pixels, self.palette, self.frames, self.limit, self.input);
+        const result = try movie.playWithInput(
+            self.allocator,
+            self.io,
+            path,
+            self.window,
+            self.pixels,
+            self.palette,
+            self.frames,
+            self.limit,
+            self.input,
+        );
+
         switch (result) {
             .quit => return error.QuitFromMovie,
             .frame_limit => return error.MovieFrameLimit,
             .completed, .cancelled => {},
         }
+
         const elapsed = sdl.c.SDL_GetTicks() -% started;
         self.input.last_sample +%= elapsed;
         try self.input.resumeMenu();
+
         return elapsed;
     }
 };

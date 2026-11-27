@@ -6,6 +6,7 @@
 //! record, so the sender predicts itself the same way the receivers do.
 
 const std = @import("std");
+
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
@@ -35,8 +36,13 @@ pub const Record = struct {
 
     pub fn reckon(self: *Record, now: u32) void {
         var seconds: f32 = 0;
-        if (now >= self.time) seconds = @floatCast(@as(f64, @floatFromInt(now - self.time)) * @as(f32, 0.001));
+
+        if (now >= self.time) seconds = @floatCast(
+            @as(f64, @floatFromInt(now - self.time)) * @as(f32, 0.001),
+        );
+
         if (@as(u32, @bitCast(seconds)) > 0x80000000) seconds = 0;
+
         for (&self.origin, self.velocity, self.position) |*reckoned, velocity, position|
             reckoned.* = @floatCast(@as(f64, @as(f32, @bitCast(velocity))) * seconds + position);
     }
@@ -92,71 +98,124 @@ pub const ArchitectureQueue = struct {
         self.entries.deinit(allocator);
     }
 
-    pub fn queue(self: *ArchitectureQueue, allocator: std.mem.Allocator, router: *const Router, change: Change) !void {
+    pub fn queue(
+        self: *ArchitectureQueue,
+        allocator: std.mem.Allocator,
+        router: *const Router,
+        change: Change,
+    ) !void {
         if (!router.session_open or router.own_client != 1) return;
+
         for (self.entries.items[0..self.count]) |*entry| {
             if (entry.kind == change.kind and entry.sector == change.sector and entry.wall == change.wall) {
                 entry.* = change;
                 return;
             }
         }
+
         if (self.count < self.entries.items.len)
             self.entries.items[self.count] = change
         else
             try self.entries.append(allocator, change);
+
         self.count += 1;
     }
 
     pub fn send(self: *ArchitectureQueue, router: *Router, destination: u32) !void {
         var index: usize = 0;
+
         while (index < self.count) {
             var bytes: [0x200]u8 = @splat(0);
-            const own = message.addressWord(message.Queue.dead_reckoning, @truncate(router.own_client));
+            const own = message.addressWord(
+                message.Queue.dead_reckoning,
+                @truncate(router.own_client),
+            );
+
             message.set(&bytes, message.sender_offset, own);
             message.set(&bytes, message.reply_offset, own);
+
             const start = index;
-            const length = try pack(self.entries.items[0..self.count], &index, bytes[0x12..][0..0x1ee]);
+            const length = try pack(
+                self.entries.items[0..self.count],
+                &index,
+                bytes[0x12..][0..0x1ee],
+            );
+
             std.mem.writeInt(u16, bytes[0x10..0x12], @truncate(index - start), .little);
             _ = try router.post(destination, 0x80000419, bytes[0 .. length + 0x12]);
         }
+
         self.count = 0;
     }
 };
 
 pub fn readUpdate(bytes: []const u8) !Update {
     if (bytes.len < update_size) return error.MalformedNetworkMessage;
+
     const update: Update = .{
         .sector = std.mem.readInt(u16, bytes[0x10..0x12], .little),
         .animation = std.mem.readInt(u16, bytes[0x12..0x14], .little),
-        .position = .{ @bitCast(message.get(bytes, 0x14)), @bitCast(message.get(bytes, 0x18)), @bitCast(message.get(bytes, 0x1c)) },
-        .angles = .{ std.mem.readInt(i16, bytes[0x20..0x22], .little), std.mem.readInt(i16, bytes[0x22..0x24], .little), std.mem.readInt(i16, bytes[0x24..0x26], .little) },
-        .velocity = .{ message.get(bytes, 0x26), message.get(bytes, 0x2a), message.get(bytes, 0x2e) },
+        .position = .{
+            @bitCast(message.get(bytes, 0x14)),
+            @bitCast(message.get(bytes, 0x18)),
+            @bitCast(message.get(bytes, 0x1c)),
+        },
+        .angles = .{
+            std.mem.readInt(i16, bytes[0x20..0x22], .little),
+            std.mem.readInt(i16, bytes[0x22..0x24], .little),
+            std.mem.readInt(i16, bytes[0x24..0x26], .little),
+        },
+        .velocity = .{
+            message.get(bytes, 0x26),
+            message.get(bytes, 0x2a),
+            message.get(bytes, 0x2e),
+        },
         .time = message.get(bytes, 0x32),
         .actor_flags = message.get(bytes, 0x36),
         .entity = message.get(bytes, 0x3a),
     };
-    for (update.position) |value| if (!std.math.isFinite(value)) return error.MalformedNetworkMessage;
+
+    for (update.position) |value| if (!std.math.isFinite(
+        value,
+    )) return error.MalformedNetworkMessage;
+
     return update;
 }
 
 pub fn sendActor(router: *Router, actor: Actor, now: u32) !void {
     var bytes: [update_size]u8 = @splat(0);
     @memcpy(bytes[0..message.header_size], &message.request(0, router.own_client));
+
     std.mem.writeInt(u16, bytes[0x10..0x12], actor.sector, .little);
     std.mem.writeInt(u16, bytes[0x12..0x14], actor.animation, .little);
+
     for (actor.position, 0..) |value, index| message.set(&bytes, 0x14 + 4 * index, @bitCast(value));
-    for (actor.angles, 0..) |value, index| std.mem.writeInt(i16, bytes[0x20 + 2 * index ..][0..2], value, .little);
+
+    for (actor.angles, 0..) |value, index| std.mem.writeInt(
+        i16,
+        bytes[0x20 + 2 * index ..][0..2],
+        value,
+        .little,
+    );
+
     var vertical: f32 = @bitCast(actor.velocity[1]);
-    if (actor.airborne) vertical = @floatCast(@as(f64, vertical) - @as(f64, actor.gravity) * @as(f64, actor.frame_seconds));
+
+    if (actor.airborne) vertical = @floatCast(
+        @as(f64, vertical) - @as(f64, actor.gravity) * @as(f64, actor.frame_seconds),
+    );
+
     message.set(&bytes, 0x26, actor.velocity[0]);
     message.set(&bytes, 0x2a, @bitCast(vertical));
     message.set(&bytes, 0x2e, actor.velocity[2]);
     message.set(&bytes, 0x36, actor.flags);
     message.set(&bytes, 0x3a, actor.entity);
+
     const own = message.addressWord(message.Queue.dead_reckoning, @truncate(router.own_client));
     const word = actor.number & 0x7ff | own;
+
     message.set(&bytes, message.sender_offset, word);
     message.set(&bytes, message.reply_offset, word);
+
     _ = try router.post(0x200000, 0x418, &bytes);
     message.set(&bytes, 0x32, now);
     _ = try router.post(word, 0x418, &bytes);
@@ -172,9 +231,12 @@ pub fn packOne(change: Change, out: []u8) !usize {
         9 => 4,
         else => return error.InvalidArchitectureChange,
     };
+
     if (out.len < size) return 0;
+
     out[0] = @truncate(change.kind);
     std.mem.writeInt(u16, out[1..3], change.sector, .little);
+
     switch (change.kind) {
         0, 1 => std.mem.writeInt(u16, out[3..5], @truncate(change.words[0]), .little),
         2 => {
@@ -188,7 +250,13 @@ pub fn packOne(change: Change, out: []u8) !usize {
         },
         6 => {
             std.mem.writeInt(u16, out[3..5], change.wall, .little);
-            for (change.words, 0..) |word, i| std.mem.writeInt(u32, out[5 + 4 * i ..][0..4], word, .little);
+
+            for (change.words, 0..) |word, i| std.mem.writeInt(
+                u32,
+                out[5 + 4 * i ..][0..4],
+                word,
+                .little,
+            );
         },
         8 => {
             std.mem.writeInt(u16, out[3..5], change.wall, .little);
@@ -197,24 +265,30 @@ pub fn packOne(change: Change, out: []u8) !usize {
         9 => out[3] = @truncate(change.words[0]),
         else => unreachable,
     }
+
     return size;
 }
 
 fn pack(changes: []const Change, index: *usize, out: []u8) !usize {
     var length: usize = 0;
+
     while (index.* < changes.len) {
         const change = changes[index.*];
+
         if (change.kind >= 10) {
             index.* += 1;
             continue;
         }
+
         const written = try packOne(change, out[length..]);
         if (written == 0) {
             if (length == 0) return error.ArchitectureChangeTooLong;
             return length;
         }
+
         length += written;
         index.* += 1;
     }
+
     return length;
 }

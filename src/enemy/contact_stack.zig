@@ -14,7 +14,13 @@ pub const Enemy = struct {
     successor_present: bool = true,
     now: u32 = 0,
 
-    pub const HiddenSound = enum { null_handle, unknown_runtime, exhausted, driver_disabled, driver_enabled };
+    pub const HiddenSound = enum {
+        null_handle,
+        unknown_runtime,
+        exhausted,
+        driver_disabled,
+        driver_enabled,
+    };
 
     pub fn init(residue: *Residue, native: @import("../script/cmm.zig").Native) Enemy {
         return .{ .residue = residue, .bias = switch (native) {
@@ -44,14 +50,22 @@ pub const Enemy = struct {
         self.frameAt(0x1c, value);
     }
 
-    pub fn frameAt(self: Enemy, offset: i32, value: *const @import("../assets/nwx.zig").Frame) void {
+    pub fn frameAt(
+        self: Enemy,
+        offset: i32,
+        value: *const @import("../assets/nwx.zig").Frame,
+    ) void {
         var words: [19]?u32 = @splat(null);
+
         words[0] = @bitCast(value.offset_x);
         words[1] = @bitCast(value.offset_y);
         words[2] = @intCast(value.parts.len);
+
         for (value.parts, 0..) |part, index| {
             const base = 3 + index * 8;
+
             if (base >= words.len) break;
+
             words[base + 1] = @bitCast(part.raw_x);
             words[base + 2] = @bitCast(part.raw_y);
             words[base + 3] = @bitCast(part.offset_x);
@@ -60,6 +74,7 @@ pub const Enemy = struct {
             words[base + 6] = @bitCast(part.height);
             words[base + 7] = part.flags;
         }
+
         for (words, 0..) |word, index| {
             const destination = offset + @as(i32, @intCast(index)) * 4;
             if (destination >= 0) self.write(@intCast(destination), word);
@@ -78,14 +93,22 @@ pub const Enemy = struct {
         self.write(0x68, 0x00422ae8);
     }
 
-    pub fn commit(self: Enemy, old: Vec3, position: Vec3, sector_changed: bool, sector_events: bool) void {
+    pub fn commit(
+        self: Enemy,
+        old: Vec3,
+        position: Vec3,
+        sector_changed: bool,
+        sector_events: bool,
+    ) void {
         self.write(0x64, 0x76);
         self.write(0x68, null);
         if (!sector_changed and old.x == position.x and old.y == position.y and old.z == position.z) return;
+
         self.write(0x54, @bitCast(position.x));
         self.write(0x60, null);
         self.write(0x3c, null);
         if (!sector_changed or !sector_events) return;
+
         self.write(0x14, null);
         self.write(0x18, null);
         self.write(0x1c, 0x7d6);
@@ -105,7 +128,9 @@ pub const Enemy = struct {
             self.write(0x64, @bitCast(original.y));
             self.write(0x68, @bitCast(point.z));
         }
+
         var bytes: [32]u8 = @splat(0);
+
         if (costume_name.len == 0) {
             if (self.bias == 0x14) if (self.residue.words[0]) |old| {
                 self.residue.words[0] = old & 0xffffff00;
@@ -113,8 +138,13 @@ pub const Enemy = struct {
         } else {
             const count = @min(bytes.len, costume_name.len);
             @memcpy(bytes[0..count], costume_name[0..count]);
-            for (0..8) |index| self.write(0x14 + index * 4, @import("std").mem.readInt(u32, bytes[index * 4 ..][0..4], .little));
+
+            for (0..8) |index| self.write(
+                0x14 + index * 4,
+                @import("std").mem.readInt(u32, bytes[index * 4 ..][0..4], .little),
+            );
         }
+
         self.write(0x34, 0x00422660);
         self.write(0x38, null);
         self.write(0x3c, null);
@@ -140,8 +170,12 @@ pub const Enemy = struct {
     pub fn hiddenConnectivity(residue: *Residue, sectors: []const u16) void {
         for ([_]usize{ 428, 434, 436, 438 }, 0..) |first, index| {
             if (first >= sectors.len) continue;
+
             if (first + 1 < sectors.len) {
-                residue.words[index] = @as(u32, sectors[first]) | (@as(u32, sectors[first + 1]) << 16);
+                residue.words[index] = @as(
+                    u32,
+                    sectors[first],
+                ) | (@as(u32, sectors[first + 1]) << 16);
             } else if (residue.words[index]) |old| {
                 residue.words[index] = (old & 0xffff0000) | sectors[first];
             }
@@ -157,7 +191,12 @@ pub const Tracking = struct {
 
     pub fn begin(self: Tracking, velocity: Vec3, floor_limit: f32) void {
         if (self.caller == .bubble) {
-            self.residue.words = .{ 0x0051be40, @bitCast(floor_limit), @bitCast(velocity.x), @bitCast(velocity.y) };
+            self.residue.words = .{
+                0x0051be40,
+                @bitCast(floor_limit),
+                @bitCast(velocity.x),
+                @bitCast(velocity.y),
+            };
         }
     }
 
@@ -167,10 +206,16 @@ pub const Tracking = struct {
 
     fn observe(raw: *anyopaque, event: collision.QueryEvent) void {
         const self: *Tracking = @ptrCast(@alignCast(raw));
+
         switch (event) {
             .query => |q| switch (self.caller) {
                 .blood => {
-                    self.residue.words = .{ @bitCast(q.height), @bitCast(q.delta.z), @bitCast(q.step), @bitCast(q.drop) };
+                    self.residue.words = .{
+                        @bitCast(q.height),
+                        @bitCast(q.delta.z),
+                        @bitCast(q.step),
+                        @bitCast(q.drop),
+                    };
                 },
                 .fragment => {
                     if (q.moving) self.residue.words[0] = @bitCast(q.initial_velocity.z);
@@ -198,7 +243,9 @@ pub const Tracking = struct {
                         .actor => 2,
                         .slope => 3,
                     };
+
                     if (contact.actor_written) self.residue.words[1] = if (contact.actor == null) 0 else null;
+
                     if (contact.direction) |direction| {
                         self.residue.words[2] = @bitCast(direction.x);
                         self.residue.words[3] = @bitCast(direction.z);

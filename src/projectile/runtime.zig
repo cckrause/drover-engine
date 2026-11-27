@@ -34,19 +34,38 @@ pub const Config = struct {
     pub fn load(a: std.mem.Allocator, item: *const Item, name: []const u8) !Config {
         var result: Config = .{ .name = "", .model = "" };
         errdefer result.deinit(a);
+
         result.name = try configName(a, name);
         result.model = try a.dupe(u8, item.animation);
         result.ground_chor = @truncate(item.intValue("GROUND_CHOR") orelse 0);
         result.life = item.intValue("LIFE") orelse 0;
         result.allow_bounce = item.intValue("ALLOW_BOUNCE") orelse 0;
-        inline for (.{ .{ "dead_item", "DEAD_ITEM" }, .{ "explosion", "EXPLOSION" }, .{ "fuse_sound", "FUSE_SOUND" }, .{ "explode_sound", "EXPLODE_SOUND" } }) |field| {
-            if (try item.stringValue(field[1])) |value| @field(result, field[0]) = try a.dupe(u8, value);
+
+        inline for (.{
+            .{ "dead_item", "DEAD_ITEM" },
+            .{ "explosion", "EXPLOSION" },
+            .{ "fuse_sound", "FUSE_SOUND" },
+            .{ "explode_sound", "EXPLODE_SOUND" },
+        }) |field| {
+            if (try item.stringValue(
+                field[1],
+            )) |value| @field(result, field[0]) = try a.dupe(u8, value);
         }
-        inline for (.{ .{ "radius", "RADIUS" }, .{ "wall_radius", "WALL_RADIUS" }, .{ "rate", "RATE" }, .{ "mass", "MASS" }, .{ "damage", "DAMAGE" }, .{ "throw_pitch", "THROW_PITCH" }, .{ "collide_radius", "COLLIDE_RADIUS" } }) |field| {
+
+        inline for (.{
+            .{ "radius", "RADIUS" },
+            .{ "wall_radius", "WALL_RADIUS" },
+            .{ "rate", "RATE" },
+            .{ "mass", "MASS" },
+            .{ "damage", "DAMAGE" },
+            .{ "throw_pitch", "THROW_PITCH" },
+            .{ "collide_radius", "COLLIDE_RADIUS" },
+        }) |field| {
             const value = item.floatValue(field[1]) orelse 0;
             if (!std.math.isFinite(value)) return error.InvalidProjectileFloat;
             @field(result, field[0]) = value;
         }
+
         return result;
     }
 
@@ -54,9 +73,11 @@ pub const Config = struct {
     pub fn deinit(self: *Config, a: std.mem.Allocator) void {
         a.free(self.name);
         a.free(self.model);
+
         inline for (.{ "dead_item", "explosion", "fuse_sound", "explode_sound" }) |field| {
             if (@field(self, field)) |value| a.free(value);
         }
+
         self.name = "";
         self.model = "";
     }
@@ -108,6 +129,7 @@ pub const ConfigNameBuffer = [32]u8;
 
 pub fn configName(a: std.mem.Allocator, path: []const u8) ![]const u8 {
     var buffer: ConfigNameBuffer = undefined;
+
     return a.dupe(u8, try configNameInto(&buffer, path));
 }
 
@@ -117,6 +139,7 @@ pub fn configNameInto(buffer: *ConfigNameBuffer, path: []const u8) ![]const u8 {
     const tail = path[start..];
     const end = std.mem.indexOfScalar(u8, tail, '.') orelse tail.len;
     if (end == 0 or end + 4 >= 32) return error.InvalidProjectileName;
+
     return std.fmt.bufPrint(buffer, "{s}.itm", .{tail[0..end]}) catch unreachable;
 }
 
@@ -130,41 +153,105 @@ pub fn initialize(actor: *Actor, config: *const Config, descriptor: Descriptor, 
     actor.secondary_flags |= 0x420;
     actor.logic_name = if (descriptor.kind == .explosive) "shot_ExpProjectileDispatch" else "shot_ProjectileDispatch";
     actor.projectile_explodes = config.explosion != null;
-    return .{ .config = config, .descriptor = descriptor, .deadline = if (descriptor.kind == .explosive) now +% @as(u32, @bitCast(config.life)) else 0 };
+
+    return .{
+        .config = config,
+        .descriptor = descriptor,
+        .deadline = if (descriptor.kind == .explosive) now +% @as(
+            u32,
+            @bitCast(config.life),
+        ) else 0,
+    };
 }
 
-pub fn launch(actor: *Actor, state: *State, owner: Owner, fraction: f32, angles: *const Angles, random: *u32) !void {
+pub fn launch(
+    actor: *Actor,
+    state: *State,
+    owner: Owner,
+    fraction: f32,
+    angles: *const Angles,
+    random: *u32,
+) !void {
     if (!std.math.isFinite(fraction)) return error.InvalidProjectileFloat;
+
     actor.flags = (actor.flags & ~@as(u32, 0x100)) | 0x80000004;
+
     const degrees = @as(f64, state.config.throw_pitch) * 45.5112;
-    if (!std.math.isFinite(degrees) or degrees < -2147483648 or degrees >= 2147483648) return error.InvalidProjectilePitch;
+    if (!std.math.isFinite(
+        degrees,
+    ) or degrees < -2147483648 or degrees >= 2147483648) return error.InvalidProjectilePitch;
+
     const pitch = @min(owner.pitch +% @as(i16, @truncate(@as(i32, @intFromFloat(degrees)))), 0xaaa);
     var launch_speed = f(@as(f64, state.descriptor.rate) * fraction);
+
     if (@as(i32, @bitCast(fraction)) > 0 and launch_speed <= 10) launch_speed = 10;
+
     const direction = vector(angles, owner.launch_yaw orelse owner.yaw, pitch, launch_speed);
-    actor.position = .{ .x = owner.position.x, .y = f(@as(f64, owner.height) * @as(f32, 0.85) + owner.position.y), .z = owner.position.z };
-    state.velocity = .{ .x = f(@as(f64, owner.velocity.x) + direction.x), .y = f(@as(f64, owner.velocity.y) + direction.y), .z = f(@as(f64, owner.velocity.z) + direction.z) };
-    const roll = random_module.randomFloat(random, f(@as(f64, fraction) * 45.0)) - @as(f64, fraction) * 22.5;
+
+    actor.position = .{
+        .x = owner.position.x,
+        .y = f(@as(f64, owner.height) * @as(f32, 0.85) + owner.position.y),
+        .z = owner.position.z,
+    };
+
+    state.velocity = .{
+        .x = f(@as(f64, owner.velocity.x) + direction.x),
+        .y = f(@as(f64, owner.velocity.y) + direction.y),
+        .z = f(@as(f64, owner.velocity.z) + direction.z),
+    };
+
+    const roll = random_module.randomFloat(
+        random,
+        f(@as(f64, fraction) * 45.0),
+    ) - @as(f64, fraction) * 22.5;
+
     state.rotation.y = f(@as(f64, fraction) * -720.0);
     state.rotation.z = f(roll);
-    state.rotation.x = f(random_module.randomFloat(random, f(@as(f64, fraction) * 180.0)) - @as(f64, fraction) * 90.0);
+    state.rotation.x = f(
+        random_module.randomFloat(
+            random,
+            f(@as(f64, fraction) * 180.0),
+        ) - @as(f64, fraction) * 90.0,
+    );
+
     state.held = false;
 }
 
 pub fn follow(actor: *Actor, owner: Owner) void {
-    actor.position = .{ .x = owner.position.x, .y = f(@as(f64, owner.height) * @as(f32, 0.85) + owner.position.y), .z = owner.position.z };
+    actor.position = .{
+        .x = owner.position.x,
+        .y = f(@as(f64, owner.height) * @as(f32, 0.85) + owner.position.y),
+        .z = owner.position.z,
+    };
+
     actor.sector = owner.sector;
 }
 
 pub fn vector(angles: *const Angles, yaw: i16, pitch: i16, magnitude: f32) Vec3 {
     const y = angles.sinCos(yaw);
     const p = angles.sinCos(pitch);
-    return .{ .x = f(@as(f64, f(@as(f64, magnitude) * y.sin)) * p.cos), .y = f(@as(f64, magnitude) * p.sin), .z = f(@as(f64, f(@as(f64, magnitude) * y.cos)) * p.cos) };
+
+    return .{
+        .x = f(@as(f64, f(@as(f64, magnitude) * y.sin)) * p.cos),
+        .y = f(@as(f64, magnitude) * p.sin),
+        .z = f(@as(f64, f(@as(f64, magnitude) * y.cos)) * p.cos),
+    };
 }
 
-pub fn alignFloor(actor: *Actor, rotation: *Vec3, world: @import("../enemy/physics.zig").World) !void {
+pub fn alignFloor(
+    actor: *Actor,
+    rotation: *Vec3,
+    world: @import("../enemy/physics.zig").World,
+) !void {
     const physics = @import("../enemy/physics.zig");
-    if (actor.position.y > try physics.height(world, actor.sector, actor.position, false, true)) return;
+    if (actor.position.y > try physics.height(
+        world,
+        actor.sector,
+        actor.position,
+        false,
+        true,
+    )) return;
+
     if (world.scene.sectors[actor.sector].floor_slope) |slope| {
         actor.pitch = slopeAngle(world.angles, slope, actor.yaw);
         actor.roll = slopeAngle(world.angles, slope, actor.yaw -% 0x1000);
@@ -172,6 +259,7 @@ pub fn alignFloor(actor: *Actor, rotation: *Vec3, world: @import("../enemy/physi
         actor.pitch = 0;
         actor.roll = 0;
     }
+
     rotation.y = 0;
     rotation.z = 0;
 }
@@ -179,8 +267,12 @@ pub fn alignFloor(actor: *Actor, rotation: *Vec3, world: @import("../enemy/physi
 pub fn rotate(actor: *Actor, rotation: Vec3, dt: f32) void {
     inline for (.{ .{ "yaw", "x" }, .{ "pitch", "y" }, .{ "roll", "z" } }) |axis| {
         const rate = @field(rotation, axis[1]);
+
         if (@as(u32, @bitCast(rate)) & 0x7fffffff != 0)
-            @field(actor, axis[0]) +%= @as(i16, @truncate(@as(i32, @intFromFloat(@as(f64, dt) * rate * 45.5112))));
+            @field(
+                actor,
+                axis[0],
+            ) +%= @as(i16, @truncate(@as(i32, @intFromFloat(@as(f64, dt) * rate * 45.5112))));
     }
 }
 
@@ -190,19 +282,30 @@ pub fn afterMove(state: *State, previous: Vec3) void {
         state.rotation.z = -f(@as(f64, state.rotation.z) * 0.5);
         state.bounced = true;
     }
+
     if (@abs(state.velocity.y) < 0.1) scaleHorizontal(&state.velocity, 0.75);
-    if (negative(state.velocity.x) != negative(previous.x) or negative(state.velocity.z) != negative(previous.z)) scaleHorizontal(&state.velocity, 0.5);
+
+    if (negative(
+        state.velocity.x,
+    ) != negative(
+        previous.x,
+    ) or negative(state.velocity.z) != negative(previous.z)) scaleHorizontal(&state.velocity, 0.5);
 }
 
 pub fn speed(state: State) f64 {
     const v = state.velocity;
+
     return @sqrt(@as(f64, if (state.descriptor.kind == .knife)
         f(@as(f64, v.z) * v.z + @as(f64, v.x) * v.x + @as(f64, v.y) * v.y)
     else
         f(@as(f64, v.y) * v.y + @as(f64, v.z) * v.z + @as(f64, v.x) * v.x)));
 }
 
-pub fn blast(config: *const Config, origin: Vec3, target: @import("../player/collision.zig").Body) Blast {
+pub fn blast(
+    config: *const Config,
+    origin: Vec3,
+    target: @import("../player/collision.zig").Body,
+) Blast {
     const dx = f(@as(f64, target.position.x) - origin.x);
     const dz = f(@as(f64, target.position.z) - origin.z);
     const dy = f(@as(f64, f(@as(f64, target.height) * 0.5 + target.position.y)) - origin.y);
@@ -210,17 +313,50 @@ pub fn blast(config: *const Config, origin: Vec3, target: @import("../player/col
     const distance = f(@sqrt(@as(f64, f(@as(f64, dy) * dy + horizontal_squared))));
     const horizontal = f(@sqrt(@as(f64, horizontal_squared)));
     var factor: f32 = 1;
+
     if (@as(f64, config.radius) * 0.25 <= distance) {
-        const quotient = (@as(f64, config.radius) - distance) / (@as(f64, config.radius) - f(@as(f64, config.radius) * 0.25));
+        const quotient = (@as(
+            f64,
+            config.radius,
+        ) - distance) / (@as(f64, config.radius) - f(@as(f64, config.radius) * 0.25));
+
         factor = f(quotient * quotient);
     }
-    return .{ .damage = .{ .kind = 4, .damage = f(@as(f64, config.damage) * factor), .mass = config.mass, .speed = f(@as(f64, config.rate) * factor), .pitch = angle(f(@as(f64, dy) * 0.5), horizontal), .yaw = angle(dx, dz), .lateral = @abs(target.radius), .height = f(@as(f64, target.height) * 0.5) }, .impact = .{ .x = target.position.x, .y = f(@as(f64, target.height) * 0.5 + target.position.y), .z = target.position.z } };
+
+    return .{
+        .damage = .{
+            .kind = 4,
+            .damage = f(@as(f64, config.damage) * factor),
+            .mass = config.mass,
+            .speed = f(@as(f64, config.rate) * factor),
+            .pitch = angle(f(@as(f64, dy) * 0.5), horizontal),
+            .yaw = angle(dx, dz),
+            .lateral = @abs(target.radius),
+            .height = f(@as(f64, target.height) * 0.5),
+        },
+        .impact = .{
+            .x = target.position.x,
+            .y = f(@as(f64, target.height) * 0.5 + target.position.y),
+            .z = target.position.z,
+        },
+    };
 }
 
 fn slopeAngle(angles: *const Angles, slope: @import("../render/scene.zig").Slope, yaw: i16) i16 {
     const basis = angles.sinCos(yaw);
     const gradient = -f(@as(f64, slope.coeff_z) * basis.cos + @as(f64, slope.coeff_x) * basis.sin);
-    return @truncate(@as(i32, @intFromFloat(@as(f64, f(std.math.atan(@as(f64, gradient)))) * @as(f64, @bitCast(@as(u64, 0x3fc45f306dcc48b9))) * 16384.0)));
+
+    return @truncate(
+        @as(
+            i32,
+            @intFromFloat(
+                @as(
+                    f64,
+                    f(std.math.atan(@as(f64, gradient))),
+                ) * @as(f64, @bitCast(@as(u64, 0x3fc45f306dcc48b9))) * 16384.0,
+            ),
+        ),
+    );
 }
 
 fn negative(value: f32) bool {
@@ -228,18 +364,42 @@ fn negative(value: f32) bool {
 }
 
 fn scaleHorizontal(velocity: *Vec3, factor: f32) void {
-    const squared = f(@as(f64, velocity.x) * 0.5 * velocity.x * 0.5 + @as(f64, velocity.z) * 0.5 * velocity.z * 0.5);
+    const squared = f(
+        @as(
+            f64,
+            velocity.x,
+        ) * 0.5 * velocity.x * 0.5 + @as(f64, velocity.z) * 0.5 * velocity.z * 0.5,
+    );
+
     const requested = f(@as(f64, f(@sqrt(@as(f64, squared)))) * 2.0 * factor);
     const magnitude = f(@as(f64, f(@sqrt(@as(f64, squared)))) * 2.0);
     if (magnitude == 0) return;
+
     const ratio = @as(f64, requested) / magnitude;
+
     velocity.x = f(@as(f64, velocity.x) * ratio);
     velocity.z = f(@as(f64, ratio) * velocity.z);
 }
 
 fn angle(x: f32, z: f32) i16 {
     const radians = f(std.math.atan2(@as(f64, x), @as(f64, z)));
-    return @intCast(@as(u32, @bitCast(@as(i32, @intFromFloat(@as(f64, radians) * @as(f64, @bitCast(@as(u64, 0x3fc45f306dcc48b9))) * 16384.0)))) & 0x3fff);
+
+    return @intCast(
+        @as(
+            u32,
+            @bitCast(
+                @as(
+                    i32,
+                    @intFromFloat(
+                        @as(
+                            f64,
+                            radians,
+                        ) * @as(f64, @bitCast(@as(u64, 0x3fc45f306dcc48b9))) * 16384.0,
+                    ),
+                ),
+            ),
+        ) & 0x3fff,
+    );
 }
 
 fn f(value: f64) f32 {

@@ -14,17 +14,21 @@ pub const State = struct {
 
     pub fn init(level: *const level_module.Level) State {
         var state = State{};
+
         for (level.sectors) |sector| if (sector.flags & 0x02000000 != 0) {
             state.total +%= 1;
         };
+
         return state;
     }
 
     pub fn discover(self: *State, scene: *scene_module.Scene, sector: usize) bool {
         const flags = &scene.sectors[sector].runtime_flags;
         if (flags.* & 0x10000000 == 0) return false;
+
         flags.* &= ~@as(u32, 0x10000000);
         self.found +%= 1;
+
         return true;
     }
 };

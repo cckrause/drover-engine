@@ -5,9 +5,10 @@
 //! brightness table. This module and its neighbours are the only places
 //! that may touch SDL.
 
-const std = @import("std");
-const title = @import("../game/title.zig");
 const builtin = @import("builtin");
+const std = @import("std");
+
+const title = @import("../game/title.zig");
 const input = @import("../player/input.zig");
 const automap = @import("../render/automap.zig");
 const display_palette = @import("../render/display_palette.zig");
@@ -28,13 +29,35 @@ pub const Window = struct {
     pub fn init(pixels: []u8, width: usize, height: usize) !Window {
         c.SDL_SetMainReady();
         if (c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_TIMER) != 0) return fail();
+
         errdefer c.SDL_Quit();
-        const window = c.SDL_CreateWindow(window_caption, c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED, @intCast(width), @intCast(height), c.SDL_WINDOW_SHOWN) orelse return fail();
+
+        const window = c.SDL_CreateWindow(
+            window_caption,
+            c.SDL_WINDOWPOS_CENTERED,
+            c.SDL_WINDOWPOS_CENTERED,
+            @intCast(width),
+            @intCast(height),
+            c.SDL_WINDOW_SHOWN,
+        ) orelse return fail();
+
         errdefer c.SDL_DestroyWindow(window);
+
         // SDL2 turns text input on by default, which makes macOS show its
         // letter and accent popup while keys are held. The game reads raw keys.
         c.SDL_StopTextInput();
-        const surface = c.SDL_CreateRGBSurfaceFrom(pixels.ptr, @intCast(width), @intCast(height), 8, @intCast(width), 0, 0, 0, 0) orelse return fail();
+        const surface = c.SDL_CreateRGBSurfaceFrom(
+            pixels.ptr,
+            @intCast(width),
+            @intCast(height),
+            8,
+            @intCast(width),
+            0,
+            0,
+            0,
+            0,
+        ) orelse return fail();
+
         return .{ .handle = window, .surface = surface };
     }
 
@@ -47,13 +70,21 @@ pub const Window = struct {
     pub fn present(self: Window, raw: *const [256]u32) !void {
         const converted = if (self.display) |display| display.convert(raw) else raw.*;
         var colors: [256]c.SDL_Color = undefined;
+
         for (&converted, &colors) |rgb, *color| color.* = .{
             .r = @truncate(rgb),
             .g = @truncate(rgb >> 8),
             .b = @truncate(rgb >> 16),
             .a = 255,
         };
-        if (c.SDL_SetPaletteColors(self.surface.format.*.palette, &colors, 0, 256) != 0) return fail();
+
+        if (c.SDL_SetPaletteColors(
+            self.surface.format.*.palette,
+            &colors,
+            0,
+            256,
+        ) != 0) return fail();
+
         const destination = c.SDL_GetWindowSurface(self.handle) orelse return fail();
         if (c.SDL_BlitSurface(self.surface, null, destination, null) != 0) return fail();
         if (c.SDL_UpdateWindowSurface(self.handle) != 0) return fail();
@@ -90,11 +121,15 @@ pub const PlayerInput = struct {
 
     pub fn menuEvent(self: *PlayerInput, value: *const c.SDL_Event, context_active: bool) void {
         if (value.type != c.SDL_KEYDOWN and value.type != c.SDL_KEYUP) return;
+
         const scan = gameScanCode(value.key.keysym.scancode) orelse return;
         const down = value.type == c.SDL_KEYDOWN;
         if (context_active and down and scan != 42 and scan != 54) return;
+
         if (context_active) self.map_input.down[scan] = down else self.map_input.key(scan, down);
+
         const captured = self.capture_map_arrows and (scan == 72 or scan == 80 or scan == 75 or scan == 77);
+
         if (!down or !captured) self.state.key(scan, down, value.key.timestamp);
     }
 
@@ -119,6 +154,7 @@ pub const PlayerInput = struct {
 
     pub fn event(self: *PlayerInput, value: *const c.SDL_Event) !void {
         if (!self.started) return;
+
         const now_ms = value.common.timestamp;
         if (value.type == c.SDL_WINDOWEVENT) {
             switch (value.window.event) {
@@ -126,6 +162,7 @@ pub const PlayerInput = struct {
                     for (self.state.keys, 0..) |key_state, scan| {
                         if (key_state.down) self.state.key(@intCast(scan), false, now_ms);
                     }
+
                     self.map_input.down = @splat(false);
                     self.focused = false;
                     self.motion_x = 0;
@@ -138,13 +175,17 @@ pub const PlayerInput = struct {
                     self.state = .{};
                     self.map_input = .{};
                     self.focused = true;
+
                     try self.capture(now_ms);
                 },
                 else => {},
             }
+
             return;
         }
+
         if (!self.focused) return;
+
         switch (value.type) {
             c.SDL_KEYDOWN, c.SDL_KEYUP => {
                 if (gameScanCode(value.key.keysym.scancode)) |scan| {
@@ -165,6 +206,7 @@ pub const PlayerInput = struct {
                     c.SDL_BUTTON_MIDDLE => 4,
                     else => 0,
                 };
+
                 if (value.type == c.SDL_MOUSEBUTTONDOWN) self.buttons |= mask else self.buttons &= ~mask;
             },
             else => {},
@@ -173,31 +215,45 @@ pub const PlayerInput = struct {
 
     pub fn sample(self: *PlayerInput, now_ms: u32) !?Sample {
         if (!self.started or !self.focused) return null;
+
         const elapsed = now_ms -% self.last_sample;
         if (elapsed == 0) return null;
-        const packet = try self.state.sample(now_ms, .{ .dx = self.motion_x, .dy = self.motion_y, .buttons = self.buttons });
+
+        const packet = try self.state.sample(
+            now_ms,
+            .{ .dx = self.motion_x, .dy = self.motion_y, .buttons = self.buttons },
+        );
+
         self.motion_x = 0;
         self.motion_y = 0;
         self.last_sample = now_ms;
+
         const map_input = self.map_input;
         self.map_input.read = self.map_input.written;
+
         return .{ .packet = packet, .map_input = map_input, .elapsed_ms = elapsed };
     }
 
     pub fn sampleIdle(self: *PlayerInput, now_ms: u32) ?Sample {
         if (!self.started or self.focused) return null;
+
         const elapsed = now_ms -% self.last_sample;
         if (elapsed == 0) return null;
+
         self.last_sample = now_ms;
+
         return .{ .packet = .{}, .map_input = .{}, .elapsed_ms = elapsed };
     }
 
     fn capture(self: *PlayerInput, now_ms: u32) !void {
         try self.captureMouse();
+
         var count: c_int = 0;
         const held = c.SDL_GetKeyboardState(&count);
+
         for (0..@intCast(count)) |i| {
             if (held[i] == 0) continue;
+
             if (gameScanCode(@intCast(i))) |scan| {
                 self.state.key(scan, true, now_ms);
                 self.map_input.key(scan, true);
@@ -207,11 +263,14 @@ pub const PlayerInput = struct {
 
     fn captureMouse(self: *PlayerInput) !void {
         if (c.SDL_SetRelativeMouseMode(c.SDL_TRUE) != 0) return fail();
+
         c.SDL_PumpEvents();
         c.SDL_FlushEvent(c.SDL_MOUSEMOTION);
+
         _ = c.SDL_GetRelativeMouseState(null, null);
         self.motion_x = 0;
         self.motion_y = 0;
+
         const buttons = c.SDL_GetMouseState(null, null);
         self.buttons = @as(u3, @intFromBool(buttons & c.SDL_BUTTON_LMASK != 0)) |
             (@as(u3, @intFromBool(buttons & c.SDL_BUTTON_RMASK != 0)) << 1) |
@@ -220,7 +279,18 @@ pub const PlayerInput = struct {
 };
 
 pub fn presentRgb(window: Window, rgb: []u32, width: u32, height: u32) !void {
-    const frame = c.SDL_CreateRGBSurfaceFrom(rgb.ptr, @intCast(width), @intCast(height), 32, @intCast(width * 4), 0x00ff0000, 0x0000ff00, 0x000000ff, 0) orelse return fail();
+    const frame = c.SDL_CreateRGBSurfaceFrom(
+        rgb.ptr,
+        @intCast(width),
+        @intCast(height),
+        32,
+        @intCast(width * 4),
+        0x00ff0000,
+        0x0000ff00,
+        0x000000ff,
+        0,
+    ) orelse return fail();
+
     defer c.SDL_FreeSurface(frame);
     const destination = c.SDL_GetWindowSurface(window.handle) orelse return fail();
     if (c.SDL_BlitScaled(frame, null, destination, null) != 0) return fail();
@@ -319,16 +389,19 @@ pub fn gameScanCode(scan: c.SDL_Scancode) ?u7 {
 
 fn fail() error{SdlFailure} {
     std.log.err("SDL2: {s}", .{c.SDL_GetError()});
+
     return error.SdlFailure;
 }
 
 test "an unfocused network game gets frames without input" {
     var player: PlayerInput = .{ .started = true, .focused = false, .last_sample = 100 };
     const idle = player.sampleIdle(150) orelse return error.NoIdleFrame;
+
     try std.testing.expectEqual(@as(u32, 50), idle.elapsed_ms);
     try std.testing.expectEqualDeep(input.Packet{}, idle.packet);
     try std.testing.expectEqual(@as(u32, 150), player.last_sample);
     try std.testing.expect(player.sampleIdle(150) == null);
+
     player.focused = true;
     try std.testing.expect(player.sampleIdle(200) == null);
 }
@@ -336,47 +409,66 @@ test "an unfocused network game gets frames without input" {
 test "mission popup propagates releases and shift while retaining gameplay input history" {
     var host: PlayerInput = .{ .last_sample = 1000 };
     host.state.previous_time = 900;
+
     host.state.key(29, true, 901);
     host.state.key(72, true, 901);
+
     _ = try host.state.sample(1000, .{ .buttons = 1 });
     const previous = host.state.previous;
     host.suspendMenu();
     var event = std.mem.zeroes(c.SDL_Event);
+
     event.key.type = c.SDL_KEYUP;
     event.key.timestamp = 1100;
     event.key.keysym.scancode = c.SDL_SCANCODE_LCTRL;
+
     host.menuEvent(&event, true);
     event.key.keysym.scancode = c.SDL_SCANCODE_UP;
     host.menuEvent(&event, true);
     try std.testing.expect(!host.state.keys[29].down and !host.state.keys[72].down);
+
     event.key.type = c.SDL_KEYDOWN;
     event.key.timestamp = 1200;
+
     for ([_]c.SDL_Scancode{ c.SDL_SCANCODE_LCTRL, c.SDL_SCANCODE_UP, c.SDL_SCANCODE_TAB }) |scan| {
         event.key.keysym.scancode = scan;
         host.menuEvent(&event, true);
     }
-    try std.testing.expect(!host.state.keys[29].down and !host.state.keys[72].down and !host.state.keys[15].down);
+
+    try std.testing.expect(
+        !host.state.keys[29].down and !host.state.keys[72].down and !host.state.keys[15].down,
+    );
+
     event.key.keysym.scancode = c.SDL_SCANCODE_LSHIFT;
     host.menuEvent(&event, true);
+
     try std.testing.expect(host.state.keys[42].down);
     try std.testing.expectEqualSlices(bool, &previous, &host.state.previous);
     try std.testing.expectEqual(@as(u3, 1), host.state.mouse_previous);
     try std.testing.expectEqual(@as(u32, 1000), host.state.previous_time);
     try std.testing.expectEqual(@as(u32, 1000), host.last_sample);
+
     var packet = try host.state.sample(2000, .{});
     try std.testing.expect(packet.get(.fire).flags & input.released != 0);
     packet = try host.state.sample(2016, .{});
+
     try std.testing.expect(packet.get(.fire).flags & input.released != 0);
     try std.testing.expect(packet.get(.forward).flags & input.released != 0);
+
     event.key.timestamp = 2020;
     event.key.keysym.scancode = c.SDL_SCANCODE_LCTRL;
+
     host.menuEvent(&event, false);
     try std.testing.expect(host.state.keys[29].down);
+
     const retained_actions = host.state.previous;
     const retained_mouse = host.state.mouse_previous;
+
     host.capture_map_arrows = true;
+
     host.map_input.key(72, true);
     host.clearLevelKeys();
+
     try std.testing.expect(!host.state.keys[29].down);
     try std.testing.expect(!host.capture_map_arrows);
     try std.testing.expectEqual(@as(u32, 0), host.map_input.written);

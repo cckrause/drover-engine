@@ -5,6 +5,7 @@
 //! registered with their type and resolved by exact spelling.
 
 const std = @import("std");
+
 pub const parser = @import("cmm_parser.zig");
 
 pub const inventory_bindings = [_]Binding{
@@ -156,19 +157,23 @@ pub fn resolve(name: []const u8) !Native {
     if (name.len == 0) return error.CmmFunctionNotFound;
     if (!std.ascii.isAlphabetic(name[0]) or std.mem.indexOfScalar(u8, name, 0) != null)
         return error.InvalidCmmSymbol;
+
     const bucket = std.ascii.toUpper(name[0]);
     var i = bindings.len;
+
     while (i != 0) {
         i -= 1;
         const binding = bindings[i];
         if (std.ascii.toUpper(binding.name[0]) == bucket and std.mem.eql(u8, name, binding.name))
             return binding.native;
     }
+
     return error.CmmFunctionNotFound;
 }
 
 pub fn touchSolid(native: Native, state: *ContactState, sanchez_enabled: bool) !ContactResult {
     if (native == .sanchez and !sanchez_enabled) return .{ .return_value = 0, .next_tick = null };
+
     return switch (native) {
         .object => .{ .return_value = 1, .next_tick = null },
         .enemy, .chicken, .civilian, .slim, .farmer, .bob, .dynamite, .marshal, .sanchez => blk: {
@@ -200,27 +205,58 @@ test "CMM registration preserves names, aliases and exact lookup" {
 
 test "CMM registrations and contact dispatch reference" {
     const a = std.testing.allocator;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/cmm-reference.json", a, .limited(1024 * 1024)) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "testdata/cmm-reference.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer a.free(bytes);
     const Fixture = struct {
         registrations: []const struct { name: []const u8, address: u32, symbol_type: u32 },
-        contacts: []const struct { name: []const u8, seed: u32, last_random: u32, next_tick_before: u32, result: u32, next_tick: u32, random: u32, enemy_random: u32, sanchez_enabled: bool = false },
+        contacts: []const struct {
+            name: []const u8,
+            seed: u32,
+            last_random: u32,
+            next_tick_before: u32,
+            result: u32,
+            next_tick: u32,
+            random: u32,
+            enemy_random: u32,
+            sanchez_enabled: bool = false,
+        },
     };
-    const parsed = try std.json.parseFromSlice(Fixture, a, bytes, .{ .ignore_unknown_fields = true });
+
+    const parsed = try std.json.parseFromSlice(
+        Fixture,
+        a,
+        bytes,
+        .{ .ignore_unknown_fields = true },
+    );
+
     defer parsed.deinit();
+
     try std.testing.expectEqual(bindings.len, parsed.value.registrations.len);
+
     for (parsed.value.registrations) |entry| {
         try std.testing.expectEqual(@as(u32, 0x80), entry.symbol_type);
         try std.testing.expectEqual(entry.address, @intFromEnum(try resolve(entry.name)));
     }
+
     for (parsed.value.contacts) |entry| {
         var state: ContactState = .{ .random = entry.seed, .last_enemy_random = entry.last_random };
         const result = try touchSolid(try resolve(entry.name), &state, entry.sanchez_enabled);
+
         try std.testing.expectEqual(entry.result, result.return_value);
-        try std.testing.expectEqual(entry.next_tick, result.next_tick orelse entry.next_tick_before);
+        try std.testing.expectEqual(
+            entry.next_tick,
+            result.next_tick orelse entry.next_tick_before,
+        );
+
         try std.testing.expectEqual(entry.random, state.random);
         try std.testing.expectEqual(entry.enemy_random, state.last_enemy_random);
     }

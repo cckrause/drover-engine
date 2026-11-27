@@ -1,8 +1,9 @@
 //! Inspect the selected profile using sizes from this executable's target.
-const std = @import("std");
 const builtin = @import("builtin");
-const limits = @import("memory/limits.zig");
+const std = @import("std");
+
 const layout = @import("memory/layout.zig");
+const limits = @import("memory/limits.zig");
 
 pub fn main() void {
     std.debug.print(
@@ -19,10 +20,24 @@ pub fn main() void {
             "TODO: Give runtime containers fixed startup capacities.\n" ++
             "Native libraries, thread stacks, bootstrap and the allocator owner are additional.\n",
         .{
-            @tagName(limits.profile),        @tagName(builtin.cpu.arch),    @tagName(builtin.os.tag),         @bitSizeOf(usize),
-            limits.heap_bytes,               layout.heap_metadata_bytes,    layout.reservation_bytes,         limits.current.resource_bytes,
-            limits.current.resource_handles, layout.resource_handles_bytes, limits.current.movie_input_bytes, limits.current.sound_instances,
-            limits.current.sound_voices,     layout.software_frame_bytes,   layout.session_queue_bytes,       layout.router_storage_bytes,
+            @tagName(
+                limits.profile,
+            ),
+            @tagName(builtin.cpu.arch),
+            @tagName(builtin.os.tag),
+            @bitSizeOf(usize),
+            limits.heap_bytes,
+            layout.heap_metadata_bytes,
+            layout.reservation_bytes,
+            limits.current.resource_bytes,
+            limits.current.resource_handles,
+            layout.resource_handles_bytes,
+            limits.current.movie_input_bytes,
+            limits.current.sound_instances,
+            limits.current.sound_voices,
+            layout.software_frame_bytes,
+            layout.session_queue_bytes,
+            layout.router_storage_bytes,
             layout.known_storage_bytes,
         },
     );

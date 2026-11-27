@@ -67,11 +67,13 @@ pub const Lexer = struct {
         if (std.mem.indexOfScalar(u8, source, 0) != null) return error.InvalidCmmSource;
         var lexer = Lexer{ .source = source };
         try lexer.read();
+
         return lexer;
     }
 
     pub fn next(self: *Lexer) !Token {
         while (self.current == ' ') try self.read();
+
         var token: Token = .{};
         if (self.current == 0x7f) return token;
         if (std.ascii.isAlphabetic(self.current)) {
@@ -79,62 +81,90 @@ pub const Lexer = struct {
                 try token.append(self.current);
                 try self.read();
             }
+
             token.id = identifier_token;
+
             for (keywords) |keyword| if (std.mem.eql(u8, token.text(), keyword.name)) {
                 token.id = keyword.id;
                 break;
             };
+
             return token;
         }
+
         if (std.ascii.isDigit(self.current)) {
             var digits: usize = 0;
             var value = try self.number(&token, 0, &digits);
+
             token.value_kind = 0;
+
             if (self.current == '.') {
                 try self.read();
                 try token.append('.');
+
                 token.value_kind = 1;
                 const integer_digits = digits;
                 value = try self.number(&token, value, &digits);
-                const exponent: i32 = @as(i32, @intCast(integer_digits)) - @as(i32, @intCast(digits));
-                value = @floatCast(@as(f64, value) * std.math.pow(f64, 10, @floatFromInt(exponent)));
+                const exponent: i32 = @as(
+                    i32,
+                    @intCast(integer_digits),
+                ) - @as(i32, @intCast(digits));
+
+                value = @floatCast(
+                    @as(f64, value) * std.math.pow(f64, 10, @floatFromInt(exponent)),
+                );
             }
+
             if (digits > 20) return error.CmmNumberTooLong;
+
             if (token.value_kind.? == 0) {
                 if (value > 32767) return error.CmmIntegerOutOfRange;
                 token.value_bits = @intFromFloat(value);
             } else {
                 token.value_bits = @bitCast(value);
             }
+
             token.id = number_token;
             return token;
         }
+
         if (self.current == '"') {
             token.id = string_token;
             token.value_kind = 2;
+
             try token.append('"');
             try self.read();
+
             while (self.current != 0x7f) {
                 self.current = '"';
+
                 try token.append('"');
                 try self.read();
+
                 if (self.current != '"') break;
+
                 try token.append('"');
                 if (token.string_length == token.string_bytes.len - 1) return error.CmmTokenTooLong;
+
                 token.string_bytes[token.string_length] = '"';
                 token.string_length += 1;
+
                 try self.read();
             }
+
             return token;
         }
 
         const first = self.current;
+
         try token.append(first);
         token.id = first;
+
         switch (first) {
             '(', ')', ',', '.', ':', ';', '?', '[', ']', '{', '}', '~' => try self.read(),
             '!', '%', '&', '*', '+', '-', '/', '<', '=', '>', '^', '|' => {
                 try self.read();
+
                 const second = self.current;
                 const combined: ?u32 = switch (first) {
                     '!' => if (second == '=') 0x113 else null,
@@ -151,21 +181,26 @@ pub const Lexer = struct {
                     '|' => if (second == '=') 0x11f else if (second == '|') 0x115 else null,
                     else => unreachable,
                 };
+
                 if (combined) |id| {
                     token.id = id;
+
                     try token.append(second);
                     try self.read();
+
                     if ((first == '<' and second == '<') or (first == '>' and second == '>')) {
                         if (self.current == '=') {
                             token.id = if (first == '<') 0x11b else 0x11c;
                             try token.append('=');
                         }
+
                         try self.read();
                     }
                 }
             },
             else => return error.InvalidCmmCharacter,
         }
+
         return token;
     }
 
@@ -174,23 +209,31 @@ pub const Lexer = struct {
             self.current = 0x7f;
             return;
         }
+
         self.current = self.source[self.cursor];
         self.cursor += 1;
+
         if (self.current == '\t' or self.current == '\n') {
             self.current = ' ';
         } else if (self.current == '/' and self.cursor < self.source.len and self.source[self.cursor] == '*') {
             self.cursor += 1;
             if (self.read_depth == 256) return error.CmmCommentTooDeep;
+
             self.read_depth += 1;
             defer self.read_depth -= 1;
+
             var nesting: usize = 1;
+
             while (true) {
                 try self.read();
+
                 if (self.current == '/') {
                     try self.read();
+
                     if (self.current == '*') {
                         nesting += 1;
                         try self.read();
+
                         if (self.current == '*') {
                             try self.read();
                             if (self.current == '/') nesting -= 1;
@@ -200,21 +243,30 @@ pub const Lexer = struct {
                     try self.read();
                     if (self.current == '/') nesting -= 1;
                 }
+
                 if (nesting == 0 or self.current == 0x7f) break;
             }
+
             if (nesting != 0) return error.UnterminatedCmmComment;
         }
     }
 
     fn number(self: *Lexer, token: *Token, initial: f32, count: *usize) !f32 {
         if (!std.ascii.isDigit(self.current)) return error.InvalidCmmNumber;
+
         var value = initial;
+
         while (std.ascii.isDigit(self.current)) {
             try token.append(self.current);
             count.* += 1;
-            if (count.* <= 20) value = @floatCast(@as(f64, value) * 10 + @as(f64, @floatFromInt(self.current - '0')));
+
+            if (count.* <= 20) value = @floatCast(
+                @as(f64, value) * 10 + @as(f64, @floatFromInt(self.current - '0')),
+            );
+
             try self.read();
         }
+
         return value;
     }
 };
@@ -229,13 +281,16 @@ pub const Parser = struct {
     pub fn init(source: []const u8) !Parser {
         var lexer = try Lexer.init(source);
         const current = try lexer.next();
+
         return .{ .lexer = lexer, .current = current };
     }
 
     pub fn statement(self: *Parser) anyerror!void {
         if (self.depth == 256) return error.CmmSyntaxTooDeep;
+
         self.depth += 1;
         defer self.depth -= 1;
+
         switch (self.current.id) {
             '{' => {},
             identifier_token => {
@@ -248,6 +303,7 @@ pub const Parser = struct {
                 try self.advance();
                 try self.expression();
                 try self.statement();
+
                 if (self.current.id == 0x139) {
                     try self.advance();
                     try self.statement();
@@ -257,9 +313,11 @@ pub const Parser = struct {
                 try self.advance();
                 try self.expression();
                 if (self.current.id != '{') return error.CmmMissingSwitchOpen;
+
                 try self.advance();
                 if (self.current.id == 0x136 or self.current.id == 0x137) return error.CmmMissingSwitchColon;
                 if (self.current.id != '}') return error.CmmMissingSwitchClose;
+
                 try self.advance();
             },
             0x13b, 0x13d => {
@@ -271,22 +329,34 @@ pub const Parser = struct {
                 try self.advance();
                 try self.statement();
                 if (self.current.id != 0x13b) return error.CmmMissingWhile;
+
                 try self.advance();
                 try self.expression();
             },
             0x142 => try self.advance(),
             else => return error.CmmUnsupportedStatement,
         }
-        if (contains(&.{ '{', identifier_token, 0x138, 0x13a, 0x13b, 0x13d, 0x13c, 0x142 }, self.current.id))
+
+        if (contains(
+            &.{ '{', identifier_token, 0x138, 0x13a, 0x13b, 0x13d, 0x13c, 0x142 },
+            self.current.id,
+        ))
             return error.CmmMissingSemicolon;
-        if (!contains(&.{ '}', ';', 0x139, eof_token }, self.current.id)) return error.CmmUnexpectedToken;
+
+        if (!contains(
+            &.{ '}', ';', 0x139, eof_token },
+            self.current.id,
+        )) return error.CmmUnexpectedToken;
     }
 
     pub fn expression(self: *Parser) anyerror!void {
         if (self.depth == 256) return error.CmmSyntaxTooDeep;
+
         self.depth += 1;
         defer self.depth -= 1;
+
         try self.simple();
+
         if (contains(&.{ '>', '<', 0x112, 0x111, 0x110, 0x113 }, self.current.id)) {
             try self.advance();
             try self.simple();
@@ -299,7 +369,9 @@ pub const Parser = struct {
 
     fn simple(self: *Parser) !void {
         if (self.current.id == '+' or self.current.id == '-') try self.advance();
+
         try self.term();
+
         while (contains(&.{ '+', '-', 0x115 }, self.current.id)) {
             try self.advance();
             try self.term();
@@ -308,6 +380,7 @@ pub const Parser = struct {
 
     fn term(self: *Parser) !void {
         try self.factor();
+
         while (contains(&.{ '*', '/', '%', 0x114 }, self.current.id)) {
             try self.advance();
             try self.factor();
@@ -316,6 +389,7 @@ pub const Parser = struct {
 
     fn factor(self: *Parser) anyerror!void {
         while (self.current.id == '!') try self.advance();
+
         switch (self.current.id) {
             number_token, identifier_token, string_token => try self.advance(),
             '(' => {
@@ -335,6 +409,7 @@ fn contains(values: []const u32, value: u32) bool {
 
 test "CMM scanner preserves shipped operator and string quirks" {
     var lexer = try Lexer.init("if If 32767 12.5 a<<b x>>=2 \"abc\"");
+
     try std.testing.expectEqual(@as(u32, 0x138), (try lexer.next()).id);
     try std.testing.expectEqual(@as(u32, identifier_token), (try lexer.next()).id);
     try std.testing.expectEqual(@as(u32, 32767), (try lexer.next()).value_bits);
@@ -344,7 +419,9 @@ test "CMM scanner preserves shipped operator and string quirks" {
     try std.testing.expectEqualStrings("x", (try lexer.next()).text());
     try std.testing.expectEqual(@as(u32, 0x11c), (try lexer.next()).id);
     try std.testing.expectEqual(@as(u32, 2), (try lexer.next()).value_bits);
+
     const string_value = try lexer.next();
+
     try std.testing.expectEqualStrings("\"\"", string_value.text());
     try std.testing.expectEqualStrings("", string_value.string());
     try std.testing.expectEqualStrings("bc", (try lexer.next()).text());
@@ -367,10 +444,16 @@ test "CMM syntax consumes expressions without implementing execution" {
 
 test "CMM scanner and syntax parser match the reference fixtures" {
     const a = std.testing.allocator;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/cmm-parser-reference.json", a, .limited(1024 * 1024)) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "testdata/cmm-parser-reference.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer a.free(bytes);
     const FixtureToken = struct {
         token: u32,
@@ -379,29 +462,52 @@ test "CMM scanner and syntax parser match the reference fixtures" {
         value_bits: ?u32 = null,
         string: ?[]const u8 = null,
     };
+
     const Fixture = struct {
         lexical: []const struct { source: []const u8, tokens: []const FixtureToken, stalled: bool },
         statements: []const struct { source: []const u8, token: u32, errors: u32 },
     };
-    const parsed = try std.json.parseFromSlice(Fixture, a, bytes, .{ .ignore_unknown_fields = true });
+
+    const parsed = try std.json.parseFromSlice(
+        Fixture,
+        a,
+        bytes,
+        .{ .ignore_unknown_fields = true },
+    );
+
     defer parsed.deinit();
+
     for (parsed.value.lexical) |sample| {
         var lexer = try Lexer.init(sample.source);
+
         for (sample.tokens, 0..) |expected, i| {
             if (expected.token == 0x144 or (sample.stalled and i + 1 == sample.tokens.len)) {
                 if (lexer.next()) |_| return error.ExpectedCmmLexicalError else |_| {}
                 break;
             }
+
             const actual = try lexer.next();
             try std.testing.expectEqual(expected.token, actual.id);
-            if (expected.token != eof_token) try std.testing.expectEqualStrings(expected.lexeme, actual.text());
+
+            if (expected.token != eof_token) try std.testing.expectEqualStrings(
+                expected.lexeme,
+                actual.text(),
+            );
+
             if (expected.value_type) |kind| try std.testing.expectEqual(kind, actual.value_kind.?);
+
             if (expected.value_bits) |bits| try std.testing.expectEqual(bits, actual.value_bits);
-            if (expected.string) |string| try std.testing.expectEqualStrings(string, actual.string());
+
+            if (expected.string) |string| try std.testing.expectEqualStrings(
+                string,
+                actual.string(),
+            );
         }
     }
+
     for (parsed.value.statements) |sample| {
         var parser = try Parser.init(sample.source);
+
         if (sample.errors == 0) {
             try parser.statement();
             try std.testing.expectEqual(sample.token, parser.current.id);

@@ -47,10 +47,12 @@ pub const MessageStore = struct {
     ) !MessageStore {
         std.debug.assert(slot_capacity > 0 and slot_capacity < none);
         std.debug.assert(byte_capacity <= std.math.maxInt(u32));
+
         const bytes = try allocator.alloc(u8, byte_capacity);
         errdefer allocator.free(bytes);
         const slots = try allocator.alloc(Slot, slot_capacity);
         var self: MessageStore = .{ .bytes = bytes, .slots = slots };
+
         for (slots, 0..) |*slot, index| slot.* = .{
             .next = if (index + 1 < slot_capacity) @intCast(index + 1) else none,
         };
@@ -77,6 +79,7 @@ pub const MessageStore = struct {
 
         const index = self.free_slot;
         const slot = &self.slots[index];
+
         self.free_slot = slot.next;
         slot.* = .{
             .start = @intCast(self.end),
@@ -86,8 +89,10 @@ pub const MessageStore = struct {
         };
 
         if (self.last == none) self.first = index else self.slots[self.last].after = index;
+
         self.last = index;
         @memcpy(self.bytes[self.end..][0..data.len], data);
+
         self.end += data.len;
         self.used_bytes += data.len;
         self.used_slots += 1;
@@ -101,6 +106,7 @@ pub const MessageStore = struct {
         std.debug.assert(slot.state != .free);
 
         if (slot.before == none) self.first = slot.after else self.slots[slot.before].after = slot.after;
+
         if (slot.after == none) {
             self.last = slot.before;
             self.end = if (slot.before == none) 0 else self.slots[slot.before].start + self.slots[slot.before].length;
@@ -116,6 +122,7 @@ pub const MessageStore = struct {
     pub fn get(self: *const MessageStore, index: Index) []u8 {
         const slot = &self.slots[index];
         std.debug.assert(slot.state != .free);
+
         return self.bytes[slot.start..][0..slot.length];
     }
 
@@ -133,6 +140,7 @@ pub const MessageStore = struct {
             if (at == none) break;
 
             const slot = &self.slots[at];
+
             if (slot.state == .taken) {
                 std.debug.assert(slot.start >= cursor);
                 cursor = slot.start + slot.length;
@@ -176,6 +184,7 @@ pub const Chain = struct {
         if (self.first == none) return null;
 
         const index = self.first;
+
         self.first = store.slots[index].next;
 
         if (self.first == none) self.last = none;
@@ -196,6 +205,7 @@ pub const Chain = struct {
 
             if (store.get(at).ptr == bytes.ptr) {
                 if (previous == none) self.first = next else store.slots[previous].next = next;
+
                 if (self.last == at) self.last = previous;
 
                 store.slots[at].next = none;
@@ -221,13 +231,18 @@ test "messages fill the block, and packing makes room from the gaps" {
     var store = try MessageStore.init(std.testing.allocator, 12, 8);
     defer store.deinit(std.testing.allocator);
     var queue: Chain = .{};
+
     for ("abcdef") |letter| queue.push(&store, try store.add(&.{ letter, letter }));
+
     try std.testing.expectError(error.NetworkQueueFull, store.add("x"));
+
     store.remove(queue.pop(&store).?);
     store.remove(queue.pop(&store).?);
     queue.push(&store, try store.add("ghij"));
+
     try std.testing.expectEqual(@as(usize, 12), store.end);
     var expected: [5][]const u8 = .{ "cc", "dd", "ee", "ff", "ghij" };
+
     for (&expected) |text| {
         const index = queue.pop(&store).?;
         try std.testing.expectEqualStrings(text, store.get(index));
@@ -244,15 +259,20 @@ test "a message being read stays in place, and the gap in front of it stays unus
     const first = try store.add("aa");
     const reading = try store.add("bb");
     const third = try store.add("cccc");
+
     store.take(reading);
     const before = store.get(reading).ptr;
+
     store.remove(first);
     store.remove(third);
+
     const added = try store.add("dddd");
+
     try std.testing.expectEqual(before, store.get(reading).ptr);
     try std.testing.expectEqualStrings("bb", store.get(reading));
     try std.testing.expectEqualStrings("dddd", store.get(added));
     try std.testing.expectError(error.NetworkQueueFull, store.add("ee"));
+
     store.remove(reading);
     _ = try store.add("ee");
 }
@@ -260,9 +280,12 @@ test "a message being read stays in place, and the gap in front of it stays unus
 test "every slot is reused once freed" {
     var store = try MessageStore.init(std.testing.allocator, 64, 3);
     defer store.deinit(std.testing.allocator);
+
     for (0..100) |_| {
         var chain: Chain = .{};
+
         for (0..3) |_| chain.push(&store, try store.add("m"));
+
         try std.testing.expectError(error.NetworkQueueFull, store.add("m"));
         const middle = store.get(store.slots[chain.first].next);
         store.remove(chain.unlink(&store, middle).?);

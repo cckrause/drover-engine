@@ -47,6 +47,7 @@ pub fn malloc(length: usize) callconv(.c) ?*anyopaque {
         noMemory();
         return null;
     };
+
     const bytes = active.?.alignedAlloc(u8, alignment, total) catch {
         noMemory();
         return null;
@@ -63,6 +64,7 @@ pub fn calloc(count_items: usize, size: usize) callconv(.c) ?*anyopaque {
         noMemory();
         return null;
     };
+
     const memory = malloc(length) orelse return null;
 
     @memset(@as([*]u8, @ptrCast(memory))[0..length], 0);
@@ -82,6 +84,7 @@ pub fn realloc(memory: ?*anyopaque, length: usize) callconv(.c) ?*anyopaque {
         noMemory();
         return null;
     };
+
     const old = allocation(pointer);
     const bytes = active.?.realloc(old, total) catch {
         noMemory();
@@ -115,19 +118,26 @@ fn allocation(memory: *anyopaque) []align(16) u8 {
 test "memory budget C callbacks preserve alignment and old data on exhaustion" {
     var budget = try @import("MemoryBudget.zig").init(std.testing.allocator, std.testing.io, 4096);
     defer budget.deinit(std.testing.allocator);
+
     try install(budget.allocator());
     defer uninstall();
+
     const first = calloc(7, 31).?;
     try std.testing.expectEqual(@as(usize, 0), @intFromPtr(first) % 16);
     const bytes = @as([*]u8, @ptrCast(first))[0..217];
+
     for (bytes) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+
     @memset(bytes, 0x37);
     const second = malloc(1500).?;
     try std.testing.expect(realloc(first, 4096) == null);
+
     for (bytes) |byte| try std.testing.expectEqual(@as(u8, 0x37), byte);
+
     free(second);
     free(first);
     free(null);
+
     try std.testing.expectEqual(@as(usize, 0), count());
     try std.testing.expect(exhausted());
     try std.testing.expectEqual(@as(usize, 0), budget.stats().used);

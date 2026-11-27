@@ -16,6 +16,7 @@ const Name = struct {
         var result: Name = .{};
         const count = @min(value.len, 15);
         @memcpy(result.bytes[0..count], value[0..count]);
+
         return result;
     }
 
@@ -46,10 +47,45 @@ pub const Config = struct {
     foot_volume: i32,
 
     pub fn fromItem(item: *const Item) !Config {
-        var result: Config = .{ .names = undefined, .foot_volume = item.intValue("VOL_FEET") orelse 127 };
-        for ([_][]const u8{ "SND_JUMP", "SND_LAND", "SND_LANDLT", "SND_HITHEAD", "SND_TIRED", "SND_CRUNCH", "SND_DIE", "SND_SHRIEK", "SND_SPLASH", "SND_GASP", "SND_CHOKE", "SND_WATERDIE", "SND_CRUSH", "SND_SPLAT" }, [_][]const u8{ "jajump.wav", "land.wav", "landlite.wav", "hithead.wav", "tired.wav", "crunch.wav", "jadie.wav", "shriek.wav", "smsplash.wav", "gasp.wav", "choke.wav", "waterdie.wav", "crush.wav", "splat.wav" }, &result.names) |field, fallback, *name| {
+        var result: Config = .{
+            .names = undefined,
+            .foot_volume = item.intValue("VOL_FEET") orelse 127,
+        };
+
+        for ([_][]const u8{
+            "SND_JUMP",
+            "SND_LAND",
+            "SND_LANDLT",
+            "SND_HITHEAD",
+            "SND_TIRED",
+            "SND_CRUNCH",
+            "SND_DIE",
+            "SND_SHRIEK",
+            "SND_SPLASH",
+            "SND_GASP",
+            "SND_CHOKE",
+            "SND_WATERDIE",
+            "SND_CRUSH",
+            "SND_SPLAT",
+        }, [_][]const u8{
+            "jajump.wav",
+            "land.wav",
+            "landlite.wav",
+            "hithead.wav",
+            "tired.wav",
+            "crunch.wav",
+            "jadie.wav",
+            "shriek.wav",
+            "smsplash.wav",
+            "gasp.wav",
+            "choke.wav",
+            "waterdie.wav",
+            "crush.wav",
+            "splat.wav",
+        }, &result.names) |field, fallback, *name| {
             name.* = Name.init((try item.stringValue(field)) orelse fallback);
         }
+
         return result;
     }
 };
@@ -65,7 +101,10 @@ pub const Context = struct {
     pub fn voice(self: *Context, which: Voice) !void {
         const name = self.config.names[@intFromEnum(which)].slice();
         if (name.len == 0) return;
-        try self.effects.append(.{ .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = 0 } });
+
+        try self.effects.append(.{
+            .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = 0 },
+        });
     }
 
     pub fn landing(self: *Context, impact_y: f32, local_y: f32, jump_velocity: f32) !void {
@@ -83,7 +122,15 @@ pub const Context = struct {
 
     pub fn footstep(self: *Context, floor_sound: []const u8) !void {
         if (floor_sound.len == 0) return;
-        try self.effects.append(.{ .sound = .{ .basename = floor_sound, .priority = 32, .volume = self.config.foot_volume, .flags = 4 } });
+
+        try self.effects.append(.{
+            .sound = .{
+                .basename = floor_sound,
+                .priority = 32,
+                .volume = self.config.foot_volume,
+                .flags = 4,
+            },
+        });
     }
 
     pub fn tired(self: *Context, energy: f32, seconds: f32) !void {
@@ -93,6 +140,7 @@ pub const Context = struct {
             if (elapsed <= 1.5) return;
             try self.voice(.tired);
         }
+
         self.state.tired_elapsed = 0;
     }
 };
@@ -101,9 +149,27 @@ test "player audio constructor retains defaults and owns truncated CID names" {
     var defaults = try Item.parse(std.testing.allocator, "ITEM 1.0\n");
     defer defaults.deinit();
     const fallback = try Config.fromItem(&defaults);
+
     try std.testing.expectEqual(@as(i32, 127), fallback.foot_volume);
-    for (fallback.names, [_][]const u8{ "jajump.wav", "land.wav", "landlite.wav", "hithead.wav", "tired.wav", "crunch.wav", "jadie.wav", "shriek.wav", "smsplash.wav", "gasp.wav", "choke.wav", "waterdie.wav", "crush.wav", "splat.wav" }) |name, expected|
+
+    for (fallback.names, [_][]const u8{
+        "jajump.wav",
+        "land.wav",
+        "landlite.wav",
+        "hithead.wav",
+        "tired.wav",
+        "crunch.wav",
+        "jadie.wav",
+        "shriek.wav",
+        "smsplash.wav",
+        "gasp.wav",
+        "choke.wav",
+        "waterdie.wav",
+        "crush.wav",
+        "splat.wav",
+    }) |name, expected|
         try std.testing.expectEqualStrings(expected, name.slice());
+
     var item = try Item.parse(std.testing.allocator,
         \\ITEM 1.0
         \\DATA 6
@@ -114,9 +180,27 @@ test "player audio constructor retains defaults and owns truncated CID names" {
         \\STR SND_TIRED breath.wav
         \\INT VOL_FEET 50
     );
+
     const config = try Config.fromItem(&item);
+
     item.deinit();
     try std.testing.expectEqual(@as(i32, 50), config.foot_volume);
-    for (config.names, [_][]const u8{ "LONG_JUMP_SOUND", "HARD.WAV", "SOFT.WAV", "HEAD.WAV", "BREATH.WAV", "crunch.wav", "jadie.wav", "shriek.wav", "smsplash.wav", "gasp.wav", "choke.wav", "waterdie.wav", "crush.wav", "splat.wav" }) |name, expected|
+
+    for (config.names, [_][]const u8{
+        "LONG_JUMP_SOUND",
+        "HARD.WAV",
+        "SOFT.WAV",
+        "HEAD.WAV",
+        "BREATH.WAV",
+        "crunch.wav",
+        "jadie.wav",
+        "shriek.wav",
+        "smsplash.wav",
+        "gasp.wav",
+        "choke.wav",
+        "waterdie.wav",
+        "crush.wav",
+        "splat.wav",
+    }) |name, expected|
         try std.testing.expectEqualStrings(expected, name.slice());
 }

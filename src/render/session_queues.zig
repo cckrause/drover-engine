@@ -7,13 +7,13 @@
 //! size is therefore a busy frame with plenty of room, built on the number
 //! of actors a session can hold, and a fuller list stops with its own error.
 
-const shooting = @import("../player/shooting.zig");
-const inventory = @import("../player/inventory.zig");
 const enemy = @import("../enemy/controller.zig");
+const inventory = @import("../player/inventory.zig");
+const shooting = @import("../player/shooting.zig");
 const FixedList = @import("../util/fixed_list.zig").FixedList;
+const network_router = @import("../network/router.zig");
 const object_logic = @import("../script/object.zig");
 const network_actors = @import("network_actors.zig");
-const network_router = @import("../network/router.zig");
 
 /// The most map objects in a shipped level (655, CANYON) plus the most
 /// actors made during play that were alive at once over the test suite

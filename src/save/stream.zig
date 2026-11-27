@@ -20,12 +20,16 @@ pub const Writer = struct {
 
     pub fn write(self: *Writer, source: []const u8) !void {
         if (!self.compressed) return self.bytes.appendSlice(self.allocator, source);
+
         var remaining = source;
+
         while (remaining.len != 0) {
             const count = @min(remaining.len, self.block.len - self.used);
             @memcpy(self.block[self.used..][0..count], remaining[0..count]);
+
             self.used += count;
             remaining = remaining[count..];
+
             if (self.used == self.block.len) try self.flush();
         }
     }
@@ -58,36 +62,45 @@ pub const Writer = struct {
 
     pub fn finish(self: *Writer) ![]u8 {
         try self.flush();
+
         return self.bytes.toOwnedSlice(self.allocator);
     }
 
     fn flush(self: *Writer) !void {
         var position: usize = 0;
         var literal: usize = 0;
+
         while (position < self.used) {
             var end = position + 1;
+
             while (end < self.used and self.block[end] == self.block[position]) : (end += 1) {}
+
             if (end - position < 3) {
                 position += 1;
                 continue;
             }
+
             try self.literals(self.block[literal..position]);
             var count = end - position;
+
             while (count != 0) {
                 const part = @min(count, 128);
                 try self.bytes.append(self.allocator, @as(u8, @intCast(part - 1)) | 0x80);
                 try self.bytes.append(self.allocator, self.block[position]);
                 count -= part;
             }
+
             position = end;
             literal = end;
         }
+
         try self.literals(self.block[literal..self.used]);
         self.used = 0;
     }
 
     fn literals(self: *Writer, source: []const u8) !void {
         var remaining = source;
+
         while (remaining.len != 0) {
             const count = @min(remaining.len, 128);
             try self.bytes.append(self.allocator, @intCast(count - 1));
@@ -110,7 +123,9 @@ pub const Reader = struct {
             @memcpy(destination, try self.raw(destination.len));
             return;
         }
+
         var output = destination;
+
         while (output.len != 0) {
             if (self.remaining == 0) {
                 const control = (try self.raw(1))[0];
@@ -118,12 +133,17 @@ pub const Reader = struct {
                 self.repeated = control & 0x80 != 0;
                 if (self.repeated) self.value = (try self.raw(1))[0];
             }
+
             const count = @min(output.len, self.remaining);
+
             if (self.repeated) {
                 @memset(output[0..count], self.value);
             } else {
-                for (output[0..count], try self.raw(count)) |*byte, encoded| byte.* = encoded ^ 0xee;
+                for (output[0..count], try self.raw(
+                    count,
+                )) |*byte, encoded| byte.* = encoded ^ 0xee;
             }
+
             output = output[count..];
             self.remaining -= count;
         }
@@ -132,6 +152,7 @@ pub const Reader = struct {
     pub fn integer(self: *Reader, comptime T: type) !T {
         var bytes: [@sizeOf(T)]u8 = undefined;
         try self.read(&bytes);
+
         return std.mem.readInt(T, &bytes, .little);
     }
 
@@ -147,6 +168,7 @@ pub const Reader = struct {
         const count = try self.integer(u8);
         if (count > buffer.len) return error.SaveStringTooLong;
         try self.read(buffer[0..count]);
+
         return buffer[0..count];
     }
 
@@ -164,6 +186,7 @@ pub const Reader = struct {
         if (count > self.bytes.len - self.position) return error.TruncatedSaveGame;
         const result = self.bytes[self.position..][0..count];
         self.position += count;
+
         return result;
     }
 };
@@ -174,6 +197,7 @@ test "save compression preserves packet and 1024-byte flush boundaries" {
         input: []const u8,
         encoded: []const u8,
     };
+
     for ([_]Case{
         .{ .input = "", .encoded = "" },
         .{ .input = "A", .encoded = "\x00\xaf" },
@@ -185,31 +209,48 @@ test "save compression preserves packet and 1024-byte flush boundaries" {
     }) |case| {
         var writer = Writer{ .allocator = a, .compressed = true };
         defer writer.deinit();
+
         for (case.input) |byte| try writer.integer(u8, byte);
+
         const encoded = try writer.finish();
         defer a.free(encoded);
+
         try std.testing.expectEqualSlices(u8, case.encoded, encoded);
         var reader = Reader{ .bytes = case.encoded, .compressed = true };
+
         for (case.input) |byte| try std.testing.expectEqual(byte, try reader.integer(u8));
+
         try reader.end();
     }
+
     var source: [2048]u8 = undefined;
+
     for (&source, 0..) |*byte, index| byte.* = @truncate(index);
+
     var writer = Writer{ .allocator = a, .compressed = true };
     defer writer.deinit();
+
     try writer.write(source[0..1]);
     try writer.write(source[1..3]);
     try writer.write(source[3..]);
+
     const encoded = try writer.finish();
     defer a.free(encoded);
     var hash: [32]u8 = undefined;
+
     std.crypto.hash.sha2.Sha256.hash(encoded, &hash, .{});
-    try std.testing.expectEqualStrings("ef31868d8efc60444927e9cae64138653dd58a46ba9370ae305112aea174a948", &std.fmt.bytesToHex(hash, .lower));
+    try std.testing.expectEqualStrings(
+        "ef31868d8efc60444927e9cae64138653dd58a46ba9370ae305112aea174a948",
+        &std.fmt.bytesToHex(hash, .lower),
+    );
+
     var reader = Reader{ .bytes = encoded, .compressed = true };
     var restored: [2048]u8 = undefined;
+
     try reader.read(restored[0..127]);
     try reader.read(restored[127..1031]);
     try reader.read(restored[1031..]);
+
     try std.testing.expectEqualSlices(u8, &source, &restored);
     try reader.end();
 }
@@ -217,6 +258,7 @@ test "save compression preserves packet and 1024-byte flush boundaries" {
 test "save stream rejects truncated packets and unconsumed data" {
     var literal = Reader{ .bytes = "\x02\x11", .compressed = true };
     var output: [3]u8 = undefined;
+
     try std.testing.expectError(error.TruncatedSaveGame, literal.read(&output));
     var repeat = Reader{ .bytes = "\x82", .compressed = true };
     try std.testing.expectError(error.TruncatedSaveGame, repeat.read(&output));

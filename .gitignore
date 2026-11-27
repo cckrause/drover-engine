@@ -11,3 +11,6 @@ zig-out/
 *.ppm
 REGISTRY.INI
 /bin
+
+# Issue drafts waiting for review
+/draft-issues

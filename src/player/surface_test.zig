@@ -6,17 +6,17 @@
 const std = @import("std");
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
-const messages = @import("../assets/messages.zig");
 const level_module = @import("../assets/level.zig");
-const scene_module = @import("../render/scene.zig");
+const messages = @import("../assets/messages.zig");
+const player_audio = @import("../audio/player.zig");
 const camera = @import("../render/backends/software/camera.zig");
-const movement = @import("movement.zig");
+const damage_flash = @import("../render/damage_flash.zig");
+const scene_module = @import("../render/scene.zig");
 const choreography = @import("choreography.zig");
+const damage = @import("damage.zig");
 const input = @import("input.zig");
 const inventory_module = @import("inventory.zig");
-const damage = @import("damage.zig");
-const player_audio = @import("../audio/player.zig");
-const damage_flash = @import("../render/damage_flash.zig");
+const movement = @import("movement.zig");
 
 const Motion = struct {
     sector: usize,
@@ -36,8 +36,16 @@ const Motion = struct {
     fn read(player: *const movement.Player, look: *const input.LookState) Motion {
         return .{
             .sector = player.sector,
-            .position = .{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z) },
-            .velocity = .{ @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z) },
+            .position = .{
+                @bitCast(player.position.x),
+                @bitCast(player.position.y),
+                @bitCast(player.position.z),
+            },
+            .velocity = .{
+                @bitCast(player.velocity.x),
+                @bitCast(player.velocity.y),
+                @bitCast(player.velocity.z),
+            },
             .angles = .{ player.pitch, player.yaw, player.head_yaw },
             .eye_height = @bitCast(player.eye_height),
             .body_height = @bitCast(player.body_height),
@@ -72,18 +80,35 @@ const Frame = struct {
 };
 
 fn readFile(path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(128 * 1024 * 1024)) catch |err| switch (err) {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        std.testing.allocator,
+        .limited(128 * 1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => error.SkipZigTest,
         else => err,
     };
 }
 
-fn compareFrame(frame: Frame, player: *const movement.Player, look: *const input.LookState, inventory: *const inventory_module.Inventory, direct_health: *inventory_module.Inventory, flash: damage_flash.State, effects: []const inventory_module.Effect, death: ?i32, local_messages: []const u8, shriek_name: []const u8) !void {
+fn compareFrame(
+    frame: Frame,
+    player: *const movement.Player,
+    look: *const input.LookState,
+    inventory: *const inventory_module.Inventory,
+    direct_health: *inventory_module.Inventory,
+    flash: damage_flash.State,
+    effects: []const inventory_module.Effect,
+    death: ?i32,
+    local_messages: []const u8,
+    shriek_name: []const u8,
+) !void {
     var expected_motion = frame.movement;
     try std.testing.expectEqual(expected_motion.flags, player.flags);
     expected_motion.flags &= 0x10003004;
     try std.testing.expectEqualDeep(expected_motion, Motion.read(player, look));
     const state = frame.state;
+
     try std.testing.expectEqual(state.health_bits, @as(u32, @bitCast(inventory.health)));
     try std.testing.expectEqual(state.sheriff != 0, inventory.sheriff_active);
     try std.testing.expectEqual(state.damage_stat, inventory.statistics.damage);
@@ -91,26 +116,45 @@ fn compareFrame(frame: Frame, player: *const movement.Player, look: *const input
     try std.testing.expectEqual(state.flash_time, flash.last_ms);
     try std.testing.expectEqual(state.flash_red, flash.alpha);
     try std.testing.expectEqual(state.flash_task, flash.last_ms);
+
     const has_request = player.impact != 0 or player.sector_damage != 0;
     try std.testing.expectEqual(@as(usize, if (has_request) 1 else 0), state.requests.len);
-    if (has_request) try std.testing.expectEqual(state.requests[0], [_]u32{ 0, @bitCast(player.impact), player.sector_damage, 0, 0, 0 });
+
+    if (has_request) try std.testing.expectEqual(
+        state.requests[0],
+        [_]u32{ 0, @bitCast(player.impact), player.sector_damage, 0, 0, 0 },
+    );
+
     try std.testing.expectEqual(state.damage_calls.len, state.removed_bits.len);
+
     for (state.damage_calls, state.removed_bits) |call, removed| {
         try std.testing.expectEqual(@as(u32, @intFromBool(player.impact > 45)), call[1]);
         const lost = damage.subtractHealth(direct_health, @bitCast(call[0]));
         try std.testing.expectEqual(removed, @as(u32, @bitCast(lost)));
     }
+
     try std.testing.expectEqual(state.health_bits, @as(u32, @bitCast(direct_health.health)));
     try std.testing.expectEqual(state.damage_stat, direct_health.statistics.damage);
     try std.testing.expectEqual(state.events.len, effects.len);
-    for (state.events, effects) |expected, effect| try std.testing.expectEqual(expected, try soundEvent(effect, shriek_name));
+
+    for (state.events, effects) |expected, effect| try std.testing.expectEqual(
+        expected,
+        try soundEvent(effect, shriek_name),
+    );
+
     var local_reports: usize = 0;
+
     for (state.reports) |report| {
         if (!std.mem.eql(u8, report[0].string, "message") or report[2].integer != 0x800) continue;
+
         local_reports += 1;
         const id = death orelse return error.MissingSurfaceDeathReport;
-        try std.testing.expectEqualStrings(report[1].string, try messages.lookup(local_messages, @intCast(id)));
+        try std.testing.expectEqualStrings(
+            report[1].string,
+            try messages.lookup(local_messages, @intCast(id)),
+        );
     }
+
     try std.testing.expectEqual(@as(usize, if (death != null) 1 else 0), local_reports);
 }
 
@@ -119,10 +163,23 @@ fn soundEvent(effect: inventory_module.Effect, shriek_name: []const u8) ![4]u32 
         .sound => |value| value,
         else => return error.UnexpectedSurfaceMessage,
     };
-    const id: u32 = for ([_][]const u8{ "JAJUMP.WAV", "LAND.WAV", "LANDLITE.WAV", "HITHEAD.WAV", "TIRED.WAV", "FLOOR.WAV", "CRUNCH.WAV", "JADIE.WAV", shriek_name }, 1..) |name, index| {
+
+    const id: u32 = for ([_][]const u8{
+        "JAJUMP.WAV",
+        "LAND.WAV",
+        "LANDLITE.WAV",
+        "HITHEAD.WAV",
+        "TIRED.WAV",
+        "FLOOR.WAV",
+        "CRUNCH.WAV",
+        "JADIE.WAV",
+        shriek_name,
+    }, 1..) |name, index| {
         if (std.ascii.eqlIgnoreCase(name, sound.basename)) break @intCast(index);
     } else return error.UnexpectedSurfaceSound;
+
     try std.testing.expect(sound.position == null and sound.sector == null);
+
     return .{ id, @bitCast(sound.priority.?), @bitCast(sound.volume.?), sound.flags.? };
 }
 
@@ -152,10 +209,26 @@ test "dry surface contact damage sounds and death reports" {
             frames: []const Frame,
         },
     };
-    const fixture = try std.json.parseFromSlice(Fixture, a, bytes, .{ .ignore_unknown_fields = true });
+
+    const fixture = try std.json.parseFromSlice(
+        Fixture,
+        a,
+        bytes,
+        .{ .ignore_unknown_fields = true },
+    );
+
     defer fixture.deinit();
-    try std.testing.expectEqualStrings("d2946541c007d5cf72f13c5b049e5a822768c064b6a1ebdb791881b187d44a4f", fixture.value.executable_sha256);
-    try std.testing.expectEqualStrings("176b3ad1463007c0bd53b6aa1170037d7d80dad20f5e0a6f6887a7339d0b5bbb", fixture.value.sha256);
+
+    try std.testing.expectEqualStrings(
+        "d2946541c007d5cf72f13c5b049e5a822768c064b6a1ebdb791881b187d44a4f",
+        fixture.value.executable_sha256,
+    );
+
+    try std.testing.expectEqualStrings(
+        "176b3ad1463007c0bd53b6aa1170037d7d80dad20f5e0a6f6887a7339d0b5bbb",
+        fixture.value.sha256,
+    );
+
     const raw_system = try readFile("inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB");
     defer a.free(raw_system);
     const raw_objects = try readFile("inputs/OUTLAWS_CD1/OUTLAWS/OLOBJ.LAB");
@@ -165,7 +238,9 @@ test "dry surface contact damage sounds and death reports" {
     var item = try Item.parse(a, try objects.find("CIDJAMES.ITM", 0x4954454d));
     defer item.deinit();
     const physics = try movement.Physics.parse(try system.find("AIR.PHY", 0x50485953));
+
     try std.testing.expectEqual(@as(f32, 3), physics.step_height);
+
     const audio_config = try player_audio.Config.fromItem(&item);
     const damage_config = try damage.Config.fromItem(&item);
     const chors = choreography.Table.fromItem(&item);
@@ -175,9 +250,11 @@ test "dry surface contact damage sounds and death reports" {
     var effects_buffer: inventory_module.EffectBuffer = undefined;
     var effects = inventory_module.Effects.init(&effects_buffer);
     var frame_count: usize = 0;
+
     for (fixture.value.cases) |case| {
         const config = case.config;
         var sectors = [_]level_module.Sector{std.mem.zeroes(level_module.Sector)};
+
         sectors[0].friction = 1;
         sectors[0].elasticity = 0.2;
         sectors[0].gravity = config.gravity;
@@ -186,48 +263,123 @@ test "dry surface contact damage sounds and death reports" {
         sectors[0].floor_sound = "FLOOR.WAV";
         sectors[0].vadjoin = -1;
         sectors[0].flags = config.sector_flags;
-        sectors[0].velocity = .{ .x = config.conveyor[0], .y = config.conveyor[1], .z = config.conveyor[2] };
+        sectors[0].velocity = .{
+            .x = config.conveyor[0],
+            .y = config.conveyor[1],
+            .z = config.conveyor[2],
+        };
+
         var level: level_module.Level = undefined;
         level.sectors = &sectors;
         var sector_states = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
+
         sector_states[0].flags = config.sector_flags;
         sector_states[0].velocity_present = config.conveyor[0] != 0 or config.conveyor[1] != 0 or config.conveyor[2] != 0;
+
         var scene: scene_module.Scene = undefined;
         scene.sectors = &sector_states;
         var collision_check: u32 = 0;
         scene.collision_check = &collision_check;
-        const spawn = level_module.Spawn{ .sector = 0, .position = .{ .x = config.position[0], .y = config.position[1], .z = config.position[2] }, .rotation = .{ .x = 0, .y = 0, .z = 0 } };
+
+        const spawn = level_module.Spawn{
+            .sector = 0,
+            .position = .{
+                .x = config.position[0],
+                .y = config.position[1],
+                .z = config.position[2],
+            },
+            .rotation = .{ .x = 0, .y = 0, .z = 0 },
+        };
+
         var player = try movement.Player.init(&item, physics, spawn);
-        player.velocity = .{ .x = config.velocity[0], .y = config.velocity[1], .z = config.velocity[2] };
+
+        player.velocity = .{
+            .x = config.velocity[0],
+            .y = config.velocity[1],
+            .z = config.velocity[2],
+        };
+
         player.flags = config.flags;
         player.floor_cache = config.floor_cache;
-        var inventory = inventory_module.Inventory{ .health = config.health, .sheriff_active = config.sheriff != 0, .player_flags = config.flags };
+
+        var inventory = inventory_module.Inventory{
+            .health = config.health,
+            .sheriff_active = config.sheriff != 0,
+            .player_flags = config.flags,
+        };
+
         var look: input.LookState = .{};
         var audio_state: player_audio.State = .{};
-        var audio = player_audio.Context{ .config = &audio_config, .state = &audio_state, .effects = &effects };
+        var audio = player_audio.Context{
+            .config = &audio_config,
+            .state = &audio_state,
+            .effects = &effects,
+        };
+
         var flash: damage_flash.State = .{};
+
         for (case.frames, 0..) |frame, index| {
             frame_count += 1;
             effects.clearRetainingCapacity();
             player.dead = inventory.health == 0;
+
             if (player.dead and player.flags & 4 != 0 and player.flags & 0x10000000 == 0) {
                 player.flags = (player.flags | 0x10000000) & ~@as(u32, 0x20000000);
                 player.head_bob = 0;
             }
+
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             const control = look.controlForLife(&packet, !player.dead);
-            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, config.seconds, &audio);
+            try player.tickWithAudio(
+                &level,
+                &scene,
+                .{ .entries = &.{} },
+                &angles,
+                control,
+                &look,
+                config.seconds,
+                &audio,
+            );
+
             inventory.player_flags = player.flags;
+
             var direct_health = inventory;
-            const death = try damage.applyMovement(.{ .multiplier = config.damage_multiplier orelse damage_config.multiplier }, &inventory, player.impact, player.sector_damage, config.seconds, &flash, &audio, frame.now);
-            if (player.choreography_input) |value| _ = choreography.select(&player.flags, chors, value);
-            compareFrame(frame, &player, &look, &inventory, &direct_health, flash, effects.items, death, local_messages, shriek_name) catch |err| {
+            const death = try damage.applyMovement(
+                .{ .multiplier = config.damage_multiplier orelse damage_config.multiplier },
+                &inventory,
+                player.impact,
+                player.sector_damage,
+                config.seconds,
+                &flash,
+                &audio,
+                frame.now,
+            );
+
+            if (player.choreography_input) |value| _ = choreography.select(
+                &player.flags,
+                chors,
+                value,
+            );
+
+            compareFrame(
+                frame,
+                &player,
+                &look,
+                &inventory,
+                &direct_health,
+                flash,
+                effects.items,
+                death,
+                local_messages,
+                shriek_name,
+            ) catch |err| {
                 std.debug.print("reference surface case {s}, frame {d}\n", .{ case.name, index });
                 return err;
             };
         }
     }
+
     try std.testing.expectEqual(@as(usize, 28), fixture.value.cases.len);
     try std.testing.expectEqual(@as(usize, 219), frame_count);
 }

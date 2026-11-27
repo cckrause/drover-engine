@@ -13,6 +13,7 @@ pub fn towardZero(value: f64) f32 {
         const bits: u32 = @bitCast(nearest);
         return @bitCast(bits - 1);
     }
+
     return nearest;
 }
 
@@ -35,6 +36,7 @@ pub fn div(a: f32, b: f32) f32 {
 pub fn integer(value: f32) i32 {
     if (!std.math.isFinite(value) or value >= 2147483648.0 or value < -2147483648.0)
         return std.math.minInt(i32);
+
     return @intFromFloat(value);
 }
 

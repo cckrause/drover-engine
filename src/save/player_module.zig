@@ -5,6 +5,7 @@
 //! task, not stored in the file.
 
 const std = @import("std");
+
 const stream = @import("stream.zig");
 
 pub const Task = struct {
@@ -30,11 +31,16 @@ pub const State = struct {
     pub fn write(self: *State, writer: *stream.Writer) !void {
         try writer.marker(0x42796c50, 1, 0);
         try writer.boolean(self.star != null);
+
         if (self.star) |task| try task.write(writer);
+
         self.star = null;
         try writer.boolean(self.cloak != null);
+
         if (self.cloak) |task| try task.write(writer);
+
         self.cloak = null;
+
         try writer.integer(u32, self.star_remaining);
         try writer.integer(u32, self.cloak_remaining);
     }
@@ -42,18 +48,28 @@ pub const State = struct {
     pub fn read(reader: *stream.Reader) !State {
         try reader.marker(0x42796c50, 1, 0);
         var state: State = .{};
+
         if (try reader.boolean()) state.star = try Task.read(reader);
+
         if (try reader.boolean()) state.cloak = try Task.read(reader);
+
         state.star_remaining = try reader.integer(u32);
         state.cloak_remaining = try reader.integer(u32);
+
         return state;
     }
 };
 
 pub fn capture(inventory: anytype) State {
     return .{
-        .star = if (inventory.sheriff_task_linked) (if (inventory.sheriff_due) |due| .{ .due = due, .parameter = inventory.sheriff_task_parameter } else null) else null,
-        .cloak = if (inventory.cloak_task_linked) (if (inventory.cloak_due) |due| .{ .due = due, .parameter = inventory.cloak_task_parameter } else null) else null,
+        .star = if (inventory.sheriff_task_linked) (if (inventory.sheriff_due) |due| .{
+            .due = due,
+            .parameter = inventory.sheriff_task_parameter,
+        } else null) else null,
+        .cloak = if (inventory.cloak_task_linked) (if (inventory.cloak_due) |due| .{
+            .due = due,
+            .parameter = inventory.cloak_task_parameter,
+        } else null) else null,
         .star_remaining = @bitCast(inventory.sheriff_remaining),
         .cloak_remaining = @bitCast(inventory.cloak_remaining),
     };
@@ -95,17 +111,25 @@ pub fn apply(inventory: anytype, value: State) void {
 
 test "Player module saves tasks and clears only global handles" {
     const a = std.testing.allocator;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/save-player-module-reference.json", a, .limited(1024 * 1024)) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "testdata/save-player-module-reference.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer a.free(bytes);
     const Fixture = struct {
         executable_sha256: []const u8,
         cases: []struct { linked: bool, bytes: []const u8, handles: [2]u32 },
     };
+
     const fixture = try std.json.parseFromSlice(Fixture, a, bytes, .{});
     defer fixture.deinit();
+
     for (fixture.value.cases) |case| {
         var inventory: @import("../player/inventory.zig").Inventory = .{
             .sheriff_due = 120000,
@@ -117,22 +141,30 @@ test "Player module saves tasks and clears only global handles" {
             .cloak_task_parameter = 4,
             .cloak_remaining = 6,
         };
+
         var writer: stream.Writer = .{ .allocator = a };
         defer writer.deinit();
+
         try writeInventory(&inventory, &writer);
+
         const encoded = try writer.finish();
         defer a.free(encoded);
         const expected = try a.alloc(u8, case.bytes.len / 2);
         defer a.free(expected);
+
         _ = try std.fmt.hexToBytes(expected, case.bytes);
+
         try std.testing.expectEqualSlices(u8, expected, encoded);
         try std.testing.expect(!inventory.sheriff_task_linked and !inventory.cloak_task_linked);
         try std.testing.expectEqual(@as(?u32, 120000), inventory.sheriff_due);
         try std.testing.expectEqual(@as(?u32, 120800), inventory.cloak_due);
+
         var reader: stream.Reader = .{ .bytes = expected };
         const restored = try State.read(&reader);
+
         try reader.end();
         apply(&inventory, restored);
+
         try std.testing.expectEqual(case.linked, inventory.sheriff_task_linked);
         try std.testing.expectEqual(@as(i32, 5), inventory.sheriff_remaining);
         try std.testing.expectEqual(@as(i32, 6), inventory.cloak_remaining);
@@ -140,13 +172,25 @@ test "Player module saves tasks and clears only global handles" {
 }
 
 test "a failed save can put the task links back" {
-    var inventory: struct { sheriff_task_linked: bool = true, cloak_task_linked: bool = false, sheriff_due: ?u32 = 5, sheriff_task_parameter: u32 = 0, cloak_due: ?u32 = null, cloak_task_parameter: u32 = 0, sheriff_remaining: i32 = 0, cloak_remaining: i32 = 0 } = .{};
+    var inventory: struct {
+        sheriff_task_linked: bool = true,
+        cloak_task_linked: bool = false,
+        sheriff_due: ?u32 = 5,
+        sheriff_task_parameter: u32 = 0,
+        cloak_due: ?u32 = null,
+        cloak_task_parameter: u32 = 0,
+        sheriff_remaining: i32 = 0,
+        cloak_remaining: i32 = 0,
+    } = .{};
+
     const links = TaskLinks.of(&inventory);
     var writer: stream.Writer = .{ .allocator = std.testing.allocator };
     defer writer.deinit();
+
     try writeInventory(&inventory, &writer);
     try std.testing.expect(!inventory.sheriff_task_linked);
     links.restore(&inventory);
+
     try std.testing.expect(inventory.sheriff_task_linked);
     try std.testing.expect(!inventory.cloak_task_linked);
 }

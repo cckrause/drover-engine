@@ -1,0 +1,9 @@
+.{
+    .max_line_width = 100,
+    .sort_imports = true,
+    .blank_between_declarations = true,
+    .short_function_lines = 4,
+    .blank_after_long_statements = true,
+    .blank_after_guards = true,
+    .blank_before_final_return = true,
+}

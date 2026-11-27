@@ -5,8 +5,9 @@
 //! These are the promises any driver has to keep. The driver this build uses
 //! is platform/enet_driver.zig; nothing here talks to a socket.
 
-const message = @import("message.zig");
 const std = @import("std");
+
+const message = @import("message.zig");
 
 pub const application = "LEC-OL-B22";
 
@@ -34,6 +35,7 @@ pub const session_ended = "SE";
 
 pub fn isEveryone(address: ?*const message.Address) bool {
     const to = address orelse return true;
+
     return std.mem.readInt(u32, to[0..4], .little) == 0;
 }
 
@@ -43,6 +45,7 @@ test "an address with a zero first word means everyone" {
     address[5] = 1;
     try std.testing.expect(isEveryone(&address));
     address[0] = 1;
+
     try std.testing.expect(!isEveryone(&address));
     try std.testing.expect(!isEveryone(&message.no_address));
 }

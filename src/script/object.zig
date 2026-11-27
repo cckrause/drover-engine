@@ -7,10 +7,10 @@
 
 const std = @import("std");
 const Actor = @import("../render/objects.zig").Actor;
-const nwx = @import("../assets/nwx.zig");
-const inventory = @import("../player/inventory.zig");
-const indexed = @import("../audio/indexed.zig");
 const lab = @import("../assets/lab.zig");
+const nwx = @import("../assets/nwx.zig");
+const indexed = @import("../audio/indexed.zig");
+const inventory = @import("../player/inventory.zig");
 const FixedList = @import("../util/fixed_list.zig").FixedList;
 
 pub const Selection = struct { source: usize, choreography: u16, serial: u64 };
@@ -27,6 +27,7 @@ pub const Runtime = struct {
             error.ResourceNotFound => return .{ .sounds = null, .selections = .init(selections) },
             else => return err,
         };
+
         return .{ .sounds = try indexed.Table.parse(a, bytes), .selections = .init(selections) };
     }
 };
@@ -37,35 +38,72 @@ fn AnimationContext(comptime Session: type) type {
         source: usize,
         effects: *inventory.Effects,
 
-        pub fn event(self: *@This(), playback: *nwx.Playback, _: *const nwx.Costume, code: u32, arguments: []const u32, now: u32) !void {
+        pub fn event(
+            self: *@This(),
+            playback: *nwx.Playback,
+            _: *const nwx.Costume,
+            code: u32,
+            arguments: []const u32,
+            now: u32,
+        ) !void {
             const session = self.session;
             const actor = &session.actor_slots[self.source].?;
+
             switch (code) {
                 2 => {
                     if (arguments.len == 0) return error.InvalidObjectSoundArguments;
+
                     if (session.object_logic.sounds) |table| {
                         var request = try table.request(arguments[0], actor.sector, actor.position);
+
                         if (session.active_audio) |audio| {
                             if (session.active_effects) |effects| try session.drainSounds(effects);
                             try session.drainSounds(self.effects);
                             _ = try audio.play(request, session.audioWorld(), now);
                             request.delivered = true;
                         }
+
                         try self.effects.append(.{ .sound = request });
                     }
                 },
                 3 => {
-                    try session.inf.event(&session.level, .{ .sector = actor.sector, .mask = 0x4000, .entity_mask = 0xffffffff, .from_player = false, .now_ms = now });
+                    try session.inf.event(
+                        &session.level,
+                        .{
+                            .sector = actor.sector,
+                            .mask = 0x4000,
+                            .entity_mask = 0xffffffff,
+                            .from_player = false,
+                            .now_ms = now,
+                        },
+                    );
                 },
                 4 => actor.flags |= 0x80000100,
                 5 => {
                     const sector = actor.sector;
                     const position = actor.position;
-                    try @import("../enemy/explosion_fragment.zig").burst(session, self.effects, sector, position, now);
-                    try session.inf.event(&session.level, .{ .sector = sector, .mask = 0x4000, .entity_mask = 0xffffffff, .from_player = false, .now_ms = now });
+
+                    try @import(
+                        "../enemy/explosion_fragment.zig",
+                    ).burst(session, self.effects, sector, position, now);
+
+                    try session.inf.event(
+                        &session.level,
+                        .{
+                            .sector = sector,
+                            .mask = 0x4000,
+                            .entity_mask = 0xffffffff,
+                            .from_player = false,
+                            .now_ms = now,
+                        },
+                    );
                 },
                 0x5e, 0x66 => {
-                    if (@hasField(@TypeOf(session.*), "actor_numbers")) try @import("../render/object_numbers.zig").freeActor(session, self.source);
+                    if (@hasField(
+                        @TypeOf(session.*),
+                        "actor_numbers",
+                    )) try @import("../render/object_numbers.zig").freeActor(session, self.source);
+
                     session.removed_actors[self.source] = true;
                     session.actor_links.remove(self.source);
                     playback.terminated = true;
@@ -88,24 +126,40 @@ pub fn receive(session: anytype, source: usize, code: u32) !void {
     const actor = session.actor_slots[source] orelse return error.MissingObjectActor;
     if (!bound(actor)) return error.InvalidObjectBinding;
     if (actor.model != null) return;
+
     if (code != 0x7d1) {
         if (code != 0x7d3) return;
         if (actor.secondary_flags & 0x1000 != 0) try enqueue(session, source, actor);
     }
+
     if (actor.secondary_flags & 0x2000 != 0) try enqueue(session, source, actor);
 }
 
 pub fn deliverNext(session: anytype, effects: *inventory.Effects) !void {
     const runtime = &session.object_logic;
     if (runtime.cursor == runtime.selections.items.len) return;
+
     const selection = runtime.selections.items[runtime.cursor];
+
     runtime.cursor += 1;
     if (session.removed_actors[selection.source]) return;
+
     const actor = if (session.actor_slots[selection.source]) |*value| value else return error.MissingObjectActor;
-    var context = AnimationContext(@TypeOf(session)){ .session = session, .source = selection.source, .effects = effects };
+    var context = AnimationContext(
+        @TypeOf(session),
+    ){ .session = session, .source = selection.source, .effects = effects };
+
     const playback = if (actor.playback) |*value| value else return error.MissingObjectPlayback;
-    try playback.select(try actor.sprite(), selection.choreography, session.animation_time, &context);
+
+    try playback.select(
+        try actor.sprite(),
+        selection.choreography,
+        session.animation_time,
+        &context,
+    );
+
     session.actor_slots[selection.source].?.playback = playback.*;
+
     sync(&session.actor_slots[selection.source].?);
     session.syncActor(selection.source);
 }
@@ -113,10 +167,16 @@ pub fn deliverNext(session: anytype, effects: *inventory.Effects) !void {
 pub fn advance(session: anytype, source: usize, effects: *inventory.Effects) !void {
     const actor = if (session.actor_slots[source]) |*value| value else return error.MissingObjectActor;
     if (actor.model != null) return;
-    var context = AnimationContext(@TypeOf(session)){ .session = session, .source = source, .effects = effects };
+
+    var context = AnimationContext(
+        @TypeOf(session),
+    ){ .session = session, .source = source, .effects = effects };
+
     const playback = if (actor.playback) |*value| value else return error.MissingObjectPlayback;
+
     try playback.advanceWithContext(try actor.sprite(), 0, session.animation_time, &context);
     session.actor_slots[source].?.playback = playback.*;
+
     sync(&session.actor_slots[source].?);
     session.syncActor(source);
 }
@@ -125,6 +185,7 @@ pub fn tick(session: anytype, source: usize) void {
     const actor = &session.actor_slots[source].?;
     if (actor.flags & 0x41 != 0x41 or actor.secondary_flags & 0x01000000 != 0 or
         @as(u32, @bitCast(session.actor_next_update[source])) > session.animation_time) return;
+
     schedule(session, source);
     actor.flags |= 0x80000080;
     session.syncActor(source);
@@ -141,6 +202,7 @@ fn enqueue(session: anytype, source: usize, actor: Actor) !void {
         .choreography = @truncate(playback.choreography +% 1),
         .serial = session.enemy_selection_serial,
     });
+
     session.enemy_selection_serial += 1;
 }
 

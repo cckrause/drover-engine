@@ -2,11 +2,14 @@
 //! host's pointer size. Profiles contain fixed-width counts and byte limits.
 
 const std = @import("std");
+
 const options = @import("build_options");
+
 const profiles = @import("profiles.zig");
 
 pub const profile = std.meta.stringToEnum(profiles.Profile, options.memory_profile) orelse
     @compileError("Unknown memory profile");
+
 pub const current = profiles.get(profile);
 pub const heap_bytes: usize = @intCast(current.heap_bytes);
 

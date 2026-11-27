@@ -166,29 +166,47 @@ test {
 }
 
 test "CD1 menu assets decode to independently checked reference pixels" {
-    const data = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", std.testing.allocator, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+    const data = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB",
+        std.testing.allocator,
+        .limited(64 * 1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer std.testing.allocator.free(data);
     const archive = try @import("assets/lab.zig").Archive.init(data);
     var screen = try @import("ui/menu.zig").Menu.init(std.testing.allocator, archive);
     defer screen.deinit(std.testing.allocator);
     var hash: [32]u8 = undefined;
+
     std.crypto.hash.sha2.Sha256.hash(screen.background.pixels, &hash, .{});
+
     var expected_bytes: [32]u8 = undefined;
-    const expected = try std.fmt.hexToBytes(&expected_bytes, "81ee67977477780df5bd0499f0d5e447068bc8d91fb5e1f1c8c6366e18788949");
+    const expected = try std.fmt.hexToBytes(
+        &expected_bytes,
+        "81ee67977477780df5bd0499f0d5e447068bc8d91fb5e1f1c8c6366e18788949",
+    );
+
     try std.testing.expectEqualSlices(u8, expected, &hash);
     try std.testing.expectEqualStrings("MAIN GAME", screen.labels[0]);
     try std.testing.expectEqual(@as(i32, 93), screen.fonts[0].height);
     try std.testing.expectEqual(@as(i32, 45), screen.fonts[1].height);
     try std.testing.expectEqual(@as(i32, 71), screen.fonts[2].height);
     try std.testing.expectEqual(@as(i32, 14), screen.fonts[3].height);
+
     const pixels = try std.testing.allocator.alloc(u8, 640 * 480);
     defer std.testing.allocator.free(pixels);
+
     _ = try screen.render(pixels, 0);
     std.crypto.hash.sha2.Sha256.hash(pixels, &hash, .{});
-    _ = try std.fmt.hexToBytes(&expected_bytes, "90f23d649e36490a94c6430cf5486e2edee71678d434e0299229a4c70e39fc60");
+    _ = try std.fmt.hexToBytes(
+        &expected_bytes,
+        "90f23d649e36490a94c6430cf5486e2edee71678d434e0299229a4c70e39fc60",
+    );
+
     try std.testing.expectEqualSlices(u8, &expected_bytes, &hash);
     screen.select(1, 10);
     const hovered = try screen.render(pixels, 260);
@@ -197,18 +215,26 @@ test "CD1 menu assets decode to independently checked reference pixels" {
     try std.testing.expectEqualSlices(u32, &hovered, &unselected);
     screen.arrow(.up, 400);
     try std.testing.expectEqual(@as(i32, 3), screen.selected);
+
     screen.select(-1, 450);
     screen.arrow(.left, 500);
+
     try std.testing.expectEqual(@as(i32, 0), screen.selected);
 }
 
 test "CD1 story startup preserves the launch record and all nineteen campaign events" {
     const campaign = @import("campaign.zig");
     const rcp = @import("assets/rcp.zig");
-    const data = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", std.testing.allocator, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+    const data = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB",
+        std.testing.allocator,
+        .limited(64 * 1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer std.testing.allocator.free(data);
     const archive = try @import("assets/lab.zig").Archive.init(data);
 
@@ -238,6 +264,7 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         const difficulty = try campaign.Difficulty.fromSelection(@intCast(selection));
         var startup = try campaign.Startup.prepare(std.testing.allocator, archive, difficulty);
         defer startup.deinit(std.testing.allocator);
+
         try std.testing.expectEqual(mask, @intFromEnum(startup.difficulty));
 
         try std.testing.expectEqual(@as(usize, 44), @sizeOf(campaign.StartRequest));
@@ -249,25 +276,39 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         try std.testing.expectEqual(@as(u32, 0), startup.request.parameter);
         try std.testing.expectEqualStrings("OUTLAWS.rcs", startup.request.path());
         try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 13), startup.request.filename[11..]);
-        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&startup.request), std.mem.asBytes(&startup.server.record));
-        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&startup.request), std.mem.asBytes(&startup.database.record));
+        try std.testing.expectEqualSlices(
+            u8,
+            std.mem.asBytes(&startup.request),
+            std.mem.asBytes(&startup.server.record),
+        );
+
+        try std.testing.expectEqualSlices(
+            u8,
+            std.mem.asBytes(&startup.request),
+            std.mem.asBytes(&startup.database.record),
+        );
+
         try std.testing.expectEqual(@as(u32, 1), startup.engine.scenario);
         try std.testing.expectEqual(@as(u32, 4), startup.engine.previous_scenario);
         try std.testing.expectEqual(@as(u32, 1), startup.engine.game_type);
         try std.testing.expectEqual(@as(u32, 0), startup.mode);
+
         for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);
 
         try std.testing.expectEqualStrings("Outlaws Story", startup.recipe.name);
         try std.testing.expectEqual(@as(u32, 0), startup.recipe.modes);
         try std.testing.expectEqual(@as(usize, 0), startup.recipe.paths.len);
         try std.testing.expectEqual(@as(usize, 19), startup.recipe.story.len);
+
         var levels: usize = 0;
         var movies: usize = 0;
         var credits: usize = 0;
+
         for (expected_story, startup.recipe.story) |expected, actual| {
             try std.testing.expectEqual(expected.kind, actual.kind);
             try std.testing.expectEqual(expected.disc, actual.disc);
             try std.testing.expectEqualStrings(expected.name, actual.name);
+
             switch (actual.kind) {
                 .level => levels += 1,
                 .movie => movies += 1,
@@ -275,6 +316,7 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
                 .text => return error.UnexpectedTextEvent,
             }
         }
+
         try std.testing.expectEqual(@as(usize, 9), levels);
         try std.testing.expectEqual(@as(usize, 9), movies);
         try std.testing.expectEqual(@as(usize, 1), credits);
@@ -285,7 +327,9 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         try std.testing.expectEqual(@as(u32, 0), startup.character);
         try std.testing.expectEqualStrings("cidjames.itm", startup.player_definition);
         try std.testing.expectEqual(@as(u8, 'J'), startup.character_code);
+
         const level = try startup.levelForDiagnostics();
+
         try std.testing.expectEqual(rcp.Kind.level, level.kind);
         try std.testing.expectEqualStrings("hideout", level.name);
         try std.testing.expectEqual(@as(u8, 1), level.disc);

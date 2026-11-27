@@ -6,13 +6,14 @@
 //! message within the same call.
 
 const std = @import("std");
+
 const inventory = @import("../player/inventory.zig");
 const Actor = @import("../render/objects.zig").Actor;
+const level_module = @import("../assets/level.zig");
+const actor_links = @import("../render/actor_links.zig");
 const cmm = @import("cmm.zig");
 const inf_module = @import("inf.zig");
-const level_module = @import("../assets/level.zig");
 const interaction = @import("interaction.zig");
-const actor_links = @import("../render/actor_links.zig");
 
 pub const Context = struct {
     inventory: *inventory.Inventory,
@@ -54,7 +55,12 @@ pub const Context = struct {
         enter: *const fn (*anyopaque, usize) anyerror!void,
     } = null,
 
-    pub fn spawnBubbles(self: *Context, sector: usize, position: level_module.Vec3, count: i32) !void {
+    pub fn spawnBubbles(
+        self: *Context,
+        sector: usize,
+        position: level_module.Vec3,
+        count: i32,
+    ) !void {
         const host = self.bubble_host orelse return error.MissingBubbleRuntime;
         try host.spawn(host.context, self, sector, position, count);
     }
@@ -64,7 +70,9 @@ pub const Context = struct {
             const host = self.actor_host orelse return error.MissingActorActivationRuntime;
             return host.activate(host.context, source);
         }
+
         const inf = self.inf orelse return;
+
         try inf.event(self.level orelse return error.MissingInfLevel, .{
             .sector = event.sector,
             .wall = event.wall,
@@ -76,50 +84,84 @@ pub const Context = struct {
         });
     }
 
-    pub fn crossWall(self: *Context, level: *const level_module.Level, sector: usize, wall: usize) !void {
-        for (interaction.wallEvents(level, sector, wall, 1, 0, 0)) |event| if (event) |value| try self.infEvent(value);
+    pub fn crossWall(
+        self: *Context,
+        level: *const level_module.Level,
+        sector: usize,
+        wall: usize,
+    ) !void {
+        for (interaction.wallEvents(
+            level,
+            sector,
+            wall,
+            1,
+            0,
+            0,
+        )) |event| if (event) |value| try self.infEvent(value);
     }
 
     pub fn changeSector(self: *Context, old: usize, new: usize) !void {
         if (old == new) return;
+
         if (self.sector_relinked) |value| value.* = true;
+
         if (self.links) |links| if (self.linked_actor) |source| links.remove(source);
+
         if (self.sector_messages) try self.infEvent(.{ .sector = old, .mask = 8 });
+
         if (self.links) |links| if (self.linked_actor) |source| links.move(source, new);
+
         if (self.link_order) |order| if (self.link_serial) |serial| {
             order.* = serial.*;
             serial.* += 1;
         };
+
         if (self.sector_messages) try self.infEvent(.{ .sector = new, .mask = 4 });
+
         if (self.palette_host) |host| try host.enter(host.context, new);
     }
 
     pub fn isRemoved(self: *const Context, actor: Actor) bool {
         const index = actor.source_index orelse return false;
+
         return index < self.removed.len and self.removed[index];
     }
 
     pub fn touch(self: *Context, actor: Actor) !void {
         if (actor.logic_name.len == 0 or self.isRemoved(actor)) return;
+
         const index = actor.source_index orelse return error.MissingScriptActor;
         if (index >= self.removed.len) return error.InvalidScriptActor;
+
         if (self.contact_log) |log| try log.append(index);
+
         if (std.mem.eql(u8, actor.logic_name, "DRECK_PEX")) return;
+
         const native = try cmm.resolve(actor.logic_name);
+
         switch (native) {
             .ground_object, .instant_ground_object, .ground_sheriff_star, .ground_vanishing_cream, .projectile_dispatch => {
                 if (index >= self.pickups.len) return error.MissingPickupState;
                 // A thrown knife still in flight has no pickup yet; touching it does nothing.
                 if (native == .projectile_dispatch and self.pickups[index] == null) return;
+
                 const pickup = &(self.pickups[index] orelse return error.MissingPickupState);
                 if (pickup.function != native) return error.InvalidPickupBinding;
+
                 self.removed[index] = try self.inventory.take(pickup, self.now_ms, self.effects);
-                if (self.removed[index]) if (self.pickup_release) |host| try host.emit(host.context, index);
+
+                if (self.removed[index]) if (self.pickup_release) |host| try host.emit(
+                    host.context,
+                    index,
+                );
+
                 if (self.removed[index]) if (self.links) |links| links.remove(index);
             },
             else => {
                 if (self.solid_host) |host| return host.touch(host.context, index);
+
                 const result = try cmm.touchSolid(native, self.contact_state, false);
+
                 if (result.next_tick) |tick| {
                     if (index >= self.actor_next_update.len) return error.MissingActorSchedule;
                     self.actor_next_update[index] = @bitCast(tick);

@@ -7,16 +7,28 @@
 //! the caller rather than read as "nothing sent" or "nothing received".
 
 const std = @import("std");
+
 const message = @import("message.zig");
 
 pub const Provider = struct {
     context: *anyopaque,
-    open: *const fn (context: *anyopaque, hosting: bool, name: []const u8, player: []const u8, address: *message.Address) anyerror!Driver,
+    open: *const fn (
+        context: *anyopaque,
+        hosting: bool,
+        name: []const u8,
+        player: []const u8,
+        address: *message.Address,
+    ) anyerror!Driver,
 };
 
 pub const Driver = struct {
     context: *anyopaque,
-    send: *const fn (context: *anyopaque, data: []const u8, to: ?*const message.Address, flags: u32) anyerror!void,
+    send: *const fn (
+        context: *anyopaque,
+        data: []const u8,
+        to: ?*const message.Address,
+        flags: u32,
+    ) anyerror!void,
     get: *const fn (context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize,
     close: *const fn (context: *anyopaque) void = closeNothing,
     describe: *const fn (context: *anyopaque, data: []const u8) anyerror!void = noDescription,
@@ -66,7 +78,13 @@ pub const Network = struct {
         if (self.loads == 0) self.provider = null;
     }
 
-    pub fn open(self: *Network, hosting: bool, name: []const u8, player: []const u8, address: *message.Address) !void {
+    pub fn open(
+        self: *Network,
+        hosting: bool,
+        name: []const u8,
+        player: []const u8,
+        address: *message.Address,
+    ) !void {
         const provider = self.provider orelse return error.NetworkDriverNotLoaded;
         self.session = try provider.open(provider.context, hosting, name, player, address);
     }
@@ -94,8 +112,10 @@ pub const Network = struct {
         const driver = self.session orelse return 0;
         const length = try driver.get(driver.context, buffer, sender);
         if (length == 0) return 0;
+
         self.received_bytes +%= @as(u16, @intCast(length));
         self.received_count +%= 1;
+
         return length;
     }
 };

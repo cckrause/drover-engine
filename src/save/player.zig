@@ -6,10 +6,11 @@
 //! so a short file cannot leave the player half-updated.
 
 const std = @import("std");
-const stream = @import("stream.zig");
+
+const cmm = @import("../script/cmm.zig");
 const costume = @import("costume.zig");
 const sound = @import("sound.zig");
-const cmm = @import("../script/cmm.zig");
+const stream = @import("stream.zig");
 const Mode = @import("../player/weapon_config.zig").Mode;
 const inventory_module = @import("../player/inventory.zig");
 const weapon_config = @import("../player/weapon_config.zig");
@@ -47,24 +48,43 @@ pub const Weapon = struct {
     ammo: []const u8,
 
     pub fn write(self: Weapon, writer: *stream.Writer) !void {
-        inline for (.{ "native_88", "costume_name", "native_e8", "scope_item" }) |field| try writer.string(@field(self, field));
+        inline for (.{
+            "native_88",
+            "costume_name",
+            "native_e8",
+            "scope_item",
+        }) |field| try writer.string(@field(self, field));
+
         try writer.boolean(self.has_scope);
         try writer.integer(i32, self.scope_x);
         try writer.integer(i32, self.scope_y);
         try writer.integer(i16, self.rest);
+
         for (self.fire) |value| try writer.integer(i16, value);
+
         for (self.empty) |value| try writer.integer(i16, value);
+
         try writer.integer(i16, self.reload);
         try writer.integer(i16, self.extra);
         try writer.integer(i16, self.scope_rest);
+
         for (self.scope_fire) |value| try writer.integer(i16, value);
+
         for (self.scope_empty) |value| try writer.integer(i16, value);
+
         for (self.fire_sound) |value| try sound.write(writer, value);
+
         for (self.empty_sound) |value| try sound.write(writer, value);
+
         for (self.action_sound) |value| try sound.write(writer, value);
+
         try sound.write(writer, self.reload_sound);
         try sound.write(writer, self.extra_sound);
-        for (self.modes) |mode| inline for (std.meta.fields(Mode)) |field| try writer.float(@field(mode, field.name));
+
+        for (self.modes) |mode| inline for (std.meta.fields(
+            Mode,
+        )) |field| try writer.float(@field(mode, field.name));
+
         try writer.integer(i32, self.flash);
         try writer.float(self.kick);
         try writer.boolean(self.infinite);
@@ -78,26 +98,57 @@ pub const Weapon = struct {
 
     pub fn read(reader: *stream.Reader, a: std.mem.Allocator) !Weapon {
         var result: Weapon = undefined;
-        inline for (.{ "native_88", "costume_name", "native_e8", "scope_item" }) |field| @field(result, field) = try readString(reader, a, if (std.mem.eql(u8, field, "native_88") or std.mem.eql(u8, field, "native_e8")) 63 else 31);
+
+        inline for (.{
+            "native_88",
+            "costume_name",
+            "native_e8",
+            "scope_item",
+        }) |field| @field(
+            result,
+            field,
+        ) = try readString(
+            reader,
+            a,
+            if (std.mem.eql(
+                u8,
+                field,
+                "native_88",
+            ) or std.mem.eql(u8, field, "native_e8")) 63 else 31,
+        );
+
         result.has_scope = try reader.boolean();
         result.scope_x = try reader.integer(i32);
         result.scope_y = try reader.integer(i32);
         result.rest = try reader.integer(i16);
+
         for (&result.fire) |*value| value.* = try reader.integer(i16);
+
         for (&result.empty) |*value| value.* = try reader.integer(i16);
+
         result.reload = try reader.integer(i16);
         result.extra = try reader.integer(i16);
         result.scope_rest = try reader.integer(i16);
+
         for (&result.scope_fire) |*value| value.* = try reader.integer(i16);
+
         for (&result.scope_empty) |*value| value.* = try reader.integer(i16);
+
         for (&result.fire_sound) |*value| value.* = try sound.read(reader, a);
+
         for (&result.empty_sound) |*value| value.* = try sound.read(reader, a);
+
         for (&result.action_sound) |*value| value.* = try sound.read(reader, a);
+
         result.reload_sound = try sound.read(reader, a);
         result.extra_sound = try sound.read(reader, a);
+
         for (&result.modes) |*mode| {
-            inline for (std.meta.fields(Mode)) |field| @field(mode, field.name) = try reader.float();
+            inline for (std.meta.fields(
+                Mode,
+            )) |field| @field(mode, field.name) = try reader.float();
         }
+
         result.flash = try reader.integer(i32);
         result.kick = try reader.float();
         result.infinite = try reader.boolean();
@@ -107,6 +158,7 @@ pub const Weapon = struct {
         result.multiples = try reader.integer(i32);
         result.projectile = try readString(reader, a, 31);
         result.ammo = try readString(reader, a, 31);
+
         return result;
     }
 };
@@ -132,6 +184,7 @@ pub const Inventory = struct {
 
     pub fn write(self: Inventory, writer: *stream.Writer) !void {
         const function = try cmm.inventoryFunction(self.native);
+
         try validateSize(self.allocation_size, function);
         try writer.integer(u32, self.allocation_size);
         try writer.integer(u32, self.item_class);
@@ -148,6 +201,7 @@ pub const Inventory = struct {
         try writer.integer(i32, self.count);
         try writer.integer(i32, self.maximum);
         try writer.integer(i32, self.use_id);
+
         switch (function) {
             .generic_object => {},
             .health_object => try sound.write(writer, self.health_sound),
@@ -173,13 +227,17 @@ pub const Inventory = struct {
             .maximum = try reader.integer(i32),
             .use_id = try reader.integer(i32),
         };
+
         const function = try cmm.inventoryFunction(result.native);
+
         try validateSize(result.allocation_size, function);
+
         switch (function) {
             .generic_object => {},
             .health_object => result.health_sound = try sound.read(reader, a),
             else => result.weapon = try Weapon.read(reader, a),
         }
+
         return result;
     }
 };
@@ -208,41 +266,60 @@ pub const State = struct {
         try writer.integer(u32, self.word_1c);
         try writer.float(self.health);
         try writer.float(self.energy);
+
         for (self.angles_64) |value| try writer.integer(i16, value);
+
         for (self.words_8c) |value| try writer.integer(u32, value);
+
         try writer.integer(u32, self.flags);
         try writer.integer(u16, self.short_9c);
+
         for (self.booleans_a4) |value| try writer.boolean(value);
+
         try writer.integer(u32, self.selected);
         try writer.integer(u32, self.selected_weapon);
         try writer.integer(u32, self.browse_cursor);
         try writer.boolean(self.browsing);
+
         for (self.inventory) |item| {
             try writer.boolean(item != null);
             if (item) |value| try value.write(writer);
         }
+
         try writer.string(self.name_138);
     }
 
     pub fn read(reader: *stream.Reader, a: std.mem.Allocator) !State {
         var result: State = undefined;
+
         result.character = try reader.integer(u8);
         result.definition = try readString(reader, a, 31);
         result.word_1c = try reader.integer(u32);
         result.health = try reader.float();
         result.energy = try reader.float();
+
         for (&result.angles_64) |*value| value.* = try reader.integer(i16);
+
         for (&result.words_8c) |*value| value.* = try reader.integer(u32);
+
         result.flags = try reader.integer(u32);
         result.short_9c = try reader.integer(u16);
+
         for (&result.booleans_a4) |*value| value.* = try reader.boolean();
+
         result.selected = try reader.integer(u32);
         result.selected_weapon = try reader.integer(u32);
         result.browse_cursor = try reader.integer(u32);
         result.browsing = try reader.boolean();
-        for (&result.inventory) |*item| item.* = if (try reader.boolean()) try Inventory.read(reader, a) else null;
+
+        for (&result.inventory) |*item| item.* = if (try reader.boolean()) try Inventory.read(
+            reader,
+            a,
+        ) else null;
+
         result.name_138 = try readString(reader, a, 31);
         if (result.selected >= 26 or result.selected_weapon >= 26 or result.browse_cursor >= 26) return error.InvalidSavedInventorySlot;
+
         return result;
     }
 };
@@ -250,6 +327,7 @@ pub const State = struct {
 pub fn captureInventory(owned: inventory_module.OwnedItem, audio: anytype) !Inventory {
     const definition = owned.definition;
     if (definition.native_name.len == 0) return error.MissingSavedInventoryBinding;
+
     var result: Inventory = .{
         .allocation_size = if (definition.weapon != null) 0x250 else if (definition.function == .health_object) 0x8c else 0x88,
         .item_class = definition.item_class,
@@ -259,7 +337,11 @@ pub fn captureInventory(owned: inventory_module.OwnedItem, audio: anytype) !Inve
         .no_show = definition.no_show,
         .no_drop = definition.no_drop,
         .wax_resource = if (definition.wax_available) definition.costume else "",
-        .instance = if (owned.playback) |playback| .{ .resource = definition.costume, .playback = playback, .native = definition.native_name } else null,
+        .instance = if (owned.playback) |playback| .{
+            .resource = definition.costume,
+            .playback = playback,
+            .native = definition.native_name,
+        } else null,
         .success_sound = try sound.capture(audio, definition.use_success_sound),
         .failure_sound = try sound.capture(audio, definition.use_failure_sound),
         .flags = definition.flags,
@@ -268,6 +350,7 @@ pub fn captureInventory(owned: inventory_module.OwnedItem, audio: anytype) !Inve
         .use_id = definition.use_id,
         .health_sound = try sound.capture(audio, definition.health_sound),
     };
+
     if (definition.weapon) |config| {
         const bindings = try weaponBindings(definition.function);
         var weapon: Weapon = .{
@@ -302,19 +385,23 @@ pub fn captureInventory(owned: inventory_module.OwnedItem, audio: anytype) !Inve
             .projectile = config.projectile orelse "",
             .ammo = definition.ammo,
         };
+
         for (0..3) |i| {
             weapon.fire_sound[i] = try sound.capture(audio, config.fire_sound[i]);
             weapon.empty_sound[i] = try sound.capture(audio, config.empty_sound[i]);
             weapon.action_sound[i] = try sound.capture(audio, config.action_sound[i]);
         }
+
         result.weapon = weapon;
     }
+
     return result;
 }
 
 pub fn restoreInventory(value: Inventory, audio: anytype) !inventory_module.OwnedItem {
     const function = try cmm.inventoryFunction(value.native);
     try validateSize(value.allocation_size, function);
+
     var definition: inventory_module.Definition = .{
         .name = value.name,
         .function = function,
@@ -335,18 +422,35 @@ pub fn restoreInventory(value: Inventory, audio: anytype) !inventory_module.Owne
         .costume = value.wax_resource,
         .wax_available = value.wax_resource.len != 0,
     };
+
     var loaded: i32 = 0;
+
     if (value.instance) |instance| {
-        if (!std.ascii.eqlIgnoreCase(instance.native, value.native) or !std.ascii.eqlIgnoreCase(instance.resource, value.wax_resource)) return error.InvalidSavedInventoryWaxBinding;
+        if (!std.ascii.eqlIgnoreCase(
+            instance.native,
+            value.native,
+        ) or !std.ascii.eqlIgnoreCase(
+            instance.resource,
+            value.wax_resource,
+        )) return error.InvalidSavedInventoryWaxBinding;
     }
+
     if (value.weapon) |weapon| {
         const bindings = try weaponBindings(function);
-        if (!std.ascii.eqlIgnoreCase(weapon.native_88, bindings.handler) or !std.ascii.eqlIgnoreCase(weapon.native_e8, bindings.logic)) return error.UnsupportedSavedWeaponBinding;
+        if (!std.ascii.eqlIgnoreCase(
+            weapon.native_88,
+            bindings.handler,
+        ) or !std.ascii.eqlIgnoreCase(
+            weapon.native_e8,
+            bindings.logic,
+        )) return error.UnsupportedSavedWeaponBinding;
+
         definition.costume = weapon.costume_name;
         definition.ammo = weapon.ammo;
         definition.capacity = weapon.capacity;
         definition.infinite = weapon.infinite;
         loaded = weapon.loaded;
+
         var config: weapon_config.Config = .{
             .rest = weapon.rest,
             .fire = weapon.fire,
@@ -368,14 +472,23 @@ pub fn restoreInventory(value: Inventory, audio: anytype) !inventory_module.Owne
             .reload_sound = try sound.restore(audio, weapon.reload_sound),
             .extra_sound = try sound.restore(audio, weapon.extra_sound),
         };
+
         for (0..3) |i| {
             config.fire_sound[i] = try sound.restore(audio, weapon.fire_sound[i]);
             config.empty_sound[i] = try sound.restore(audio, weapon.empty_sound[i]);
             config.action_sound[i] = try sound.restore(audio, weapon.action_sound[i]);
         }
+
         definition.weapon = config;
     }
-    return .{ .definition = definition, .count = value.count, .loaded = loaded, .playback = if (value.instance) |instance| instance.playback else null, .sounds_registered = true };
+
+    return .{
+        .definition = definition,
+        .count = value.count,
+        .loaded = loaded,
+        .playback = if (value.instance) |instance| instance.playback else null,
+        .sounds_registered = true,
+    };
 }
 
 pub fn capture(session: anytype, audio: anytype) !State {
@@ -387,10 +500,19 @@ pub fn capture(session: anytype, audio: anytype) !State {
         .health = inventory.health,
         .energy = session.player.energy,
         .angles_64 = inventory.aim_angles,
-        .words_8c = .{ @bitCast(session.player.auto_pitch_elapsed), @bitCast(session.player.underwater_elapsed), @bitCast(session.player.slope_velocity) },
+        .words_8c = .{
+            @bitCast(session.player.auto_pitch_elapsed),
+            @bitCast(session.player.underwater_elapsed),
+            @bitCast(session.player.slope_velocity),
+        },
         .flags = inventory.player_flags,
         .short_9c = @bitCast(session.player.normal_yaw),
-        .booleans_a4 = .{ inventory.cloak_active, inventory.cloak_visible, inventory.sheriff_active, inventory.sheriff_visible },
+        .booleans_a4 = .{
+            inventory.cloak_active,
+            inventory.cloak_visible,
+            inventory.sheriff_active,
+            inventory.sheriff_visible,
+        },
         .selected = @intCast(inventory.selected),
         .selected_weapon = @intCast(inventory.selected_weapon),
         .browse_cursor = @intCast(inventory.browse_cursor),
@@ -398,31 +520,49 @@ pub fn capture(session: anytype, audio: anytype) !State {
         .inventory = @splat(null),
         .name_138 = inventory.player_name,
     };
+
     for (inventory.slots[1..], 0..) |owned, index| {
         if (owned) |item| result.inventory[index] = try captureInventory(item, audio);
     }
+
     return result;
 }
 
 pub fn apply(session: anytype, audio: anytype, value: State) !void {
     const inventory = &session.inventory;
-    if (value.character != inventory.character or !std.ascii.eqlIgnoreCase(value.definition, inventory.player_definition)) return error.UnsupportedSavedPlayerCharacter;
+    if (value.character != inventory.character or !std.ascii.eqlIgnoreCase(
+        value.definition,
+        inventory.player_definition,
+    )) return error.UnsupportedSavedPlayerCharacter;
+
     const a = session.arena.allocator();
-    const archives = [_]@import("../assets/lab.zig").Archive{ session.object_archive, session.weapon_archive, session.geometry_archive, session.system_archive };
+    const archives = [_]@import(
+        "../assets/lab.zig",
+    ).Archive{
+        session.object_archive,
+        session.weapon_archive,
+        session.geometry_archive,
+        session.system_archive,
+    };
+
     const cid_bytes = for (archives) |archive| {
         break archive.find(value.definition, 0) catch |err| switch (err) {
             error.ResourceNotFound => continue,
             else => return err,
         };
     } else return error.MissingSavedPlayerDefinition;
+
     var cid = try @import("../assets/item.zig").Item.parse(a, cid_bytes);
     defer cid.deinit();
+
     try @import("../audio/registration.zig").player(session, &cid, session.animation_time);
     inventory.clock = session.animation_time;
+
     try inventory.startItems(a, &archives, &cid);
     try session.applyPlayerBindFlags(&cid);
     try @import("../audio/registration.zig").playerBlips(session, session.animation_time);
     try inventory.releaseAllSounds();
+
     inventory.health = value.health;
     session.player.jump_peak = @bitCast(value.word_1c);
     session.player.energy = value.energy;
@@ -434,10 +574,19 @@ pub fn apply(session: anytype, audio: anytype, value: State) !void {
     inventory.player_flags = value.flags;
     session.player.flags = value.flags;
     session.player.dead = !(@as(i32, @bitCast(value.health)) > 0);
+
     if (value.flags & 8 != 0) {
-        var rail: @import("../audio/rail.zig").Context = .{ .state = &session.rail_audio_state, .runtime = audio, .now = session.animation_time };
+        var rail: @import(
+            "../audio/rail.zig",
+        ).Context = .{
+            .state = &session.rail_audio_state,
+            .runtime = audio,
+            .now = session.animation_time,
+        };
+
         try rail.start(session.player.position);
     }
+
     inventory.cloak_active = value.booleans_a4[0];
     inventory.cloak_visible = value.booleans_a4[1];
     inventory.sheriff_active = value.booleans_a4[2];
@@ -447,13 +596,18 @@ pub fn apply(session: anytype, audio: anytype, value: State) !void {
     inventory.browse_cursor = value.browse_cursor;
     inventory.browsing = value.browsing;
     inventory.player_name = value.name_138;
+
     for (value.inventory, 1..) |item, index| inventory.slots[index] = if (item) |owned| try restoreInventory(owned, audio) else null;
+
     if (value.flags & 0x20000000 != 0) {
         inventory.player_flags &= ~@as(u32, 0x20000000);
+
         var effects_buffer: inventory_module.EffectBuffer = undefined;
         var effects = inventory_module.Effects.init(&effects_buffer);
+
         try session.lamp_state.toggle(inventory, &session.lamp_config, &effects);
         try session.pickup_effects.appendSlice(effects.items);
+
         session.player.flags = inventory.player_flags;
     }
 }
@@ -465,6 +619,7 @@ fn validateSize(size: u32, function: cmm.Native) !void {
         .weapon_fist_handler, .weapon_pistol_handler, .weapon_rifle_handler, .weapon_shotgun_handler, .weapon_db_shotgun_handler, .weapon_sawed_shotgun_handler, .weapon_gatling_handler, .weapon_tnt_handler, .weapon_knife_handler => 0x250,
         else => return error.UnsupportedSavedInventoryHandler,
     };
+
     if (size != expected) return error.InvalidSavedInventorySize;
 }
 
@@ -472,55 +627,100 @@ fn readString(reader: *stream.Reader, a: std.mem.Allocator, maximum: usize) ![]c
     var buffer: [255]u8 = undefined;
     const value = try reader.string(&buffer);
     if (value.len > maximum) return error.InvalidSavedPlayerString;
+
     return a.dupe(u8, value);
 }
 
 fn weaponBindings(function: cmm.Native) !struct { handler: []const u8, logic: []const u8 } {
     return switch (function) {
-        .weapon_fist_handler => .{ .handler = "Weapon_FistHandler", .logic = "Weapon_FistWaxLogic" },
-        .weapon_pistol_handler => .{ .handler = "Weapon_PistolHandler", .logic = "Weapon_PistolWaxLogic" },
-        .weapon_rifle_handler => .{ .handler = "Weapon_RifleHandler", .logic = "Weapon_RifleWaxLogic" },
-        .weapon_shotgun_handler => .{ .handler = "Weapon_ShotgunHandler", .logic = "Weapon_ShotgunWaxLogic" },
-        .weapon_db_shotgun_handler => .{ .handler = "Weapon_DBShotgunHandler", .logic = "Weapon_DBShotgunWaxLogic" },
-        .weapon_sawed_shotgun_handler => .{ .handler = "Weapon_SawedShotgunHandler", .logic = "Weapon_SawedShotgunWaxLogic" },
-        .weapon_gatling_handler => .{ .handler = "Weapon_GatlingHandler", .logic = "Weapon_GatlingWaxLogic" },
+        .weapon_fist_handler => .{
+            .handler = "Weapon_FistHandler",
+            .logic = "Weapon_FistWaxLogic",
+        },
+        .weapon_pistol_handler => .{
+            .handler = "Weapon_PistolHandler",
+            .logic = "Weapon_PistolWaxLogic",
+        },
+        .weapon_rifle_handler => .{
+            .handler = "Weapon_RifleHandler",
+            .logic = "Weapon_RifleWaxLogic",
+        },
+        .weapon_shotgun_handler => .{
+            .handler = "Weapon_ShotgunHandler",
+            .logic = "Weapon_ShotgunWaxLogic",
+        },
+        .weapon_db_shotgun_handler => .{
+            .handler = "Weapon_DBShotgunHandler",
+            .logic = "Weapon_DBShotgunWaxLogic",
+        },
+        .weapon_sawed_shotgun_handler => .{
+            .handler = "Weapon_SawedShotgunHandler",
+            .logic = "Weapon_SawedShotgunWaxLogic",
+        },
+        .weapon_gatling_handler => .{
+            .handler = "Weapon_GatlingHandler",
+            .logic = "Weapon_GatlingWaxLogic",
+        },
         .weapon_tnt_handler => .{ .handler = "Weapon_TNTHandler", .logic = "Weapon_TNTWaxLogic" },
-        .weapon_knife_handler => .{ .handler = "Weapon_KnifeHandler", .logic = "Weapon_KnifeWaxLogic" },
+        .weapon_knife_handler => .{
+            .handler = "Weapon_KnifeHandler",
+            .logic = "Weapon_KnifeWaxLogic",
+        },
         else => error.UnsupportedSavedWeaponBinding,
     };
 }
 
 test "player and inventory save payloads match the reference" {
     const a = std.testing.allocator;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "testdata/save-player-reference.json", a, .limited(1024 * 1024)) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "testdata/save-player-reference.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
+
     defer a.free(bytes);
     const Fixture = struct {
         executable_sha256: []const u8,
         cases: []struct { items: [][]const u8, bytes: []const u8, sha256: []const u8 },
     };
+
     const fixture = try std.json.parseFromSlice(Fixture, a, bytes, .{});
     defer fixture.deinit();
-    try std.testing.expectEqualStrings("d2946541c007d5cf72f13c5b049e5a822768c064b6a1ebdb791881b187d44a4f", fixture.value.executable_sha256);
+
+    try std.testing.expectEqualStrings(
+        "d2946541c007d5cf72f13c5b049e5a822768c064b6a1ebdb791881b187d44a4f",
+        fixture.value.executable_sha256,
+    );
+
     for (fixture.value.cases) |case| {
         var arena = std.heap.ArenaAllocator.init(a);
         defer arena.deinit();
         const raw = try arena.allocator().alloc(u8, case.bytes.len / 2);
+
         _ = try std.fmt.hexToBytes(raw, case.bytes);
+
         var reader: stream.Reader = .{ .bytes = raw };
         const value = try State.read(&reader, arena.allocator());
+
         try reader.end();
+
         try std.testing.expectEqual(@as(u8, 'J'), value.character);
         try std.testing.expectEqual(@as(f32, 4.25), value.health);
         try std.testing.expectEqual(@as(u32, 0x2000000c), value.flags);
         try std.testing.expectEqual(@as(i16, -123), value.angles_64[0]);
+
         var writer: stream.Writer = .{ .allocator = a };
         defer writer.deinit();
+
         try value.write(&writer);
+
         const encoded = try writer.finish();
         defer a.free(encoded);
+
         try std.testing.expectEqualSlices(u8, raw, encoded);
     }
 }

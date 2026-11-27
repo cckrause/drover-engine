@@ -37,10 +37,17 @@ pub const Title = struct {
 
     /// Path to `system_archive` on another disc, derived from the path the
     /// first disc was mounted from. Caller frees.
-    pub fn discPath(self: Title, allocator: std.mem.Allocator, mounted_path: []const u8, disc: u8) ![]u8 {
+    pub fn discPath(
+        self: Title,
+        allocator: std.mem.Allocator,
+        mounted_path: []const u8,
+        disc: u8,
+    ) ![]u8 {
         if (disc == 0 or disc == 1) return allocator.dupe(u8, mounted_path);
         if (disc > self.discs.len) return error.UnsupportedCampaignDisc;
+
         const directory = std.fs.path.dirname(mounted_path) orelse ".";
+
         return std.fs.path.resolve(allocator, &.{
             directory,
             "..",
@@ -53,7 +60,11 @@ pub const Title = struct {
 
     /// Path to the data installed inside a macOS application bundle, relative
     /// to the directory holding the executable. Caller frees.
-    pub fn bundledDataPath(self: Title, allocator: std.mem.Allocator, executable_directory: []const u8) ![]u8 {
+    pub fn bundledDataPath(
+        self: Title,
+        allocator: std.mem.Allocator,
+        executable_directory: []const u8,
+    ) ![]u8 {
         return std.fs.path.resolve(allocator, &.{
             executable_directory,
             "../Resources/data",
@@ -81,8 +92,14 @@ pub const current: Title = .{
 };
 
 test "disc 2 resolves next to the first disc" {
-    const path = try current.discPath(std.testing.allocator, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", 2);
+    const path = try current.discPath(
+        std.testing.allocator,
+        "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB",
+        2,
+    );
+
     defer std.testing.allocator.free(path);
+
     try std.testing.expect(std.mem.endsWith(u8, path, "inputs/OUTLAWS_CD2/OUTLAWS/OUTLAWS.LAB"));
 }
 
@@ -95,5 +112,8 @@ test "disc 0 and 1 keep the mounted path" {
 }
 
 test "an unknown disc is rejected" {
-    try std.testing.expectError(error.UnsupportedCampaignDisc, current.discPath(std.testing.allocator, "data/OUTLAWS.LAB", 3));
+    try std.testing.expectError(
+        error.UnsupportedCampaignDisc,
+        current.discPath(std.testing.allocator, "data/OUTLAWS.LAB", 3),
+    );
 }

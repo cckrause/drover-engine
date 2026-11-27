@@ -283,10 +283,18 @@ pub const Decoder = struct {
     pub fn init(allocator: std.mem.Allocator, width: u16, height: u16) !Decoder {
         if (width == 0 or height == 0 or width > 32767 or height > 32760 or width % 8 != 0)
             return error.UnsupportedSmushDimensions;
+
         const capacity = @as(usize, width) * ((@as(usize, height) + 7) & ~@as(usize, 7));
         const storage = try allocator.alloc(u8, capacity * 3);
+
         @memset(storage, 0);
-        return .{ .storage = storage, .capacity = capacity, .tiles4 = makeTiles(4), .tiles8 = makeTiles(8) };
+
+        return .{
+            .storage = storage,
+            .capacity = capacity,
+            .tiles4 = makeTiles(4),
+            .tiles8 = makeTiles(8),
+        };
     }
 
     pub fn deinit(self: Decoder, allocator: std.mem.Allocator) void {
@@ -300,25 +308,32 @@ pub const Decoder = struct {
     pub fn decodeWithFlags(self: *Decoder, fobj: []const u8, flags: u16) !?Frame {
         if (fobj.len < 40) return error.TruncatedSmushObject;
         if (fobj[0] != 47) return error.UnsupportedSmushCodec;
+
         const width = le(u16, fobj[6..8]);
         const height = le(u16, fobj[8..10]);
         if (width == 0 or height == 0 or width > 32767 or height > 32760 or width % 8 != 0)
             return error.UnsupportedSmushDimensions;
+
         const count = @as(usize, width) * height;
         const padded = @as(usize, width) * ((@as(usize, height) + 7) & ~@as(usize, 7));
         if (padded > self.capacity) return error.SmushObjectTooLarge;
+
         const sequence = le(i16, fobj[14..16]);
         const mode = fobj[16];
         if (mode > 5) return error.UnsupportedSmushCompression;
         if (self.configured_width == null and sequence != 0) return error.MissingSmushKeyframe;
+
         var reader = Reader{ .bytes = fobj[40..] };
+
         if (sequence == 0) {
             self.configure(width);
             @memset(self.buffer(self.key)[0..padded], fobj[26]);
             @memset(self.buffer(self.delta)[0..padded], fobj[27]);
             self.last_sequence = -1;
         }
+
         if (self.configured_width != width) return error.UnsupportedSmushStrideChange;
+
         if (fobj[18] & 1 != 0) {
             for (0..256) |a| {
                 for (a..256) |b| {
@@ -328,19 +343,23 @@ pub const Decoder = struct {
                 }
             }
         }
+
         if ((mode == 2 or mode == 3 or mode == 4) and flags & 0x10 != 0 and fobj[17] == 0) {
             self.last_sequence = sequence;
             return null;
         }
+
         const sequential = @as(i32, sequence) - self.last_sequence == 1;
         const output = self.buffer(self.current);
         var decoded = true;
+
         switch (mode) {
             0 => @memcpy(output[0..count], try reader.take(count)),
             1 => try self.lowKey(&reader, output, width, height),
             2 => {
                 if (sequential) {
                     var y: usize = 0;
+
                     while (y < height) : (y += 8) {
                         var x: usize = 0;
                         while (x < width) : (x += 8)
@@ -357,11 +376,14 @@ pub const Decoder = struct {
             },
             else => unreachable,
         }
+
         if (decoded) self.displayed = self.current;
+
         const result: ?Frame = if (self.displayed) |index|
             .{ .pixels = self.buffer(index)[0..count], .width = width, .height = height }
         else
             null;
+
         if (sequential) {
             switch (fobj[17]) {
                 1 => std.mem.swap(usize, &self.current, &self.delta),
@@ -374,7 +396,9 @@ pub const Decoder = struct {
                 else => {},
             }
         }
+
         self.last_sequence = sequence;
+
         return result;
     }
 
@@ -391,11 +415,15 @@ pub const Decoder = struct {
 
     fn lowKey(self: *Decoder, reader: *Reader, output: []u8, width: usize, height: usize) !void {
         var y: usize = 1;
+
         while (y <= height) : (y += 2) {
             var previous = try reader.byte();
+
             output[y * width] = previous;
             output[y * width + 1] = previous;
+
             var x: usize = 2;
+
             while (x < width) : (x += 2) {
                 const color = try reader.byte();
                 output[y * width + x] = self.smooth[@as(usize, previous) * 256 + color];
@@ -403,34 +431,63 @@ pub const Decoder = struct {
                 previous = color;
             }
         }
+
         @memcpy(output[0..width], output[width..][0..width]);
         y = 2;
+
         while (y < height) : (y += 2) {
             for (0..width) |x|
-                output[y * width + x] = self.smooth[@as(usize, output[(y - 1) * width + x]) + @as(usize, output[(y + 1) * width + x]) * 256];
+                output[y * width + x] = self.smooth[
+                    @as(
+                        usize,
+                        output[(y - 1) * width + x],
+                    ) + @as(usize, output[(y + 1) * width + x]) * 256
+                ];
         }
     }
 
-    fn block(self: *Decoder, reader: *Reader, output: []u8, position: usize, stride: usize, size: usize, colors: []const u8) !void {
+    fn block(
+        self: *Decoder,
+        reader: *Reader,
+        output: []u8,
+        position: usize,
+        stride: usize,
+        size: usize,
+        colors: []const u8,
+    ) !void {
         const opcode = try reader.byte();
+
         if (opcode < 0xf8 or (size == 2 and opcode == 0xfd)) {
             const source_position = @as(i64, @intCast(position)) + self.motion[opcode];
             try copyBlock(output, position, self.buffer(self.delta), source_position, stride, size);
         } else switch (opcode) {
             0xf8...0xfb => fillBlock(output, position, stride, size, colors[opcode - 0xf8]),
-            0xfc => try copyBlock(output, position, self.buffer(self.key), @intCast(position), stride, size),
+            0xfc => try copyBlock(
+                output,
+                position,
+                self.buffer(self.key),
+                @intCast(position),
+                stride,
+                size,
+            ),
             0xfd => {
                 const tile = try reader.byte();
                 const foreground = try reader.byte();
                 const background = try reader.byte();
                 const mask = if (size == 8) self.tiles8[tile] else self.tiles4[tile];
+
                 for (0..size) |y| {
                     for (0..size) |x| {
                         const bit: u6 = @intCast(y * size + x);
                         const offset: i16 = @bitCast(@as(u16, @truncate(y * stride + x)));
                         const target = @as(i64, @intCast(position)) + offset;
                         if (target < 0 or target >= output.len) return error.InvalidSmushTileOffset;
-                        output[@intCast(target)] = if (mask & (@as(u64, 1) << bit) != 0) foreground else background;
+
+                        output[
+                            @intCast(
+                                target,
+                            )
+                        ] = if (mask & (@as(u64, 1) << bit) != 0) foreground else background;
                     }
                 }
             },
@@ -441,10 +498,18 @@ pub const Decoder = struct {
                     @memcpy(output[position + stride ..][0..2], try reader.take(2));
                 } else {
                     const half = size / 2;
+
                     try self.block(reader, output, position, stride, half, colors);
                     try self.block(reader, output, position + half, stride, half, colors);
                     try self.block(reader, output, position + half * stride, stride, half, colors);
-                    try self.block(reader, output, position + half * stride + half, stride, half, colors);
+                    try self.block(
+                        reader,
+                        output,
+                        position + half * stride + half,
+                        stride,
+                        half,
+                        colors,
+                    );
                 }
             },
             else => unreachable,
@@ -459,6 +524,7 @@ const Reader = struct {
     fn take(self: *Reader, count: usize) ![]const u8 {
         if (count > self.bytes.len - self.position) return error.TruncatedSmushObject;
         defer self.position += count;
+
         return self.bytes[self.position..][0..count];
     }
 
@@ -471,25 +537,37 @@ fn fillBlock(output: []u8, position: usize, stride: usize, size: usize, color: u
     for (0..size) |y| @memset(output[position + y * stride ..][0..size], color);
 }
 
-fn copyBlock(output: []u8, position: usize, source: []const u8, source_position: i64, stride: usize, size: usize) !void {
+fn copyBlock(
+    output: []u8,
+    position: usize,
+    source: []const u8,
+    source_position: i64,
+    stride: usize,
+    size: usize,
+) !void {
     if (source_position < 0) return error.InvalidSmushMotionVector;
+
     const start: usize = @intCast(source_position);
     if (start > source.len or (size - 1) * stride + size > source.len - start)
         return error.InvalidSmushMotionVector;
+
     for (0..size) |y|
         @memcpy(output[position + y * stride ..][0..size], source[start + y * stride ..][0..size]);
 }
 
 fn rle(reader: *Reader, output: []u8) !void {
     var cursor: usize = 0;
+
     while (cursor < output.len) {
         const code = try reader.byte();
         const count = @min(@as(usize, code >> 1) + 1, output.len - cursor);
+
         if (code & 1 != 0) {
             @memset(output[cursor..][0..count], try reader.byte());
         } else {
             @memcpy(output[cursor..][0..count], try reader.take(count));
         }
+
         cursor += count;
     }
 }
@@ -499,20 +577,68 @@ fn le(comptime T: type, bytes: []const u8) T {
 }
 
 fn makeTiles(comptime size: usize) [256]u64 {
-    const xs = if (size == 4) [_]i32{ 0, 1, 2, 3, 3, 3, 3, 2, 1, 0, 0, 0, 1, 2, 2, 1 } else [_]i32{ 0, 2, 5, 7, 7, 7, 7, 7, 7, 5, 2, 0, 0, 0, 0, 0 };
-    const ys = if (size == 4) [_]i32{ 0, 0, 0, 0, 1, 2, 3, 3, 3, 3, 2, 1, 1, 1, 2, 2 } else [_]i32{ 0, 0, 0, 0, 1, 3, 4, 6, 7, 7, 7, 7, 6, 4, 3, 1 };
+    const xs = if (size == 4) [_]i32{
+        0,
+        1,
+        2,
+        3,
+        3,
+        3,
+        3,
+        2,
+        1,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2,
+        1,
+    } else [_]i32{ 0, 2, 5, 7, 7, 7, 7, 7, 7, 5, 2, 0, 0, 0, 0, 0 };
+
+    const ys = if (size == 4) [_]i32{
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        3,
+        3,
+        3,
+        3,
+        2,
+        1,
+        1,
+        1,
+        2,
+        2,
+    } else [_]i32{ 0, 0, 0, 0, 1, 3, 4, 6, 7, 7, 7, 7, 6, 4, 3, 1 };
+
     var tiles: [256]u64 = @splat(0);
+
     for (0..16) |a| {
         for (0..16) |b| {
             const edge_a = edge(size, xs[a], ys[a]);
             const edge_b = edge(size, xs[b], ys[b]);
             const steps: i32 = @intCast(@max(@abs(xs[a] - xs[b]), @abs(ys[a] - ys[b])));
             var step: i32 = 0;
+
             while (step <= steps) : (step += 1) {
-                const x = if (steps == 0) xs[a] else @divTrunc(xs[b] * (steps - step) + xs[a] * step + @divTrunc(steps, 2), steps);
-                const y = if (steps == 0) ys[a] else @divTrunc(ys[b] * (steps - step) + ys[a] * step + @divTrunc(steps, 2), steps);
+                const x = if (steps == 0) xs[a] else @divTrunc(
+                    xs[b] * (steps - step) + xs[a] * step + @divTrunc(steps, 2),
+                    steps,
+                );
+
+                const y = if (steps == 0) ys[a] else @divTrunc(
+                    ys[b] * (steps - step) + ys[a] * step + @divTrunc(steps, 2),
+                    steps,
+                );
+
                 const tile = &tiles[a * 16 + b];
+
                 setPixel(tile, size, x, y);
+
                 if ((edge_a == 2 and edge_b == 3) or (edge_b == 2 and edge_a == 3) or
                     (edge_a == 0 and edge_b != 1) or (edge_b == 0 and edge_a != 1))
                 {
@@ -533,6 +659,7 @@ fn makeTiles(comptime size: usize) [256]u64 {
             }
         }
     }
+
     return tiles;
 }
 
@@ -541,6 +668,7 @@ fn edge(comptime size: usize, x: i32, y: i32) u3 {
     if (y == size - 1) return 1;
     if (x == 0) return 2;
     if (x == size - 1) return 3;
+
     return 4;
 }
 
@@ -551,21 +679,28 @@ fn setPixel(mask: *u64, comptime size: usize, x: i32, y: i32) void {
 test "block decoder rejects unsupported and truncated objects before reading" {
     var decoder = try Decoder.init(std.testing.allocator, 8, 8);
     defer decoder.deinit(std.testing.allocator);
+
     try std.testing.expectError(error.TruncatedSmushObject, decoder.decode(&.{}));
     var object = [_]u8{0} ** 104;
+
     object[0] = 47;
     object[6] = 8;
     object[8] = 8;
     object[16] = 0;
+
     try std.testing.expectError(error.TruncatedSmushObject, decoder.decode(object[0..42]));
     object[0] = 1;
     try std.testing.expectError(error.UnsupportedSmushCodec, decoder.decode(&object));
+
     object[0] = 47;
     object[6] = 7;
+
     try std.testing.expectError(error.UnsupportedSmushDimensions, decoder.decode(&object));
+
     object[6] = 8;
     object[16] = 5;
     object[28] = 65;
+
     try std.testing.expectError(error.InvalidSmushRleLength, decoder.decode(object[0..40]));
 }
 
@@ -573,6 +708,7 @@ test "RLE truncates the final run and buffer rotation retains key and delta hist
     var decoder = try Decoder.init(std.testing.allocator, 8, 8);
     defer decoder.deinit(std.testing.allocator);
     var object = [_]u8{0} ** 42;
+
     object[0] = 47;
     object[6] = 8;
     object[8] = 8;
@@ -583,15 +719,20 @@ test "RLE truncates the final run and buffer rotation retains key and delta hist
     object[28] = 64;
     object[40] = 255;
     object[41] = 11;
+
     const first = (try decoder.decode(&object)).?;
     try std.testing.expectEqualSlices(u8, &(@as([64]u8, @splat(11))), first.pixels);
+
     object[14] = 1;
     object[16] = 4;
     object[17] = 0;
+
     const key = (try decoder.decode(object[0..40])).?;
     try std.testing.expectEqualSlices(u8, &(@as([64]u8, @splat(10))), key.pixels);
+
     object[14] = 2;
     object[16] = 3;
+
     const delta = (try decoder.decode(object[0..40])).?;
     try std.testing.expectEqualSlices(u8, &(@as([64]u8, @splat(11))), delta.pixels);
 }
@@ -600,26 +741,36 @@ test "delta sequence gaps retain the last displayed frame and do not rotate" {
     var decoder = try Decoder.init(std.testing.allocator, 8, 8);
     defer decoder.deinit(std.testing.allocator);
     var object = [_]u8{0} ** 104;
+
     object[0] = 47;
     object[6] = 8;
     object[8] = 8;
     object[17] = 1;
+
     for (object[40..], 0..) |*pixel, i| pixel.* = @intCast(i);
+
     _ = try decoder.decode(&object);
     object[14] = 2;
     object[16] = 2;
     object[17] = 2;
+
     const previous_current = decoder.current;
     const displayed = (try decoder.decode(object[0..40])).?;
+
     try std.testing.expectEqualSlices(u8, object[40..], displayed.pixels);
     try std.testing.expectEqual(previous_current, decoder.current);
 }
 
 test "all 512 generated tile masks match the reference" {
-    inline for (.{ .{ 4, "e5f649aa30ecb9fc1b7b399df530974f89a2df541c01f16d5fcf3384fcea38df" }, .{ 8, "7595ef38daca58c1efc6d33da5ad81066bad70103bbfeb1b11d277eee045087e" } }) |entry| {
+    inline for (.{
+        .{ 4, "e5f649aa30ecb9fc1b7b399df530974f89a2df541c01f16d5fcf3384fcea38df" },
+        .{ 8, "7595ef38daca58c1efc6d33da5ad81066bad70103bbfeb1b11d277eee045087e" },
+    }) |entry| {
         const masks = makeTiles(entry[0]);
         var bytes: [256 * 8]u8 = undefined;
+
         for (masks, 0..) |mask, i| std.mem.writeInt(u64, bytes[i * 8 ..][0..8], mask, .little);
+
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(&bytes, &digest, .{});
         try std.testing.expectEqualStrings(entry[1], &std.fmt.bytesToHex(digest, .lower));
@@ -630,23 +781,34 @@ test "frame skipping consumes sequence state but preserves referenced buffers" {
     var decoder = try Decoder.init(std.testing.allocator, 8, 8);
     defer decoder.deinit(std.testing.allocator);
     var object = [_]u8{0} ** 104;
+
     object[0] = 47;
     object[6] = 8;
     object[8] = 8;
     object[17] = 1;
+
     @memset(object[40..], 17);
+
     _ = try decoder.decode(&object);
     object[14] = 1;
     object[16] = 2;
     object[17] = 0;
+
     const current = decoder.current;
     const displayed = decoder.displayed;
-    try std.testing.expectEqual(@as(?Frame, null), try decoder.decodeWithFlags(object[0..40], 0x10));
+
+    try std.testing.expectEqual(
+        @as(?Frame, null),
+        try decoder.decodeWithFlags(object[0..40], 0x10),
+    );
+
     try std.testing.expectEqual(@as(i16, 1), decoder.last_sequence);
     try std.testing.expectEqual(current, decoder.current);
     try std.testing.expectEqual(displayed, decoder.displayed);
+
     object[14] = 2;
     object[40] = 0;
+
     const next = (try decoder.decode(object[0..41])).?;
     try std.testing.expectEqualSlices(u8, &(@as([64]u8, @splat(17))), next.pixels);
 }
