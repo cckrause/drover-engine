@@ -35,7 +35,7 @@ test "actor use rays preserve filters bounds and recipient ordering" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     for (fixture.cases, 0..) |case, case_index| {
         errdefer std.debug.print("actor use native case{d}\n", .{case_index});

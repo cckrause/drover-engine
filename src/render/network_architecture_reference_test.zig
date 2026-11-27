@@ -79,18 +79,49 @@ const Recorder = struct {
     }
 };
 
-fn capture(router: *Router) !*router_module.Multiplex {
-    if (router.multiplex) |old| old.destroy(router.allocator);
-    router.multiplex = try router.newMultiplex(0);
-    return router.multiplex.?;
-}
+/// Records what the router hands to the driver. The router is set up as a
+/// host with one other client (3), so a broadcast is sent exactly once.
+const SendRecorder = struct {
+    allocator: std.mem.Allocator,
+    sends: std.ArrayList([]u8) = .empty,
 
-fn expectPosts(expected: []const Post, table: *router_module.Multiplex) !void {
-    try testing.expectEqual(expected.len, table.parts.items.len);
-    for (expected, table.parts.items) |post, part| {
-        const bytes = part.?;
+    fn attach(self: *SendRecorder, router: *Router) void {
+        router.own_address = message.no_address;
+        router.own_address[0] = 1;
+        router.clients[3].address = message.no_address;
+        router.clients[3].address[0] = 3;
+        router.network.session = .{ .context = self, .send = send, .get = get };
+    }
+
+    fn clear(self: *SendRecorder) void {
+        for (self.sends.items) |bytes| self.allocator.free(bytes);
+        self.sends.clearRetainingCapacity();
+    }
+
+    fn deinit(self: *SendRecorder) void {
+        self.clear();
+        self.sends.deinit(self.allocator);
+    }
+
+    fn send(context: *anyopaque, data: []const u8, _: ?*const message.Address, _: u32) anyerror!void {
+        const self: *SendRecorder = @ptrCast(@alignCast(context));
+        try self.sends.ensureUnusedCapacity(self.allocator, 1);
+        self.sends.appendAssumeCapacity(try self.allocator.dupe(u8, data[1..]));
+    }
+
+    fn get(_: *anyopaque, _: []u8, _: *message.Address) anyerror!usize {
+        return 0;
+    }
+};
+
+fn expectPosts(expected: []const Post, recorder: *SendRecorder) !void {
+    defer recorder.clear();
+    try testing.expectEqual(expected.len, recorder.sends.items.len);
+    for (expected, recorder.sends.items) |post, bytes| {
         try testing.expectEqual(post.destination, message.get(bytes, message.destination_offset));
-        try testing.expectEqual(post.number, message.get(bytes, message.number_offset));
+        // A direct send keeps only the low 24 bits of the number; the top
+        // bit is the must-arrive flag.
+        try testing.expectEqual(post.number & 0xffffff, message.get(bytes, message.number_offset));
         var copy: [0x200]u8 = undefined;
         @memcpy(copy[0..bytes.len], bytes);
         message.set(copy[0..bytes.len], message.destination_offset, 0);
@@ -204,8 +235,12 @@ test "architecture changes match the reference's packers, scan, marks, sends and
     }
 
     var router = Router.init(a);
+    defer router.deinit();
     router.reset();
     router.session_open = true;
+    var sends: SendRecorder = .{ .allocator = a };
+    defer sends.deinit();
+    sends.attach(&router);
     var queue: dead_reckoning.ArchitectureQueue = .{};
     var arch: network_level.Architecture = .{ .level = &level, .scene = &scene, .angles = &angles, .router = &router, .queue = &queue, .game_type = 5 };
 
@@ -213,9 +248,8 @@ test "architecture changes match the reference's packers, scan, marks, sends and
     for (fixture.scans) |pass| {
         arch.game_type = pass.game_type;
         router.client_count = pass.clients;
-        const table = try capture(&router);
         try network_level.scan(arch, &skip);
-        try expectPosts(pass.posts, table);
+        try expectPosts(pass.posts, &sends);
         try testing.expectEqual(pass.skip, skip);
         try testing.expectEqual(@as(usize, pass.waiting), queue.count);
     }
@@ -259,9 +293,8 @@ test "architecture changes match the reference's packers, scan, marks, sends and
     router.client_count = 2;
     queue.count = 0;
     try network_level.markChange(arch, .{ .light = 2 });
-    const table = try capture(&router);
     try network_level.sendTo(arch, fixture.send_to.client);
-    try expectPosts(fixture.send_to.posts, table);
+    try expectPosts(fixture.send_to.posts, &sends);
     try testing.expectEqual(@as(usize, fixture.send_to.waiting), queue.count);
 
     var recorder: Recorder = .{ .allocator = a };

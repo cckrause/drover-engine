@@ -120,7 +120,7 @@ test "rail mode angles slopes collision and sound timing" {
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             effects.clearRetainingCapacity();
             try runtime.engine.updateListener(.{ .position = .{ player.position.x, player.position.y, player.position.z } });
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
             var expected = frame.state;
             expected.flags &= 0x200c;
             try std.testing.expectEqualDeep(expected, Snapshot.read(&player, &look));

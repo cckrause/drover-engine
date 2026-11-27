@@ -143,7 +143,7 @@ test "automap live Session combines explored walls weapon HUD and secret text li
     var startup = try @import("../campaign.zig").Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("session.zig").Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try @import("session.zig").Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     var packet = @import("../player/input.zig").Packet{};
     packet.entries[@intFromEnum(@import("../player/input.zig").Slot.map)] = .{ .value = 1, .flags = 8 };

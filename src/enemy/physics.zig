@@ -13,7 +13,6 @@ const Actor = @import("../render/objects.zig").Actor;
 const Vec3 = level.Vec3;
 
 pub const World = struct {
-    allocator: std.mem.Allocator,
     level: *const level.Level,
     scene: *const scene.Scene,
     angles: *const camera.Angles,

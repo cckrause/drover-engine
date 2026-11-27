@@ -38,6 +38,7 @@ test {
     _ = @import("enemy/perception_test.zig");
     _ = @import("enemy/broadcast_test.zig");
     _ = @import("enemy/physics_test.zig");
+    _ = @import("enemy/lifecycle_test.zig");
     _ = @import("enemy/blood_test.zig");
     _ = @import("enemy/blood_nan_test.zig");
     _ = @import("enemy/explosion_fragment_test.zig");
@@ -59,6 +60,7 @@ test {
     _ = @import("audio/rail.zig");
     _ = @import("platform/audio_mix.zig");
     _ = @import("platform/mission.zig");
+    _ = @import("platform/saved_game.zig");
     _ = @import("video/san.zig");
     _ = @import("video/audio_stream.zig");
     _ = @import("video/playback.zig");

@@ -55,7 +55,7 @@ test "player sector changes switch palettes as the reference relinks do" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, io, path, archive, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), io, path, archive, &startup);
     defer session.deinit(a);
 
     var effects = inventory.Effects.init(a);

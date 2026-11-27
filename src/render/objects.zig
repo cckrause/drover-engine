@@ -87,11 +87,13 @@ pub const Context = struct {
 };
 
 pub const Objects = struct {
-    allocator: std.mem.Allocator,
+    /// Set when `init` made the work arrays; `initWith` borrows them.
+    allocator: ?std.mem.Allocator = null,
     context: Context,
     actors: []const Actor,
     transformed: []level_module.Vec3,
     transformed_sectors: []bool = &.{},
+    borrowed_sectors: []bool = &.{},
     collected: [256]usize = undefined,
     count: usize = 0,
     drawn: usize = 0,
@@ -133,22 +135,36 @@ pub const Objects = struct {
     pub fn init(allocator: std.mem.Allocator, context: Context, actors: []const Actor) !Objects {
         const transformed = try allocator.alloc(level_module.Vec3, actors.len);
         errdefer allocator.free(transformed);
+        const sectors = try allocator.alloc(bool, context.level.sectors.len);
+        errdefer allocator.free(sectors);
+        var self = try initWith(context, actors, transformed, sectors);
+        self.allocator = allocator;
+        return self;
+    }
+
+    /// Uses `transformed` (at least one entry per actor) and `sectors` (at
+    /// least one per level sector) as work arrays; the caller keeps them.
+    pub fn initWith(context: Context, actors: []const Actor, transformed: []level_module.Vec3, sectors: []bool) !Objects {
+        if (transformed.len < actors.len or sectors.len < context.level.sectors.len) return error.ObjectWorkArraysTooSmall;
         for (actors) |actor| if (actor.sector >= context.level.sectors.len) return error.InvalidObjectSector;
-        var self = Objects{ .allocator = allocator, .context = context, .actors = actors, .transformed = transformed };
+        var self = Objects{ .context = context, .actors = actors, .transformed = transformed[0..actors.len] };
         if (context.links) |links| {
             const entries = context.source_to_entry orelse return error.MissingActorEntryMap;
             if (entries.len != links.nodes.items.len or links.heads.len != context.level.sectors.len) return error.InvalidActorEntryMap;
-            self.transformed_sectors = try allocator.alloc(bool, context.level.sectors.len);
+            self.transformed_sectors = sectors[0..context.level.sectors.len];
             @memset(self.transformed_sectors, false);
         } else {
             for (actors, 0..) |_, index| self.transformActor(index);
         }
+        self.borrowed_sectors = sectors;
         return self;
     }
 
     pub fn deinit(self: *Objects) void {
-        self.allocator.free(self.transformed);
-        self.allocator.free(self.transformed_sectors);
+        if (self.allocator) |allocator| {
+            allocator.free(self.transformed.ptr[0..self.actors.len]);
+            allocator.free(self.borrowed_sectors);
+        }
         self.* = undefined;
     }
 

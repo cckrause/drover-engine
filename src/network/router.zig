@@ -19,6 +19,14 @@ pub const client_slots = 256;
 
 const multiplex_limit = 0x200;
 
+/// Header of a multiplex packet plus the length word in front of a part.
+const multiplex_overhead = 0x14 + 2;
+
+/// The original router keeps its messages in a 512 KiB handle heap with
+/// 32768 handles; queued messages here are held to the same totals.
+pub const max_queued_bytes = 512 * 1024;
+pub const max_queued_messages = 32768;
+
 const one_message = 'G';
 
 pub const version_tag = "(1.1) ";
@@ -80,7 +88,7 @@ pub const Game = struct {
     fn noText(_: *anyopaque, _: u32, _: []u8) void {}
 };
 
-pub const Posted = enum { queued, sent, invalid_client, no_session, multiplexed };
+pub const Posted = enum { queued, sent, invalid_client, no_session, multiplexed, too_large };
 
 pub const Multiplex = struct {
     client: u16,
@@ -112,6 +120,9 @@ pub const Router = struct {
     client_count: u32 = 0,
     queues: [16]std.ArrayList([]u8) = @splat(.empty),
     taken: std.ArrayList([]u8) = .empty,
+    /// Messages in the queues and handed out by `read`, counted until freed.
+    queued_bytes: usize = 0,
+    queued_messages: usize = 0,
     dropped: bool = false,
     network: network_layer.Network = .{},
     session_open: bool = false,
@@ -278,11 +289,19 @@ pub const Router = struct {
     pub fn post(self: *Router, destination: u32, number: u32, bytes: []u8) !Posted {
         if (bytes.len < message.header_size or bytes.len > 0xffff) return error.MalformedNetworkMessage;
         if (self.multiplex) |table| {
+            // A part that cannot fit an empty packet would never leave the
+            // table and would hold every later table back (the original
+            // sends an empty packet every 100 ms instead), so it is refused.
+            if (bytes.len + multiplex_overhead >= multiplex_limit) {
+                std.log.warn("router: a {d}-byte message does not fit a multiplex packet and is not sent", .{bytes.len});
+                return .too_large;
+            }
+            try table.parts.ensureUnusedCapacity(self.allocator, 1);
             const copy = try self.allocator.dupe(u8, bytes);
             errdefer self.allocator.free(copy);
             message.set(copy, message.destination_offset, destination);
             message.set(copy, message.number_offset, number);
-            try table.parts.append(self.allocator, copy);
+            table.parts.appendAssumeCapacity(copy);
             return .multiplexed;
         }
         const target = message.client(destination);
@@ -305,17 +324,17 @@ pub const Router = struct {
         const sending = packet[0 .. bytes.len + 1];
         if (target != 0) {
             if (target == 1 and self.own_client != 1) self.last_send = self.now;
-            self.network.send(sending, &self.clients[target].address, must);
+            try self.network.send(sending, &self.clients[target].address, must);
             return .sent;
         }
         self.last_send = self.now;
         if (must == 0) {
-            self.network.send(sending, null, 0);
+            try self.network.send(sending, null, 0);
             return .sent;
         }
         for (self.clients[1..], 1..) |*client, index| {
             if (index == 2 or index == self.own_client or message.isNone(&client.address)) continue;
-            self.network.send(sending, &client.address, must);
+            try self.network.send(sending, &client.address, must);
         }
         return .sent;
     }
@@ -339,16 +358,20 @@ pub const Router = struct {
     }
 
     pub fn addToQueues(self: *Router, bytes: []const u8) !void {
+        if (self.queued_messages == max_queued_messages or bytes.len > max_queued_bytes - self.queued_bytes)
+            return error.NetworkQueueFull;
         const list = &self.queues[message.queue(message.get(bytes, message.destination_offset))];
         try list.ensureUnusedCapacity(self.allocator, 1);
+        try self.taken.ensureTotalCapacity(self.allocator, self.queued_messages + 1);
         list.appendAssumeCapacity(try self.allocator.dupe(u8, bytes));
+        self.queued_bytes += bytes.len;
+        self.queued_messages += 1;
     }
 
     pub fn read(self: *Router, queue_index: u4) !?[]u8 {
         try self.receive();
         const list = &self.queues[queue_index];
         if (list.items.len == 0) return null;
-        try self.taken.ensureUnusedCapacity(self.allocator, 1);
         const bytes = list.orderedRemove(0);
         self.taken.appendAssumeCapacity(bytes);
         return bytes;
@@ -363,7 +386,7 @@ pub const Router = struct {
 
     pub fn dropQueued(self: *Router) void {
         for (&self.queues) |*list| {
-            for (list.items) |bytes| self.allocator.free(bytes);
+            for (list.items) |bytes| self.forget(bytes);
             list.clearRetainingCapacity();
         }
     }
@@ -373,7 +396,7 @@ pub const Router = struct {
         var packet: [contract.max_data]u8 = undefined;
         packet[0] = one_message;
         @memcpy(packet[1..][0..bytes.len], bytes);
-        self.network.send(packet[0 .. bytes.len + 1], to, flags);
+        try self.network.send(packet[0 .. bytes.len + 1], to, flags);
     }
 
     pub fn setClient(self: *Router, number: u8, address: *const message.Address, name: []const u8) !void {
@@ -482,7 +505,7 @@ pub const Router = struct {
     pub fn release(self: *Router, bytes: []const u8) void {
         for (self.taken.items, 0..) |taken, index| {
             if (taken.ptr != bytes.ptr) continue;
-            self.allocator.free(self.taken.orderedRemove(index));
+            self.forget(self.taken.orderedRemove(index));
             return;
         }
     }
@@ -507,6 +530,12 @@ pub const Router = struct {
             if (!message.isNone(&self.clients[number].address)) return number - 1;
         }
         return 1;
+    }
+
+    fn forget(self: *Router, bytes: []u8) void {
+        self.queued_bytes -= bytes.len;
+        self.queued_messages -= 1;
+        self.allocator.free(bytes);
     }
 
     fn askForClient(self: *Router) !void {
@@ -598,10 +627,13 @@ pub const Router = struct {
         if (self.multiplex_read >= 8) self.multiplex_read = 0;
     }
 
+    /// Takes at most one driver inbox of packets per call, so a flood of
+    /// traffic cannot keep one read going.
     fn receive(self: *Router) !void {
-        while (self.session_open) {
+        for (0..contract.waiting_messages) |_| {
+            if (!self.session_open) return;
             var sender: message.Address = undefined;
-            const length = self.network.get(&self.receive_buffer, &sender);
+            const length = try self.network.get(&self.receive_buffer, &sender);
             if (length == 0) return;
             const packet = self.receive_buffer[0..length];
             if (packet[0] == one_message) {
@@ -717,4 +749,102 @@ test "post here and to everyone keeps the own client on the first copy" {
     router.release(queued);
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(message.Queue.server));
     try std.testing.expectEqual(@as(u32, 0x100000), message.get(&request, message.destination_offset));
+}
+
+test "a multiplexed message too large for any packet is refused when posted" {
+    var router = Router.init(std.testing.allocator);
+    defer router.deinit();
+    router.reset();
+    const table = try router.newMultiplex(3);
+    router.multiplex = table;
+    defer {
+        router.multiplex = null;
+        table.destroy(std.testing.allocator);
+    }
+    var fits: [multiplex_limit - multiplex_overhead - 1]u8 = @splat(0);
+    try std.testing.expectEqual(Posted.multiplexed, try router.post(0x100000, 0x3ef, &fits));
+    var too_large: [multiplex_limit - multiplex_overhead]u8 = @splat(0);
+    try std.testing.expectEqual(Posted.too_large, try router.post(0x100000, 0x3ef, &too_large));
+    try std.testing.expectEqual(@as(usize, 1), table.parts.items.len);
+}
+
+test "queued messages are held to the router's totals and counted until freed" {
+    var router = Router.init(std.testing.allocator);
+    defer router.deinit();
+    router.reset();
+    var request: [0x400]u8 = @splat(0);
+    const destination = message.addressWord(message.Queue.server, 1);
+    for (0..max_queued_bytes / request.len) |_| _ = try router.post(destination, 0x3ef, &request);
+    try std.testing.expectEqual(@as(usize, max_queued_bytes), router.queued_bytes);
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &request));
+    const taken = (try router.read(message.Queue.server)).?;
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &request));
+    router.release(taken);
+    _ = try router.post(destination, 0x3ef, &request);
+    router.dropQueued();
+    try std.testing.expectEqual(@as(usize, 0), router.queued_bytes);
+    try std.testing.expectEqual(@as(usize, 0), router.queued_messages);
+    var small: [message.header_size]u8 = @splat(0);
+    for (0..max_queued_messages) |_| _ = try router.post(destination, 0x3ef, &small);
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &small));
+}
+
+test "one read takes at most one driver inbox of packets" {
+    const Flood = struct {
+        sent: usize = 0,
+
+        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) anyerror!void {}
+
+        fn get(context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.sent += 1;
+            sender.* = message.no_address;
+            sender[0] = 3;
+            buffer[0] = one_message;
+            @memset(buffer[1 .. 1 + message.header_size], 0);
+            message.set(buffer[1..], message.destination_offset, message.addressWord(message.Queue.database, 1));
+            message.set(buffer[1..], message.sender_offset, message.addressWord(message.Queue.database, 3));
+            return 1 + message.header_size;
+        }
+    };
+    var flood: Flood = .{};
+    var router = Router.init(std.testing.allocator);
+    defer router.deinit();
+    router.reset();
+    router.sender_check = false;
+    router.session_open = true;
+    router.clients[3].address = message.no_address;
+    router.clients[3].address[0] = 3;
+    router.network.session = .{ .context = &flood, .send = Flood.send, .get = Flood.get };
+    defer router.network.session = null;
+    const first = (try router.read(message.Queue.database)).?;
+    router.release(first);
+    try std.testing.expectEqual(@as(usize, contract.waiting_messages), flood.sent);
+    try std.testing.expectEqual(@as(usize, contract.waiting_messages - 1), router.queues[message.Queue.database].items.len);
+}
+
+test "a driver that fails to receive is reported, not read as silence" {
+    const Broken = struct {
+        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) anyerror!void {
+            return error.SendFailed;
+        }
+
+        fn get(_: *anyopaque, _: []u8, _: *message.Address) anyerror!usize {
+            return error.ReceiveFailed;
+        }
+    };
+    var router = Router.init(std.testing.allocator);
+    defer router.deinit();
+    router.reset();
+    router.session_open = true;
+    var context: u8 = 0;
+    router.network.session = .{ .context = &context, .send = Broken.send, .get = Broken.get };
+    defer router.network.session = null;
+    try std.testing.expectError(error.ReceiveFailed, router.read(message.Queue.database));
+    router.own_address = message.no_address;
+    router.own_address[0] = 1;
+    router.clients[3].address = router.own_address;
+    router.clients[3].address[0] = 3;
+    var request: [message.header_size]u8 = @splat(0);
+    try std.testing.expectError(error.SendFailed, router.post(message.addressWord(message.Queue.database, 3), 0x3ef, &request));
 }

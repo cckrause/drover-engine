@@ -166,7 +166,7 @@ pub const Context = struct {
     contact_hidden_taunt: bool = false,
 
     pub fn world(self: *Context) physics.World {
-        return .{ .allocator = self.allocator, .level = self.level, .scene = self.scene, .angles = self.angles, .actors = self.actors };
+        return .{ .level = self.level, .scene = self.scene, .angles = self.angles, .actors = self.actors };
     }
 
     pub fn visible(self: *Context, first: Subject, second: Subject) !bool {

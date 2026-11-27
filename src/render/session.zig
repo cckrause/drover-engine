@@ -149,6 +149,9 @@ pub const Session = struct {
     scope_explosion_flash: i32 = 0,
     generators: generator.State,
     scope_view: camera.View,
+    /// Borrowed from whoever opened the session; it outlives the session.
+    /// The main and scope views share it, drawn one after the other.
+    render_workspace: *world.Workspace,
     scope_pixels: []u8,
     frame_seconds: f32,
     actor_time: u32,
@@ -203,6 +206,9 @@ pub const Session = struct {
     actors: []object_render.Actor,
     actor_capacity: usize,
     actor_storage: []object_render.Actor,
+    /// The object pass's view-space position of each live actor, kept with
+    /// the actor arrays so drawing a frame allocates nothing.
+    actor_transformed: []level_module.Vec3,
     actor_slots: []?object_render.Actor,
     source_to_entry: []?usize,
     actor_links: actor_links.Links,
@@ -222,7 +228,8 @@ pub const Session = struct {
     rendered_sector_visits: usize = 0,
     started_at: u32,
     animation_time: u32,
-    animation_ticks: std.ArrayList(u32),
+    /// Simulation updates since the level opened, saturating.
+    animation_tick_count: u32,
 
     const Presentation = struct { time: u32, kick: f32, flash: i32, explosion_flash: i32 };
 
@@ -347,8 +354,8 @@ pub const Session = struct {
         };
     }
 
-    pub fn open(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup) !*Session {
-        return openWithState(allocator, io, data_path, system, startup, 0, .{});
+    pub fn open(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup) !*Session {
+        return openWithState(allocator, render_workspace, io, data_path, system, startup, 0, .{});
     }
 
     pub fn campaignState(self: *Session, allocator: std.mem.Allocator) !CampaignState {
@@ -375,8 +382,8 @@ pub const Session = struct {
         return result;
     }
 
-    pub fn openWithCampaignState(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, carry: *const CampaignState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, true, carry, false);
+    pub fn openWithCampaignState(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, carry: *const CampaignState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, true, carry, false);
     }
 
     pub fn restart(self: *Session, allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32) !*Session {
@@ -398,15 +405,15 @@ pub const Session = struct {
         try self.inventory.startItems(self.arena.allocator(), &.{ self.object_archive, self.weapon_archive, self.geometry_archive, self.system_archive }, &cid);
         var carry = try self.campaignState(allocator);
         defer carry.deinit();
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, true, &carry, false);
+        return openImpl(allocator, self.render_workspace, io, data_path, system, startup, now, persistent, true, &carry, false);
     }
 
-    pub fn openWithState(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, false, null, false);
+    pub fn openWithState(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, false, null, false);
     }
 
-    pub fn openForRestore(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
-        return openImpl(allocator, io, data_path, system, startup, now, persistent, false, null, true);
+    pub fn openForRestore(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState) !*Session {
+        return openImpl(allocator, render_workspace, io, data_path, system, startup, now, persistent, false, null, true);
     }
 
     pub fn closeSounds(self: *Session) !void {
@@ -455,7 +462,7 @@ pub const Session = struct {
                 self.player.scope_active = true;
                 self.weapon_state.aim_x = 0;
                 self.weapon_state.aim_y = 0;
-                _ = try self.renderView(allocator, &self.scope_view, self.scope_pixels, ticks);
+                _ = try self.renderView(&self.scope_view, self.scope_pixels, ticks);
                 try weapon_render.composeScope(pixels, self.scope_pixels, rect);
             }
         };
@@ -488,8 +495,10 @@ pub const Session = struct {
         return self.damage_flash.palette(palette);
     }
 
-    pub fn renderWorld(self: *Session, allocator: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
-        return self.renderView(allocator, &self.view, pixels, ticks);
+    /// Drawing the world allocates nothing; the allocator stays in the
+    /// signature only for the callers that pass one.
+    pub fn renderWorld(self: *Session, _: std.mem.Allocator, pixels: []u8, ticks: u32) ![256]u32 {
+        return self.renderView(&self.view, pixels, ticks);
     }
 
     pub fn advance(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, elapsed_ms: u32) !void {
@@ -682,7 +691,7 @@ pub const Session = struct {
         try @import("../player/inventory_wax.zig").advance(self, self.animation_time);
         try self.castShots(allocator, shots.items, &animation_effects);
         shots.clearRetainingCapacity();
-        try self.animation_ticks.append(self.arena.allocator(), self.animation_time);
+        self.animation_tick_count +|= 1;
         try enemy_session.animations(self, allocator, audio, &animation_effects);
         try self.castEnemyEffects(allocator, &animation_effects);
         const elapsed: f32 = @floatFromInt(self.animation_time -% self.actor_time);
@@ -805,7 +814,7 @@ pub const Session = struct {
                 try self.messages.post(0x13, null, self.animation_time);
             if (seconds != 0) try self.lamp_state.consume(&self.inventory, seconds);
             self.player.flags = self.inventory.player_flags;
-            try self.player.tickWithAudio(allocator, &self.level, &self.scene, bodies, &self.angles, control, &look, seconds, &player_audio_context);
+            try self.player.tickWithAudio(&self.level, &self.scene, bodies, &self.angles, control, &look, seconds, &player_audio_context);
             if (self.player.flags & 0x8000 != 0) self.lamp_state.hardOff();
             self.inventory.player_flags = self.player.flags;
             self.pending_player_death = try player_damage.applyMovementWithEnvironment(self.player_damage_config, &self.inventory, self.player.impact, self.player.sector_damage, seconds, &self.damage_flash, &player_audio_context, self.animation_time, .{ .elapsed = self.player.drowning, .crush_required = self.player.crush_required, .crush_body = self.player.crush_body, .runtime = &runtime, .player = &self.player, .angles = &self.angles });
@@ -1259,15 +1268,16 @@ pub const Session = struct {
         };
     }
 
-    pub fn loadActorsInSectors(self: *Session, allocator: std.mem.Allocator, visited_sectors: []const bool) !bool {
-        return self.loadActors(allocator, visited_sectors, false);
+    pub fn loadActorsInSectors(self: *Session, visited_sectors: []const bool) !bool {
+        return self.loadActors(visited_sectors, false);
     }
 
-    pub fn loadActors(self: *Session, allocator: std.mem.Allocator, visited_sectors: []const bool, all_enemies: bool) !bool {
-        if (visited_sectors.len != self.level.sectors.len) return error.InvalidActorSectorSet;
+    pub fn loadActors(self: *Session, visited_sectors: []const bool, all_enemies: bool) !bool {
+        if (visited_sectors.len != self.level.sectors.len or visited_sectors.len > world.max_level_sectors) return error.InvalidActorSectorSet;
         const a = self.arena.allocator();
-        const visible = try allocator.dupe(bool, visited_sectors);
-        defer allocator.free(visible);
+        var visible_storage: [world.max_level_sectors]bool = undefined;
+        const visible = visible_storage[0..visited_sectors.len];
+        @memcpy(visible, visited_sectors);
         for (visited_sectors, self.level.sectors, self.scene.sectors) |visited, sector, state| {
             if (visited and sector.vadjoin >= 0 and state.flags & 0x80 == 0) visible[@intCast(sector.vadjoin)] = true;
         }
@@ -1287,7 +1297,8 @@ pub const Session = struct {
             if (slot.* != null) continue;
             const sector_requested = visible[sector] and !self.loaded_actor_sectors[sector];
             if (!sector_requested and !all_enemies) continue;
-            const name = try std.fmt.allocPrint(a, "{s}.ITM", .{std.fs.path.stem(object.name)});
+            var name_buffer: lab.NameBuffer = undefined;
+            const name = try lab.printName(&name_buffer, "{s}.ITM", .{std.fs.path.stem(object.name)});
             const definition_bytes = try self.objectResource(self.system_archive, name);
             if (!sector_requested and definition_bytes == null) continue;
             const definition = if (definition_bytes) |bytes| item.Item.parse(a, bytes) catch |err| {
@@ -1367,8 +1378,8 @@ pub const Session = struct {
                 std.log.err("cannot construct object {s}: {s}", .{ object.name, @errorName(err) });
                 return err;
             }) orelse continue;
-            const key = try a.dupe(u8, animation);
-            for (key) |*character| character.* = std.ascii.toUpper(character.*);
+            var key_buffer: lab.NameBuffer = undefined;
+            const key = try lab.upperName(&key_buffer, animation);
             const costume = self.costumes.get(key) orelse blk: {
                 const bytes = try self.objectResource(self.system_archive, animation) orelse {
                     if (definition == null) {
@@ -1380,7 +1391,7 @@ pub const Session = struct {
                 };
                 const loaded = try a.create(nwx.Costume);
                 loaded.* = try nwx.Costume.parse(a, bytes);
-                try self.costumes.put(key, loaded);
+                try self.costumes.put(try a.dupe(u8, key), loaded);
                 break :blk loaded;
             };
             const state = try object_state.State.init(object, sector, definition_ptr, costume);
@@ -1408,7 +1419,10 @@ pub const Session = struct {
                 target.selection_serial = &self.enemy_selection_serial;
             }
             if (!object_logic.bound(slot.*.?)) {
-                for (self.animation_ticks.items) |now| try slot.*.?.advanceUnboundAnimation(now);
+                // Every decoration is built when the level opens, before the
+                // first tick, as in the original, so its animation has run from
+                // the start. One built later would have missed updates.
+                if (self.animation_tick_count != 0) return error.DecorationBuiltAfterPlayStarted;
             }
             self.syncActor(source_index);
             added = true;
@@ -1510,7 +1524,7 @@ pub const Session = struct {
         self.blood_slots[index] = spawned.state;
     }
 
-    fn openImpl(allocator: std.mem.Allocator, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, retain_player: bool, carry: ?*const CampaignState, restoring: bool) !*Session {
+    fn openImpl(allocator: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, data_path: []const u8, system: lab.Archive, startup: *campaign.Startup, now: u32, persistent: PersistentState, retain_player: bool, carry: ?*const CampaignState, restoring: bool) !*Session {
         const self = try allocator.create(Session);
         errdefer allocator.destroy(self);
         self.arena = std.heap.ArenaAllocator.init(allocator);
@@ -1577,6 +1591,7 @@ pub const Session = struct {
         const object_path = try std.fmt.allocPrint(a, "{s}.obb", .{request.name});
         const inf_path = try std.fmt.allocPrint(a, "{s}.inf", .{request.name});
         self.level = try level_module.Level.parse(a, try preferredGeometryResource(a, geometry, level_path, "lvt"));
+        try world.Workspace.checkLevel(&self.level);
         if (self.game_type == 4 or self.game_type == 5) {
             const item_path = try std.fmt.allocPrint(a, "{s}.itm", .{request.name});
             const item_bytes = try geometry.find(item_path, 0x4954454d);
@@ -1760,6 +1775,7 @@ pub const Session = struct {
         self.scope_view = try camera.View.initFov(a, &self.angles, weapon_render.scope_size, weapon_render.scope_size, weapon_render.scope_fov);
         self.scope_pixels = try a.alloc(u8, weapon_render.scope_size * weapon_render.scope_size);
         @memset(self.scope_pixels, 0);
+        self.render_workspace = render_workspace;
         self.view.bottom = 439;
         self.view.setParallax(self.level.parallax.x, self.level.parallax.z);
         self.scope_view.setParallax(self.level.parallax.x, self.level.parallax.z);
@@ -1783,6 +1799,7 @@ pub const Session = struct {
         self.difficulty_mask = @intFromEnum(startup.difficulty) << 8;
         self.actor_capacity = self.objects.entries.len;
         self.actor_storage = try a.alloc(object_render.Actor, self.actor_capacity);
+        self.actor_transformed = try a.alloc(level_module.Vec3, self.actor_capacity);
         self.actors = self.actor_storage[0..0];
         self.actor_slots = try a.alloc(?object_render.Actor, self.objects.entries.len);
         @memset(self.actor_slots, null);
@@ -1805,7 +1822,7 @@ pub const Session = struct {
         self.projectile_configs = std.StringHashMap(*const projectile.Config).init(a);
         self.started_at = now;
         self.animation_time = now;
-        self.animation_ticks = .empty;
+        self.animation_tick_count = 0;
         if (!restoring and !loads_objects) {
             self.inf = try inf_module.Runtime.fromGeometry(now, geometry_classes);
             self.inf.router = self.router;
@@ -1828,7 +1845,7 @@ pub const Session = struct {
             const every_sector = try allocator.alloc(bool, self.level.sectors.len);
             defer allocator.free(every_sector);
             @memset(every_sector, true);
-            _ = try self.loadActors(allocator, every_sector, true);
+            _ = try self.loadActors(every_sector, true);
             try self.loadEnemies(allocator);
             var startup_world: inf_geometry.World = .{ .level = &self.level, .scene = &self.scene, .angles = &self.angles, .actors = self.actors, .links = &self.actor_links, .source_to_entry = self.source_to_entry, .live_entries = &self.actors, .live_slots = &self.actor_slots, .collision_diameter = 0, .marks = self.networkMarks(), .reshaped = null };
             self.inf = try inf_module.Runtime.loadPreparedWithWorld(a, &self.level, try geometry.find(inf_path, 0x494e4646), &self.scene, &self.angles, now, geometry_classes, .{ .world = &startup_world, .textures = self.textures, .seconds = if (@as(u32, @bitCast(self.frame_seconds)) & 0x7fffffff == 0) 1 else self.frame_seconds });
@@ -1915,42 +1932,45 @@ pub const Session = struct {
         }
     }
 
-    fn renderView(self: *Session, allocator: std.mem.Allocator, view: *camera.View, pixels: []u8, ticks: u32) anyerror![256]u32 {
-        const pass = try self.beginView(view);
-        var objects = try object_render.Objects.init(allocator, .{
-            .native_slots = self.actor_slots,
-            .native_player = &self.player_actor,
-            .view = view,
-            .level = &self.level,
-            .scene = &self.scene,
-            .camera_sector = pass.sector,
-            .pixels = pixels,
-            .lighting = pass.lighting,
-            .blend_table = self.blend(),
-            .links = &self.actor_links,
-            .source_to_entry = self.source_to_entry,
-            .angles = &self.angles,
-        }, self.actors);
-        defer objects.deinit();
-        var frame = try world.Frame.init(allocator, view, &self.angles, &self.level, &self.scene, self.textures, pixels, pass.lighting, .scalar, ticks);
-        defer frame.deinit();
-        frame.blend_table = self.blend();
-        frame.objects = &objects;
-        try frame.draw(pass.sector);
-        if (try self.loadActorsInSectors(allocator, frame.visited)) {
-            return self.renderView(allocator, view, pixels, ticks);
-        }
-        self.aim_count = 0;
-        for ([_][]const usize{ objects.aim_static[0..objects.aim_static_count], objects.aim_dynamic[0..objects.aim_dynamic_count] }) |list| {
-            for (list) |i| {
-                const point = objects.transformed[i];
-                self.aim_candidates[self.aim_count] = .{ .flags = self.actors[i].secondary_flags, .x = point.x, .y = point.y, .z = point.z, .height = self.actors[i].height };
-                self.aim_count += 1;
+    fn renderView(self: *Session, view: *camera.View, pixels: []u8, ticks: u32) anyerror![256]u32 {
+        // Drawing can reveal sectors whose actors are not loaded yet; they are
+        // loaded and the whole view is drawn again until nothing new shows.
+        // Each pass loads at least one sector, so this ends.
+        while (true) {
+            const pass = try self.beginView(view);
+            var objects = try object_render.Objects.initWith(.{
+                .native_slots = self.actor_slots,
+                .native_player = &self.player_actor,
+                .view = view,
+                .level = &self.level,
+                .scene = &self.scene,
+                .camera_sector = pass.sector,
+                .pixels = pixels,
+                .lighting = pass.lighting,
+                .blend_table = self.blend(),
+                .links = &self.actor_links,
+                .source_to_entry = self.source_to_entry,
+                .angles = &self.angles,
+            }, self.actors, self.actor_transformed, &self.render_workspace.object_sectors);
+            defer objects.deinit();
+            var frame = try world.Frame.init(self.render_workspace, view, &self.angles, &self.level, &self.scene, self.textures, pixels, pass.lighting, .scalar, ticks);
+            defer frame.deinit();
+            frame.blend_table = self.blend();
+            frame.objects = &objects;
+            try frame.draw(pass.sector);
+            if (try self.loadActorsInSectors(frame.visited)) continue;
+            self.aim_count = 0;
+            for ([_][]const usize{ objects.aim_static[0..objects.aim_static_count], objects.aim_dynamic[0..objects.aim_dynamic_count] }) |list| {
+                for (list) |i| {
+                    const point = objects.transformed[i];
+                    self.aim_candidates[self.aim_count] = .{ .flags = self.actors[i].secondary_flags, .x = point.x, .y = point.y, .z = point.z, .height = self.actors[i].height };
+                    self.aim_count += 1;
+                }
             }
+            self.rendered_sector_visits = frame.sector_visits;
+            self.endView(pass);
+            return self.palette;
         }
-        self.rendered_sector_visits = frame.sector_visits;
-        self.endView(pass);
-        return self.palette;
     }
 
     fn acquireInventorySounds(context: *anyopaque, definition: inventory_module.Definition, now: u32) anyerror!void {
@@ -2229,17 +2249,6 @@ pub const Session = struct {
         return null;
     }
 
-    fn loadVisibleActors(self: *Session, allocator: std.mem.Allocator) !void {
-        const pixels = try allocator.alloc(u8, 640 * 480);
-        defer allocator.free(pixels);
-        @memset(pixels, 0);
-        var geometry = try world.Frame.init(allocator, &self.view, &self.angles, &self.level, &self.scene, self.textures, pixels, self.lighting(), .scalar, 0);
-        defer geometry.deinit();
-        geometry.blend_table = self.blend();
-        try geometry.draw(self.player.sector);
-        _ = try self.loadActorsInSectors(allocator, geometry.visited);
-    }
-
     fn acceptObject(self: *const Session, object: level_module.Object) bool {
         return object.flags[1] & self.object_mode_mask != 0 and
             (self.mode == 0 or self.object_option0 or object.flags[1] & 0x200000 == 0);
@@ -2282,7 +2291,7 @@ pub const Session = struct {
         defer self.allocator.free(sectors);
         @memset(sectors, false);
         sectors[sector] = true;
-        _ = try self.loadActorsInSectors(self.allocator, sectors);
+        _ = try self.loadActorsInSectors(sectors);
     }
 
     fn loadEnemies(self: *Session, allocator: std.mem.Allocator) !void {
@@ -2346,7 +2355,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try startup.beginHost(a, std.testing.io, path, system);
     const audio = try audio_runtime.Runtime.open(a, std.testing.io, path, system);
     defer audio.deinit();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try std.testing.expectEqualStrings("drygulch", session.level_name);
     try std.testing.expectEqualStrings("NULL", session.level.music);
@@ -2424,7 +2433,7 @@ test "mission restart restores the current level with retained globals and const
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const old = try Session.open(a, std.testing.io, path, system, &startup);
+    const old = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer old.deinit(a);
     try std.testing.expect(startup.server.started);
     try std.testing.expectEqual(@as(u32, 0x36a11), startup.server.starts[0][0]);
@@ -2540,7 +2549,7 @@ test "bound campaign carry releases Ranch weapons through the retained sound ser
     _ = try startup.levelForDiagnostics();
 
     const departed = block: {
-        const old = try Session.openWithState(a, io, path, system, &startup, 90000, .{});
+        const old = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, 90000, .{});
         defer old.deinit(a);
         try old.bindAudio(audio);
         try audio.beginLevel(io, &old.level, old.geometry_archive, 90000);
@@ -2573,7 +2582,7 @@ test "bound campaign carry releases Ranch weapons through the retained sound ser
     const event = try ranch.levelForDiagnostics();
     try mounts.selectDisc(io, event.disc);
     try audio.remount(io, mounts.path(), mounts.system());
-    const fresh = try Session.openWithCampaignState(a, io, mounts.path(), mounts.system(), &ranch, 180000, departed.persistent, &carry);
+    const fresh = try Session.openWithCampaignState(a, @import("test_workspace.zig").get(), io, mounts.path(), mounts.system(), &ranch, 180000, departed.persistent, &carry);
     defer fresh.deinit(a);
 
     try std.testing.expectEqual(@as(u32, 0xc000), fresh.player_bind_flags);
@@ -2621,7 +2630,7 @@ test "bound Train restart registers its missing doubled door sound again" {
     const log_level = std.testing.log_level;
     std.testing.log_level = .err;
     defer std.testing.log_level = log_level;
-    const old = try Session.open(a, io, path, system, &startup);
+    const old = try Session.open(a, @import("test_workspace.zig").get(), io, path, system, &startup);
     defer old.deinit(a);
     try old.bindAudio(audio);
     const fresh = try old.restart(a, io, path, system, &startup, 90000);
@@ -2665,7 +2674,7 @@ test "campaign completion admits at SYS drain and retains its final frame" {
         defer startup.deinit(a);
         startup.server.completion_gate.last = sample.previous;
         _ = try startup.levelForDiagnostics();
-        const session = try Session.openWithState(a, io, path, system, &startup, sample.now -% 1, .{});
+        const session = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, sample.now -% 1, .{});
         defer session.deinit(a);
         try network_server.requestEndLevel(session.router);
         try session.advance(a, &.{}, 1);
@@ -2693,7 +2702,7 @@ test "SYS drain skips Train LAST_DOOR's TRIGGER and still admits END_LEVEL" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.openWithState(a, io, path, system, &startup, 20000, .{});
+    const session = try Session.openWithState(a, @import("test_workspace.zig").get(), io, path, system, &startup, 20000, .{});
     defer session.deinit(a);
     try session.inf.postSystem(.{ .code = 0x7d6 });
     try network_server.requestEndLevel(session.router);
@@ -2713,7 +2722,7 @@ test "INF audio captures pre-player message and post-player task listener phases
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const audio = audio_runtime.Runtime.open(a, std.testing.io, path, system) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
@@ -2781,7 +2790,7 @@ test "queued sounds precede handcar admission and retain their captured listener
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const sound = try audio_runtime.Runtime.open(a, std.testing.io, path, system);
     defer sound.deinit();
@@ -2895,7 +2904,7 @@ test "live vertical tasks retain double-mirror wall heights" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const owned = session.arena.allocator();
     session.level = try level_module.Level.parse(owned, try session.geometry_archive.find("TRAIN.LVB", 0));
@@ -2974,7 +2983,7 @@ test "live runtime flag clears survive unrelated light tasks" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const owned = session.arena.allocator();
     var held = for (session.inf.elevators) |elevator| {

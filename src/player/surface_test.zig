@@ -217,7 +217,7 @@ test "dry surface contact damage sounds and death reports" {
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             const control = look.controlForLife(&packet, !player.dead);
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, config.seconds, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, config.seconds, &audio);
             inventory.player_flags = player.flags;
             var direct_health = inventory;
             const death = try damage.applyMovement(.{ .multiplier = config.damage_multiplier orelse damage_config.multiplier }, &inventory, player.impact, player.sector_damage, config.seconds, &flash, &audio, frame.now);

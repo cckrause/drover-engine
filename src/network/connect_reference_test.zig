@@ -29,7 +29,7 @@ const Feed = struct {
         return .{ .context = self, .send = send, .get = get, .host_address = self.host };
     }
 
-    fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) void {}
+    fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) anyerror!void {}
 
     fn get(context: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {
         const self: *Feed = @ptrCast(@alignCast(context));

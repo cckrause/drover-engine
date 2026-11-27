@@ -96,7 +96,7 @@ test "lamp fragment bursts RNG animation and physics" {
         scene.sectors = (&sector_state)[0..1];
         var collision_check: u32 = 0;
         scene.collision_check = &collision_check;
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random = config.seed;
         const count = (@import("../player/weapon.zig").randomNext(&random) & 3) * 2 + 2;
         try std.testing.expectEqual(case.initial.len, count);

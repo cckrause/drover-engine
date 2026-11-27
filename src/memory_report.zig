@@ -10,6 +10,7 @@ pub fn main() void {
             "heap: {d} bytes; tree bookkeeping: {d}; reservation: {d}\n" ++
             "resource budget: {d} bytes; handles: {d} ({d} target bytes)\n" ++
             "movie input budget: {d} bytes; sound instances: {d}; voices: {d}\n" ++
+            "software frame storage: {d} bytes\n" ++
             "known storage floor: {d} bytes\n" ++
             "TODO: Reserve and enforce resource and movie input budgets separately.\n" ++
             "TODO: Replace whole-file archive/movie loading with bounded reads.\n" ++
@@ -19,7 +20,7 @@ pub fn main() void {
             @tagName(limits.profile),        @tagName(builtin.cpu.arch),    @tagName(builtin.os.tag),         @bitSizeOf(usize),
             limits.heap_bytes,               layout.heap_metadata_bytes,    layout.reservation_bytes,         limits.current.resource_bytes,
             limits.current.resource_handles, layout.resource_handles_bytes, limits.current.movie_input_bytes, limits.current.sound_instances,
-            limits.current.sound_voices,     layout.known_storage_bytes,
+            limits.current.sound_voices,     layout.software_frame_bytes,   layout.known_storage_bytes,
         },
     );
 }

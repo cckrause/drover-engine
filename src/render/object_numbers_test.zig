@@ -55,7 +55,7 @@ test "Hideout's object numbers follow the reference load order" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
     var closed = false;
     defer if (!closed) session.deinit(a);
     const db = &startup.database;

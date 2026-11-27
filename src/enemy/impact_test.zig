@@ -195,7 +195,7 @@ test "wall impact flags positions actors RNG rate and mark replacement" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     session.player.position = .{ .x = 10000, .y = 0, .z = 10000 };
     for (fixture.cases, 0..) |case, index| {
@@ -244,7 +244,7 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const old_sectors = session.level.sectors;
     const old_states = session.scene.sectors;

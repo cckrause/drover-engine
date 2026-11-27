@@ -66,7 +66,7 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
         var startup = try campaign.Startup.prepare(a, system, .good);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, io, data_path, system, &startup);
+        const session = try Session.open(a, @import("../render/test_workspace.zig").get(), io, data_path, system, &startup);
         defer session.deinit(a);
         const audio = try Audio.open(a, io, data_path, system);
         defer audio.deinit();

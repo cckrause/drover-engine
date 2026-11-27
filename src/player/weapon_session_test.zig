@@ -21,7 +21,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);

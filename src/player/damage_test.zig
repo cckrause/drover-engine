@@ -242,7 +242,7 @@ test "fall damage threshold health feedback and dead movement" {
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         const control = look.controlForLife(&packet, true);
-        try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
+        try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
         inventory.player_flags = player.flags;
         _ = try damage.applyMovement(.{ .multiplier = case.multiplier orelse damage_config.multiplier }, &inventory, player.impact, 0, 0.016, &flash, &context, 1000);
         if (player.choreography_input) |value| _ = choreography.select(&player.flags, chors, value);
@@ -295,7 +295,7 @@ test "fall damage threshold health feedback and dead movement" {
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         for ([_]usize{ 0, 2, 10, 11 }) |slot| packet.entries[slot] = .{ .value = 5120, .flags = 0 };
         const control = look.controlForLife(&packet, false);
-        try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+        try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
         if (player.choreography_input) |value| _ = choreography.select(&player.flags, chors, value);
         const actual = MovementState.read(&player, &look);
         actual.hash(&digest);
@@ -374,7 +374,7 @@ test "solid ceiling crushing records and compressed player motion" {
             errdefer std.debug.print("crush ceiling{d} flags{x} frame{d}\n", .{ case.config.ceiling, case.config.sector_flags, frame_index });
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, look.control(&packet), &look, 0.016, &audio);
             _ = try damage.applyMovementWithEnvironment(damage_config, &inventory, player.impact, player.sector_damage, 0.016, &flash, &audio, 1000, .{ .crush_required = player.crush_required, .crush_body = player.crush_body });
             var expected_motion = frame.movement;
             expected_motion.flags &= 0x10003004;

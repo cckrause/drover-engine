@@ -2,7 +2,10 @@
 //! Raising a limit is a deliberate source change. No runtime override or
 //! fallback profile may expand storage after startup.
 
-pub const Profile = enum { original_pc };
+/// `original_pc` is the shipping profile. `development` only has a bigger
+/// heap so the game runs while whole-file loading is still being replaced;
+/// it is not a shipping limit.
+pub const Profile = enum { original_pc, development };
 
 pub const Limits = struct {
     heap_bytes: u64,
@@ -15,6 +18,12 @@ pub const Limits = struct {
 
 pub fn get(profile: Profile) Limits {
     return switch (profile) {
+        .development => development: {
+            var limits = get(.original_pc);
+            // TODO: Remove once archives, patches and movies load in bounded pieces.
+            limits.heap_bytes = 1024 * 1024 * 1024;
+            break :development limits;
+        },
         .original_pc => .{
             // Usable managed heap capacity; excludes process and host overhead.
             .heap_bytes = 64 * 1024 * 1024,

@@ -180,7 +180,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     try host.beginHost(a, testing.io, path, system);
     const log_level = testing.log_level;
     testing.log_level = .err;
-    const host_level_open = Session.open(a, testing.io, path, system, &host);
+    const host_level_open = Session.open(a, @import("render/test_workspace.zig").get(), testing.io, path, system, &host);
     testing.log_level = log_level;
     const host_level = try host_level_open;
     defer host_level.deinit(a);
@@ -246,7 +246,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
 
     try joiner.beginJoinedLevel();
     try testing.expectEqualStrings("LOADING LEVEL", std.mem.sliceTo(&joiner.loading.text, 0));
-    const join_level = try Session.open(a, testing.io, path, system, &joiner);
+    const join_level = try Session.open(a, @import("render/test_workspace.zig").get(), testing.io, path, system, &joiner);
     defer join_level.deinit(a);
     try joiner.endJoinedLevel();
     joiner.networkLevelLoaded();

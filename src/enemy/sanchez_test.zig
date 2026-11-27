@@ -205,7 +205,7 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         const initial = case.initial;
         var particle: @import("../render/objects.zig").Actor = .{ .costume = &blood_costume, .sector = 0, .position = projectionPoint(initial.position_bits), .yaw = 0, .flags = initial.flags, .secondary_flags = 0, .height = @bitCast(initial.height_bits), .collision_radius = @bitCast(initial.radius_bits), .scale_x = @bitCast(initial.scale_bits[0]), .scale_y = @bitCast(initial.scale_bits[1]), .choreography = 0, .frame = 0, .angle_offset = 0 };
         var motion: blood.State = .{ .velocity = projectionPoint(initial.velocity_bits) };
-        const world = @import("physics.zig").World{ .allocator = a, .level = &blood_level, .scene = &blood_scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .blood } };
+        const world = @import("physics.zig").World{ .level = &blood_level, .scene = &blood_scene, .angles = &angles, .actors = .{ .entries = &.{} }, .contact_stack = .{ .residue = &residue, .caller = .blood } };
         if (reveal) {
             const start = particle.position;
             _ = try blood.tick(&particle, &motion, world, 0.2);

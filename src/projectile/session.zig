@@ -6,6 +6,7 @@
 //! lowest priority.
 
 const std = @import("std");
+const lab = @import("../assets/lab.zig");
 const runtime = @import("runtime.zig");
 const Item = @import("../assets/item.zig").Item;
 const Actor = @import("../render/objects.zig").Actor;
@@ -59,7 +60,8 @@ fn Contact(comptime Session: type) type {
 
 pub fn configuration(session: anytype, name: []const u8) !*const runtime.Config {
     const a = session.arena.allocator();
-    const path = try runtime.configName(a, name);
+    var path_buffer: runtime.ConfigNameBuffer = undefined;
+    const path = try runtime.configNameInto(&path_buffer, name);
     if (session.projectile_configs.get(path)) |existing| return existing;
     var item = try Item.parse(a, try factory.resource(session, path));
     defer item.deinit();
@@ -99,7 +101,8 @@ pub fn launch(session: anytype, source: usize, owner: runtime.Owner, fraction: f
 pub fn ensureMap(session: anytype, source: usize) !void {
     if (session.projectile_slots[source] != null) return;
     if (source >= session.objects.entries.len) return error.MissingProjectileConfiguration;
-    const path = try std.fmt.allocPrint(session.arena.allocator(), "{s}.ITM", .{std.fs.path.stem(session.objects.entries[source].name)});
+    var path_buffer: lab.NameBuffer = undefined;
+    const path = try lab.printName(&path_buffer, "{s}.ITM", .{std.fs.path.stem(session.objects.entries[source].name)});
     var item = try Item.parse(session.arena.allocator(), try factory.resource(session, path));
     defer item.deinit();
     try initializeMap(session, source, &item);

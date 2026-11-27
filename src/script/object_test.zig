@@ -110,7 +110,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "town");
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const visible = try a.alloc(bool, session.level.sectors.len);
     @memset(visible, false);
@@ -121,7 +121,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
         try town_bottles.append(a, source);
     }
     try std.testing.expectEqual(@as(usize, 11), town_bottles.items.len);
-    _ = try session.loadActorsInSectors(a, visible);
+    _ = try session.loadActorsInSectors(visible);
     for (town_bottles.items) |source| {
         const actor = session.actor_slots[source].?;
         try std.testing.expectEqualStrings("Inv_Object", actor.logic_name);

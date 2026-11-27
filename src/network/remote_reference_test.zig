@@ -65,6 +65,8 @@ test "router sends to and receives from other machines as the reference" {
             try std.testing.expectEqual(int(op, "result"), @as(u32, switch (posted) {
                 .queued, .sent, .multiplexed => 0,
                 .invalid_client, .no_session => 1,
+                // The reference never posts a part too large to multiplex.
+                .too_large => return error.TestUnexpectedResult,
             }));
             try std.testing.expectEqual(op.get("logs").?.array.items.len != 0, posted == .invalid_client);
             var after: [0x800]u8 = undefined;
@@ -134,7 +136,7 @@ test "the router refuses network packets too short to hold what it reads" {
 
         var next: usize = 0;
 
-        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) void {}
+        fn send(_: *anyopaque, _: []const u8, _: ?*const message.Address, _: u32) anyerror!void {}
 
         fn get(_: *anyopaque, buffer: []u8, sender: *message.Address) anyerror!usize {
             if (next == packets.len) return 0;

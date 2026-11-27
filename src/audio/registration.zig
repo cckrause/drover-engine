@@ -29,9 +29,10 @@ pub const Ledger = struct {
     projectile_sounds: std.ArrayList([2]?[]const u8) = .empty,
     audio: ?*Runtime = null,
     flushed: usize = 0,
-    allocator: ?std.mem.Allocator = null,
     phase: enum { level, startup, doors } = .level,
     handles: std.ArrayList(Handle) = .empty,
+    /// Room for every registration and one release of each is kept reserved,
+    /// so releasing never allocates and cannot fail.
     operations: std.ArrayList(union(enum) { register: usize, replace_pickup: usize, release: usize }) = .empty,
 
     const Handle = struct {
@@ -90,7 +91,7 @@ pub const Ledger = struct {
             index -= 1;
             if (self.handles.items[index].phase != .level or self.handles.items[index].default_pickup or self.handles.items[index].released or !std.ascii.eqlIgnoreCase(self.records.items[index].name, name)) continue;
             self.handles.items[index].released = true;
-            self.operations.append(self.allocator.?, .{ .release = index }) catch @panic("sound ownership ledger allocation failed");
+            self.operations.appendAssumeCapacity(.{ .release = index });
             if (self.audio) |audio| {
                 if (self.flushed + 1 == self.operations.items.len) {
                     if (self.handles.items[index].id orelse audio.lookup(name)) |id| audio.releaseRegistration(id);
@@ -112,16 +113,19 @@ pub const Ledger = struct {
     }
 
     pub fn clone(self: Ledger, a: std.mem.Allocator) !Ledger {
-        var copy: Ledger = .{ .allocator = a, .phase = self.phase };
+        var copy: Ledger = .{ .phase = self.phase };
         errdefer copy.deinit(a);
+        try copy.records.ensureTotalCapacity(a, self.records.items.len);
+        try copy.handles.ensureTotalCapacity(a, self.handles.items.len);
+        try copy.operations.ensureTotalCapacity(a, operationCapacity(self.handles.items.len));
         for (self.records.items) |record| {
             var owned = record;
             owned.name = try a.dupe(u8, record.name);
-            try copy.records.append(a, owned);
+            copy.records.appendAssumeCapacity(owned);
         }
-        try copy.handles.appendSlice(a, self.handles.items);
+        copy.handles.appendSliceAssumeCapacity(self.handles.items);
         for (copy.handles.items) |*handle| handle.id = null;
-        try copy.operations.appendSlice(a, self.operations.items);
+        copy.operations.appendSliceAssumeCapacity(self.operations.items);
         return copy;
     }
 
@@ -133,16 +137,20 @@ pub const Ledger = struct {
     }
 
     fn appendRegistration(self: *Ledger, a: std.mem.Allocator, name: []const u8, priority: u8, now: u32, flags: u32, default_pickup: bool) !void {
-        self.allocator = a;
         try self.handles.ensureUnusedCapacity(a, 1);
-        try self.operations.ensureUnusedCapacity(a, 1);
-        try self.records.append(a, .{ .name = try a.dupe(u8, name), .priority = priority, .registered_at = now, .flags = 0x10000 | flags });
+        try self.operations.ensureTotalCapacity(a, operationCapacity(self.handles.items.len + 1));
+        try self.records.ensureUnusedCapacity(a, 1);
+        self.records.appendAssumeCapacity(.{ .name = try a.dupe(u8, name), .priority = priority, .registered_at = now, .flags = 0x10000 | flags });
         self.handles.appendAssumeCapacity(.{ .phase = self.phase, .default_pickup = default_pickup });
         const index = self.records.items.len - 1;
         self.operations.appendAssumeCapacity(if (default_pickup) .{ .replace_pickup = index } else .{ .register = index });
         if (self.audio) |audio| try self.bind(audio);
     }
 };
+
+fn operationCapacity(handles: usize) usize {
+    return handles * 2;
+}
 
 pub fn startup(ledger: *Ledger, a: std.mem.Allocator, system: lab.Archive, now: u32) !void {
     const bytes = try system.find("SOUNDS.LST", 0);
@@ -574,4 +582,43 @@ test "enemy template sound ownership is cached across repeated constructors" {
     var capture: Capture = .{ .allocator = a };
     closeFx(&capture);
     try std.testing.expectEqualDeep(corpus.fx.releases, capture.released.items);
+}
+
+test "releasing registered sounds needs no new storage" {
+    const a = std.testing.allocator;
+    var ledger: Ledger = .{};
+    defer ledger.deinit(a);
+    for ([_][]const u8{ "one.wav", "two.wav", "three.wav" }, 0..) |name, now| try ledger.append(a, name, 64, @intCast(now), 0);
+    const reserved = ledger.operations.capacity;
+    for ([_][]const u8{ "two.wav", "one.wav", "three.wav" }) |name| try std.testing.expect(ledger.releaseIfOwned(name));
+    try std.testing.expect(!ledger.releaseIfOwned("one.wav"));
+    try std.testing.expectEqual(reserved, ledger.operations.capacity);
+    try std.testing.expectEqual(@as(usize, 6), ledger.operations.items.len);
+}
+
+test "a ledger copy that fails part way through keeps nothing" {
+    var ledger: Ledger = .{};
+    defer ledger.deinit(std.testing.allocator);
+    for ([_][]const u8{ "one.wav", "two.wav" }) |name| try ledger.append(std.testing.allocator, name, 64, 0, 0);
+    try std.testing.expect(ledger.releaseIfOwned("one.wav"));
+    const Copy = struct {
+        fn run(a: std.mem.Allocator, source: *const Ledger) !void {
+            var copy = try source.clone(a);
+            defer copy.deinit(a);
+            try std.testing.expect(copy.releaseIfOwned("two.wav"));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Copy.run, .{&ledger});
+}
+
+test "a registration that cannot be stored keeps nothing" {
+    const Register = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var ledger: Ledger = .{};
+            defer ledger.deinit(a);
+            try ledger.append(a, "one.wav", 64, 0, 0);
+            try ledger.replaceDefaultPickup(a, "two.wav", 1);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Register.run, .{});
 }

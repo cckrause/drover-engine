@@ -134,7 +134,7 @@ test "Town and Train missions load actors and advance at every difficulty" {
         defer startup.deinit(allocator);
         try select(&startup, name);
         try startup.finishMovie(true);
-        const session = try @import("../render/session.zig").Session.open(allocator, std.testing.io, path, archive, &startup);
+        const session = try @import("../render/session.zig").Session.open(allocator, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
         defer session.deinit(allocator);
         try std.testing.expectEqualStrings(name, session.level_name);
         if (std.mem.eql(u8, name, "town")) {

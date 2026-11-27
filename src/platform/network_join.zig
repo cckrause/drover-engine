@@ -14,6 +14,7 @@ const enet_driver = @import("enet_driver.zig");
 const mission = @import("mission.zig");
 const sdl = @import("sdl.zig");
 const Session = @import("../render/session.zig").Session;
+const world = @import("../render/backends/software/world.zig");
 const Runtime = @import("../audio/runtime.zig").Runtime;
 const Device = @import("audio.zig").Device;
 const c = sdl.c;
@@ -70,6 +71,7 @@ const Window = struct {
 
 pub fn run(
     a: std.mem.Allocator,
+    render_workspace: *world.Workspace,
     io: std.Io,
     archive: lab.Archive,
     data_path: []const u8,
@@ -97,14 +99,14 @@ pub fn run(
         .archive = archive,
     };
     defer startup.frame_host = null;
-    return joinGame(a, io, archive, data_path, mounts, audio, startup, opener, session_name, &host, persistent) catch |err| switch (err) {
+    return joinGame(a, render_workspace, io, archive, data_path, mounts, audio, startup, opener, session_name, &host, persistent) catch |err| switch (err) {
         error.WindowClosed => .quit,
         error.FrameLimit => .frame_limit,
         else => err,
     };
 }
 
-fn joinGame(a: std.mem.Allocator, io: std.Io, archive: lab.Archive, data_path: []const u8, mounts: *mission.Mounts, audio: *Runtime, startup: *campaign.Startup, opener: *enet_driver.Opener, session_name: []const u8, host: *Window, persistent: Session.PersistentState) !Result {
+fn joinGame(a: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, archive: lab.Archive, data_path: []const u8, mounts: *mission.Mounts, audio: *Runtime, startup: *campaign.Startup, opener: *enet_driver.Opener, session_name: []const u8, host: *Window, persistent: Session.PersistentState) !Result {
     startup.router.now = Window.clock(host);
     const opened = startup.beginJoin(opener.provider(), session_name) catch |err| switch (err) {
         error.CannotOpen, error.UnknownHost, error.NoAnswer, error.Refused => {
@@ -127,10 +129,10 @@ fn joinGame(a: std.mem.Allocator, io: std.Io, archive: lab.Archive, data_path: [
         },
     }
     while (try startup.joinPass(a, io, data_path, archive, &host.keys) != .story) c.SDL_Delay(1);
-    return openLevel(a, io, mounts, audio, startup, host, persistent);
+    return openLevel(a, render_workspace, io, mounts, audio, startup, host, persistent);
 }
 
-fn openLevel(a: std.mem.Allocator, io: std.Io, mounts: *mission.Mounts, audio: *Runtime, startup: *campaign.Startup, host: *Window, persistent: Session.PersistentState) !Result {
+fn openLevel(a: std.mem.Allocator, render_workspace: *world.Workspace, io: std.Io, mounts: *mission.Mounts, audio: *Runtime, startup: *campaign.Startup, host: *Window, persistent: Session.PersistentState) !Result {
     audio.stopAll();
     try host.device.sync(audio);
     const level_entry = startup.currentEvent() orelse return error.CampaignHasNoLevel;
@@ -138,7 +140,7 @@ fn openLevel(a: std.mem.Allocator, io: std.Io, mounts: *mission.Mounts, audio: *
     try mounts.selectDisc(io, level_entry.disc);
     try audio.remount(io, mounts.path(), mounts.system());
     try startup.beginJoinedLevel();
-    const session = try Session.openWithState(a, io, mounts.path(), mounts.system(), startup, Window.clock(host), persistent);
+    const session = try Session.openWithState(a, render_workspace, io, mounts.path(), mounts.system(), startup, Window.clock(host), persistent);
     errdefer session.deinit(a);
     try startup.endJoinedLevel();
     return .{ .level = session };

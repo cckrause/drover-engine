@@ -67,12 +67,14 @@ pub const Definition = struct {
         const fields = if (variant) |*value| value else &item;
         const stem = try costumeBasename(fields.animation);
         var costume_name = try a.dupe(u8, try std.fmt.bufPrint(&path, "{s}.NWX", .{stem}));
+        errdefer a.free(costume_name);
         if (weapon) {
             if (stem.len == 0) return error.InvalidInventoryCostume;
             const character_name = try std.fmt.bufPrint(&path, "{c}J{s}.NWX", .{ stem[0], stem[1..] });
             if (try resource(archives, character_name) != null) {
+                const replacement = try a.dupe(u8, character_name);
                 a.free(costume_name);
-                costume_name = try a.dupe(u8, character_name);
+                costume_name = replacement;
             }
         }
         var no_show = false;
@@ -92,12 +94,10 @@ pub const Definition = struct {
         };
         const use_success_sound = if (weapon) null else try fields.stringValue("SND_USE_S");
         const use_failure_sound = if (weapon) null else try fields.stringValue("SND_USE_F");
-        return .{
-            .name = try a.dupe(u8, item.name),
+        var result: Definition = .{
+            .name = "",
             .function = native,
-            .native_name = try a.dupe(u8, item.function),
             .wax_available = wax_available,
-            .health_sound = if (native == .health_object) (if (try fields.stringValue("SOUND_0")) |value| try a.dupe(u8, value) else null) else null,
             .item_class = class,
             .count = if (weapon) 1 else fields.intValue("COUNT") orelse 0,
             .max_count = fields.intValue("MAX_COUNT") orelse 1,
@@ -106,15 +106,37 @@ pub const Definition = struct {
             .no_drop = !weapon and @as(u8, @truncate(@as(u32, @bitCast(fields.intValue("NO_DROP") orelse 0)))) != 0,
             .flags = if (weapon) 0 else short(fields.intValue("FLAGS") orelse 0),
             .use_id = if (weapon) 0 else fields.intValue("USE_ID") orelse 0,
-            .use_success_sound = if (use_success_sound) |name_value| try a.dupe(u8, name_value) else null,
-            .use_failure_sound = if (use_failure_sound) |name_value| try a.dupe(u8, name_value) else null,
-            .ground_item = if (try fields.stringValue("GROUND_ITEM")) |name_value| try a.dupe(u8, try costumeBasename(name_value)) else "",
-            .ammo = if (weapon) try a.dupe(u8, (try fields.stringValue("AMMO")) orelse "") else "",
             .capacity = if (weapon) fields.intValue("SHOT_CAPACITY") orelse 0 else 0,
             .infinite = native == .weapon_fist_handler or native == .weapon_tnt_handler or native == .weapon_knife_handler,
-            .costume = costume_name,
-            .weapon = if (weapon) try @import("weapon_config.zig").Config.load(a, fields) else null,
         };
+        // The costume name stays with its own cleanup until the end.
+        errdefer result.deinit(a);
+        result.name = try a.dupe(u8, item.name);
+        result.native_name = try a.dupe(u8, item.function);
+        if (native == .health_object) if (try fields.stringValue("SOUND_0")) |value| {
+            result.health_sound = try a.dupe(u8, value);
+        };
+        if (use_success_sound) |name_value| result.use_success_sound = try a.dupe(u8, name_value);
+        if (use_failure_sound) |name_value| result.use_failure_sound = try a.dupe(u8, name_value);
+        if (try fields.stringValue("GROUND_ITEM")) |name_value| result.ground_item = try a.dupe(u8, try costumeBasename(name_value));
+        if (weapon) result.ammo = try a.dupe(u8, (try fields.stringValue("AMMO")) orelse "");
+        if (weapon) result.weapon = try @import("weapon_config.zig").Config.load(a, fields);
+        result.costume = costume_name;
+        return result;
+    }
+
+    /// Frees the strings `load` made with the same allocator.
+    pub fn deinit(self: *Definition, a: std.mem.Allocator) void {
+        a.free(self.name);
+        a.free(self.native_name);
+        inline for (.{ "health_sound", "use_success_sound", "use_failure_sound" }) |field| {
+            if (@field(self, field)) |value| a.free(value);
+        }
+        a.free(self.ground_item);
+        a.free(self.ammo);
+        a.free(self.costume);
+        if (self.weapon) |*config| config.deinit(a);
+        self.* = .{ .name = "", .function = self.function, .item_class = 0, .count = 0, .max_count = 0, .slot = null, .no_show = false, .no_drop = false, .flags = 0, .use_id = 0 };
     }
 };
 
@@ -1105,4 +1127,19 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     inventory.health = 0;
     try std.testing.expect(try inventory.take(&fractional_pickup, 0, &effects));
     try std.testing.expectEqual(@as(u32, 0x3f666667), @as(u32, @bitCast(inventory.health)));
+}
+
+test "a definition that fails part way through keeps none of its strings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const archives = try testArchives(arena.allocator());
+    const Load = struct {
+        fn run(a: std.mem.Allocator, sources: []const lab.Archive, name: []const u8) !void {
+            var definition = try Definition.load(a, sources, name);
+            definition.deinit(a);
+        }
+    };
+    for ([_][]const u8{ "IRIFLE", "IDOCBAG", "IDYNAM" }) |name| {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, Load.run, .{ @as([]const lab.Archive, &archives), name });
+    }
 }

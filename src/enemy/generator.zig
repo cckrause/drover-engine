@@ -418,7 +418,7 @@ test "generator sound allocation and driver failure match the reference" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, system, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     for (fixture.value.cases) |case| {
         const name = try std.fmt.allocPrint(session.arena.allocator(), "{s}.ITM", .{case.name});

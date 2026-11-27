@@ -83,7 +83,7 @@ test "live collision dispatch wakes every enemy wrapper and preserves Sanchez ga
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const source = for (session.targets, 0..) |target, index| {
         if (target != null) break index;
@@ -135,7 +135,7 @@ test "player noise preserves radii recipient masks and synchronous order" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     try enemy_session.preload(session, a);
     var sources: std.ArrayList(usize) = .empty;
@@ -212,7 +212,7 @@ test "live Hideout session schedules enemies and completes death playback" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     try enemy_session.preload(session, a);
     const Fixture = struct {
@@ -267,7 +267,7 @@ test "left turn and strafe then walk toward Hideout road enemy keeps alerts live
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const road_enemy = for (session.objects.entries, 0..) |object, index| {
         if (object.id == 0x2f07d) break index;
@@ -331,7 +331,7 @@ test "map scenery and pickups receive sector removal before appended actors" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const source = for (session.actor_slots, session.targets, 0..) |slot, target, index| {
         if (slot != null and target == null) break index;
@@ -384,7 +384,7 @@ test "corpse construction follows independent outer resource after restore" {
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
     for (corpus.cases) |case| {
-        const session = try Session.open(a, std.testing.io, path, archive, &startup);
+        const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
         defer session.deinit(a);
         session.animation_time = 1000;
         const source = (try enemy_session.spawnItem(session, "BGY1", .{ .position = .{ .x = 100, .y = 0, .z = 0 }, .sector = session.player.sector })).?;

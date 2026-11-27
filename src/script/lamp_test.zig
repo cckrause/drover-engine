@@ -48,7 +48,7 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
         var startup = try @import("../campaign.zig").Startup.prepare(a, system, .good);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, path, system, &startup);
+        const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
         defer session.deinit(a);
         const source: usize = for (session.actor_slots, 0..) |slot, index| {
             if (slot != null) break index;

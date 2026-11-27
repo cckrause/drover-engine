@@ -209,3 +209,53 @@ test "OPTIONS frames, focus, settings and sounds match the reference" {
         _ = case.writes;
     }
 }
+
+const FailingPage = struct {
+    fail_on: dialog.Message,
+
+    fn page(self: *FailingPage) dialog.Page {
+        return .{ .context = self, .call = call };
+    }
+
+    fn call(context: *anyopaque, _: *dialog.Dialog, message: dialog.Message, _: u32, value: i32) anyerror!void {
+        const self: *FailingPage = @ptrCast(@alignCast(context));
+        if (message == self.fail_on and (message != .focus or value == 1)) return error.PageFailed;
+    }
+};
+
+test "a dialog that fails to open or close still frees its widgets and restores shared focus" {
+    const a = std.testing.allocator;
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", a, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer a.free(bytes);
+    const archive = try lab.Archive.init(bytes);
+    const fonts = try dialog.Fonts.load(archive);
+    var cursor = try nwx.Costume.parse(a, try archive.find("CURSOR.NWX", 0x57415846));
+    defer cursor.deinit();
+    var palette: [256]u32 = @splat(0);
+    const records = [_]dialog.Record{.{ .kind = .button, .id = 7, .rect = .{ .top = 0, .left = 0, .height = 10, .width = 10 } }};
+    var shared = dialog.Shared{};
+
+    var parent: dialog.Dialog = undefined;
+    var quiet = FailingPage{ .fail_on = .step };
+    try parent.open(a, archive, &shared, null, quiet.page(), &records, &fonts, &cursor, null, null, &palette, .{});
+    parent.background_loaded = true;
+    const parent_focus = shared.focus;
+    try std.testing.expect(parent_focus != null);
+
+    var child: dialog.Dialog = undefined;
+    var focus_fails = FailingPage{ .fail_on = .focus };
+    try std.testing.expectError(error.PageFailed, child.open(a, archive, &shared, &parent, focus_fails.page(), &records, &fonts, &cursor, null, null, &palette, .{}));
+    try std.testing.expectEqual(parent_focus, shared.focus);
+    try std.testing.expectEqual(@as(i32, 0), shared.depth);
+    try std.testing.expect(parent.background_loaded);
+
+    var close_fails = FailingPage{ .fail_on = .close };
+    try child.open(a, archive, &shared, &parent, close_fails.page(), &records, &fonts, &cursor, null, null, &palette, .{});
+    try std.testing.expectError(error.PageFailed, child.close());
+    try std.testing.expectEqual(parent_focus, shared.focus);
+    try std.testing.expectEqual(@as(i32, 0), shared.depth);
+    _ = try parent.close();
+}

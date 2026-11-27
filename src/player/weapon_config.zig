@@ -44,17 +44,30 @@ pub const Config = struct {
 
     pub fn clone(self: Config, a: std.mem.Allocator) !Config {
         var result = self;
-        inline for (.{ "scope_item", "reload_sound", "extra_sound", "projectile" }) |name| {
-            @field(result, name) = if (@field(self, name)) |value| try a.dupe(u8, value) else null;
+        inline for (single_strings) |name| @field(result, name) = null;
+        inline for (mode_strings) |name| @field(result, name) = @splat(null);
+        errdefer result.deinit(a);
+        inline for (single_strings) |name| {
+            if (@field(self, name)) |value| @field(result, name) = try a.dupe(u8, value);
         }
-        inline for (.{ "fire_sound", "empty_sound", "action_sound" }) |name| {
-            for (@field(self, name), 0..) |value, i| @field(result, name)[i] = if (value) |text| try a.dupe(u8, text) else null;
+        inline for (mode_strings) |name| {
+            for (@field(self, name), 0..) |value, i| {
+                if (value) |text| @field(result, name)[i] = try a.dupe(u8, text);
+            }
         }
         return result;
     }
 
+    /// Frees the strings `load` or `clone` made with the same allocator.
+    pub fn deinit(self: *Config, a: std.mem.Allocator) void {
+        inline for (single_strings) |name| if (@field(self, name)) |value| a.free(value);
+        inline for (mode_strings) |name| for (@field(self, name)) |value| if (value) |text| a.free(text);
+        self.* = .{};
+    }
+
     pub fn load(a: std.mem.Allocator, item: *const Item) !Config {
         var result: Config = .{};
+        errdefer result.deinit(a);
         result.rest = short(item.intValue("REST_CHOR") orelse 0);
         result.reload = short(item.intValue("RELOAD_CHOR") orelse 0);
         result.extra = short(item.intValue("EXTRA_CHOR") orelse 0);
@@ -102,6 +115,9 @@ pub const Config = struct {
     }
 };
 
+const single_strings = .{ "scope_item", "reload_sound", "extra_sound", "projectile" };
+const mode_strings = .{ "fire_sound", "empty_sound", "action_sound" };
+
 fn short(value: i32) i16 {
     return @truncate(value);
 }
@@ -128,5 +144,21 @@ test "weapon metadata rejects invalid floating point conversions" {
     try std.testing.expectEqual(@as(f32, -0.2), config.kick);
     try std.testing.expectEqual(@as(f32, -3), config.modes[0].mass);
     item.fields[0].value = .{ .float = std.math.floatMax(f32) };
+    try std.testing.expectError(error.InvalidWeaponKick, Config.load(std.testing.allocator, &item));
+}
+
+test "a weapon definition that fails part way through keeps none of its strings" {
+    var item = try Item.parse(std.testing.allocator, "ITEM 1.0\nDATA 4\nSTR SCOPE_ITEM ISCOPE\nSTR FIRE_SOUND_1 bang.wav\nSTR PROJECTILE PDYNAM\nFLOAT KICK_AMOUNT 0.3\n");
+    defer item.deinit();
+    const Load = struct {
+        fn run(a: std.mem.Allocator, source: *const Item) !void {
+            var config = try Config.load(a, source);
+            defer config.deinit(a);
+            var copy = try config.clone(a);
+            copy.deinit(a);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Load.run, .{&item});
+    item.fields[3].value = .{ .float = std.math.floatMax(f32) };
     try std.testing.expectError(error.InvalidWeaponKick, Config.load(std.testing.allocator, &item));
 }

@@ -63,7 +63,7 @@ test "inventory selection health use and drops match player/ execution" {
         defer if (startup) |*owned| owned.deinit(a);
         const session: ?*Session = if (has_drop) blk: {
             _ = try startup.?.levelForDiagnostics();
-            const live = try Session.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[2], &startup.?);
+            const live = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archives[2], &startup.?);
             live.player.position = .{ .x = 0, .y = 0, .z = 0 };
             live.level.sectors[live.player.sector].floor.height = 0;
             live.level.sectors[live.player.sector].ceiling.height = 20;

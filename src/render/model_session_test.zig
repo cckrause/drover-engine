@@ -38,7 +38,7 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
         defer startup.deinit(a);
         try @import("../platform/mission.zig").select(&startup, case.mission);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, io, path, archive, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), io, path, archive, &startup);
         defer session.deinit(a);
         const source = for (session.objects.entries, 0..) |object, index| {
             if (object.id == case.id) break index;
@@ -49,7 +49,7 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
         defer a.free(requested);
         @memset(requested, false);
         requested[sector] = true;
-        _ = try session.loadActorsInSectors(a, requested);
+        _ = try session.loadActorsInSectors(requested);
         try std.testing.expect(session.actor_slots[source].?.model != null);
         try std.testing.expect(session.actor_slots[source].?.costume == null);
         try std.testing.expectEqual(case.radius, session.actor_slots[source].?.collision_radius);

@@ -142,7 +142,7 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
         scene.sectors = (&state)[0..1];
         var collision_check: u32 = 0;
         scene.collision_check = &collision_check;
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{} } };
         var random: u32 = 0x742389ac;
         var particle = try blood.spawn(&costume, &random, 0, fromBits(case.position_bits), 1000);
         particle.state.velocity = .{ .x = 0, .y = 0, .z = 0 };
@@ -163,7 +163,7 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     _ = try session.render(a, pixels, session.animation_time);

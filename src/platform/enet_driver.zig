@@ -98,7 +98,7 @@ pub const JoinOptions = struct {
 
 pub const OpenError = error{ CannotOpen, UnknownHost, NoAnswer, Refused, OutOfMemory };
 
-pub const SendError = error{ SessionEnded, BadLength };
+pub const SendError = error{ SessionEnded, BadLength, OutOfMemory, SendFailed, InboxFull };
 
 pub const JoinState = enum { waiting, joined, refused };
 
@@ -131,6 +131,9 @@ pub const Session = struct {
     name: [49]u8 = @splat(0),
     description: [description_limit]u8 = undefined,
     description_length: usize = 0,
+    /// A send the host made on its own (a relay, a welcome, a leave notice)
+    /// that failed; the next receive reports it.
+    failure: ?SendError = null,
 
     pub fn host(allocator: std.mem.Allocator, options: HostOptions) OpenError!Session {
         var address = std.mem.zeroes(c.ENetAddress);
@@ -238,19 +241,33 @@ pub const Session = struct {
         const must = flags & contract.must_arrive != 0 and !everyone;
         const target: u32 = if (everyone) 0 else idOf(to.?) orelse return;
         if (target == self.own) {
-            if (!self.inbox.full()) self.inbox.push(addressOf(self.own), data);
+            // A must-arrive message to this machine cannot be dropped quietly.
+            if (self.inbox.full()) return if (must) error.InboxFull else {};
+            self.inbox.push(addressOf(self.own), data);
             return;
         }
+        // Every player still gets the message when one send fails; the first
+        // failure is reported afterwards.
+        var failure: ?SendError = null;
         if (self.hosting) {
             for (self.players.items) |player| {
-                if (target == 0 or player.id == target) post(player.peer, kind_message, self.own, data, must);
+                if (target == 0 or player.id == target) post(player.peer, kind_message, self.own, data, must) catch |err| {
+                    if (failure == null) failure = err;
+                };
             }
-        } else if (self.server) |server| post(server, kind_message, target, data, must);
+        } else if (self.server) |server| post(server, kind_message, target, data, must) catch |err| {
+            failure = err;
+        };
         c.enet_host_flush(self.enet);
+        if (failure) |err| return err;
     }
 
-    pub fn receive(self: *Session, buffer: []u8, sender: *Address) error{BufferTooSmall}!usize {
+    pub fn receive(self: *Session, buffer: []u8, sender: *Address) (error{BufferTooSmall} || SendError)!usize {
         self.service(0);
+        if (self.failure) |err| {
+            self.failure = null;
+            return err;
+        }
         const waiting = self.inbox.peek() orelse return 0;
         const length: usize = waiting.length;
         if (buffer.len < length) return error.BufferTooSmall;
@@ -274,6 +291,7 @@ pub const Session = struct {
     pub fn service(self: *Session, wait_ms: u32) void {
         if (self.hosting) self.answerDiscovery();
         var wait = wait_ms;
+        // At most one inbox of messages is taken from the network per call.
         while (!self.inbox.full()) {
             var event: c.ENetEvent = undefined;
             if (c.enet_host_service(self.enet, &event, wait) <= 0) return;
@@ -293,6 +311,10 @@ pub const Session = struct {
         const slots = try allocator.alloc(Waiting, contract.waiting_messages);
         errdefer allocator.free(slots);
         const enet = c.enet_host_create(address, peers, channels, 0, 0) orelse return error.CannotOpen;
+        // A peer may hold back no more than an inbox of messages while they
+        // are put together. Oversized messages still arrive and are refused
+        // by the driver, so they cannot block the rest of that peer's channel.
+        enet.*.maximumWaitingData = contract.waiting_messages * (header + contract.max_data);
         return .{ .allocator = allocator, .enet = enet, .hosting = false, .own = 0, .inbox = .{ .slots = slots } };
     }
 
@@ -310,9 +332,9 @@ pub const Session = struct {
         try self.describe(data);
     }
 
-    fn driverSend(context: *anyopaque, data: []const u8, to: ?*const Address, flags: u32) void {
+    fn driverSend(context: *anyopaque, data: []const u8, to: ?*const Address, flags: u32) anyerror!void {
         const self: *Session = @ptrCast(@alignCast(context));
-        self.send(data, to, @truncate(flags)) catch {};
+        return quietAfterEnd(self.send(data, to, @truncate(flags)));
     }
 
     fn driverGet(context: *anyopaque, buffer: []u8, sender: *Address) anyerror!usize {
@@ -325,7 +347,8 @@ pub const Session = struct {
         var incoming: [64]u8 = undefined;
         var buffer = c.ENetBuffer{ .data = &incoming, .dataLength = incoming.len };
         var from = std.mem.zeroes(c.ENetAddress);
-        while (true) {
+        // Requests beyond one inbox's worth wait for the next pass.
+        for (0..contract.waiting_messages) |_| {
             const n = c.enet_socket_receive(self.discovery, &from, &buffer, 1);
             if (n <= 0) return;
             if (n != 4 or !std.mem.eql(u8, incoming[0..4], "OLD1")) continue;
@@ -352,13 +375,13 @@ pub const Session = struct {
                 if (to == 0 or to == host_id) self.inbox.push(addressOf(from), body);
                 if (to == host_id) return;
                 for (self.players.items) |player| {
-                    if (if (to == 0) player.id != from else player.id == to) post(player.peer, kind_message, from, body, must);
+                    if (if (to == 0) player.id != from else player.id == to) self.postOwn(player.peer, kind_message, from, body, must);
                 }
             },
             c.ENET_EVENT_TYPE_DISCONNECT, c.ENET_EVENT_TYPE_DISCONNECT_TIMEOUT => {
                 const gone = self.forget(event.peer) orelse return;
                 self.inbox.push(addressOf(gone), contract.player_gone);
-                for (self.players.items) |player| post(player.peer, kind_left, gone, "", true);
+                for (self.players.items) |player| self.postOwn(player.peer, kind_left, gone, "", true);
             },
             else => {},
         }
@@ -368,8 +391,14 @@ pub const Session = struct {
         if (asked != protocol or self.next_id == std.math.maxInt(u32)) return c.enet_peer_disconnect_now(peer, 0);
         self.players.append(self.allocator, .{ .id = self.next_id, .peer = peer }) catch return c.enet_peer_disconnect_now(peer, 0);
         c.enet_peer_timeout(peer, 0, contract.silence_ms, contract.silence_ms);
-        post(peer, kind_welcome, self.next_id, "", true);
+        self.postOwn(peer, kind_welcome, self.next_id, "", true);
         self.next_id += 1;
+    }
+
+    fn postOwn(self: *Session, peer: *c.ENetPeer, kind: u8, id: u32, data: []const u8, must: bool) void {
+        post(peer, kind, id, data, must) catch |err| {
+            if (self.failure == null) self.failure = err;
+        };
     }
 
     fn joinerEvent(self: *Session, event: *const c.ENetEvent) void {
@@ -458,9 +487,9 @@ pub const Opener = struct {
         try self.session.?.describe(data);
     }
 
-    fn send(context: *anyopaque, data: []const u8, to: ?*const Address, flags: u32) void {
+    fn send(context: *anyopaque, data: []const u8, to: ?*const Address, flags: u32) anyerror!void {
         const self: *Opener = @ptrCast(@alignCast(context));
-        self.session.?.send(data, to, @truncate(flags)) catch {};
+        return quietAfterEnd(self.session.?.send(data, to, @truncate(flags)));
     }
 
     fn get(context: *anyopaque, buffer: []u8, sender: *Address) anyerror!usize {
@@ -589,13 +618,25 @@ fn messageBody(bytes: []const u8) ?[]const u8 {
     return if (bytes[0] == kind_message) bytes[header..] else null;
 }
 
-fn post(peer: *c.ENetPeer, kind: u8, id: u32, data: []const u8, must: bool) void {
-    const packet = c.enet_packet_create(null, header + data.len, if (must) c.ENET_PACKET_FLAG_RELIABLE else 0) orelse return;
+/// The game learns that a session ended from the session-ended packet, so a
+/// send after that is not a failure.
+fn quietAfterEnd(result: SendError!void) SendError!void {
+    result catch |err| if (err != error.SessionEnded) return err;
+}
+
+/// A peer that is already disconnecting gets nothing; its leaving reaches
+/// the game as a player-gone message.
+fn post(peer: *c.ENetPeer, kind: u8, id: u32, data: []const u8, must: bool) error{ OutOfMemory, SendFailed }!void {
+    if (peer.state != c.ENET_PEER_STATE_CONNECTED) return;
+    const packet = c.enet_packet_create(null, header + data.len, if (must) c.ENET_PACKET_FLAG_RELIABLE else 0) orelse return error.OutOfMemory;
     const bytes = packet.*.data[0 .. header + data.len];
     bytes[0] = kind;
     std.mem.writeInt(u32, bytes[1..5], id, .little);
     @memcpy(bytes[header..], data);
-    if (c.enet_peer_send(peer, if (must) channel_must_arrive else channel_may_be_lost, packet) < 0) c.enet_packet_destroy(packet);
+    if (c.enet_peer_send(peer, if (must) channel_must_arrive else channel_may_be_lost, packet) < 0) {
+        c.enet_packet_destroy(packet);
+        return error.SendFailed;
+    }
 }
 
 fn receiveSoon(all: []const *Session, from: *Session, buffer: []u8, sender: *Address) ![]u8 {
@@ -810,10 +851,10 @@ test "the host turns away strangers and throws away broken packets" {
     var joiner = try joinSoon(&server);
     defer closeSoon(&server, &joiner);
     const peer = joiner.server.?;
-    post(peer, kind_welcome, 1, "", true);
-    post(peer, kind_left, 1, "", true);
-    post(peer, kind_message, 0, "", true);
-    post(peer, 'G', 0, "data", true);
+    try post(peer, kind_welcome, 1, "", true);
+    try post(peer, kind_left, 1, "", true);
+    try post(peer, kind_message, 0, "", true);
+    try post(peer, 'G', 0, "data", true);
     const short = c.enet_packet_create("M", 1, c.ENET_PACKET_FLAG_RELIABLE).?;
     try testing.expectEqual(0, c.enet_peer_send(peer, channel_must_arrive, short));
     const long = c.enet_packet_create(null, header + contract.max_data + 1, c.ENET_PACKET_FLAG_RELIABLE).?;

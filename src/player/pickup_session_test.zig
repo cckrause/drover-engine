@@ -59,7 +59,7 @@ test "Hideout pickup session dispatches real canteen and ammunition contacts" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, io, data_path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), io, data_path, system, &startup);
     defer session.deinit(a);
     const initial_player = session.player;
     const canteen = try objectIndex(session, 0x36bc8);

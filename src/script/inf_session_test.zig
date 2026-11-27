@@ -36,7 +36,7 @@ test "Hideout activation ray matches 320 reference traces" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB", archive, &startup);
     defer session.deinit(a);
     for (fixture.value.cases, 0..) |case, index| {
         var player = session.player;
@@ -65,7 +65,7 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     session.player.sector = 337;
     session.player.position = .{ .x = 429.5, .y = 0, .z = 211.5 };
@@ -110,7 +110,7 @@ test "Hideout automatic swinging door opens and closes through queued messages" 
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try std.testing.expectEqual(@as(usize, 32), session.inf.elevators.len);
     try std.testing.expectEqual(@as(u32, 0xf03a2f29), session.contact_state.random);
@@ -146,7 +146,7 @@ test "Hideout INF selected keys retain success and failure sound requests" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     const brass = for (session.level.sectors, 0..) |sector, i| {
         if (std.mem.eql(u8, sector.name, "MHBRASS")) break i;
@@ -180,7 +180,7 @@ test "Train starting room door and first moving-ground gap work with audio" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);
@@ -257,7 +257,7 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
     defer startup.deinit(a);
     try @import("../platform/mission.zig").select(&startup, "train");
     try startup.finishMovie(true);
-    const session = try Session.open(a, std.testing.io, path, system, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, system, &startup);
     defer session.deinit(a);
     try placeAtTrainDoor(session);
     const pixels = try a.alloc(u8, 640 * 480);

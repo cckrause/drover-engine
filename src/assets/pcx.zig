@@ -3,9 +3,15 @@
 //! The row length in the header is ignored; a run that crosses a row
 //! boundary is cut there rather than carried into the next row. The 768-byte
 //! palette is read from the end of the file and its marker byte is accepted
-//! whatever it says.
+//! whatever it says. Images are refused before decoding when they are larger
+//! than any the game ships or their encoded bytes cannot fill them.
 
 const std = @import("std");
+
+/// The largest image in the shipped archives is 640x480.
+pub const max_pixels = 640 * 480;
+/// One encoded run covers at most this many pixels.
+const max_run = 0x3f;
 
 pub const Image = struct {
     width: usize,
@@ -33,6 +39,11 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (x_max < x_min or y_max < y_min) return error.InvalidPcxDimensions;
     const width = @as(usize, x_max) - x_min + 1;
     const height = @as(usize, y_max) - y_min + 1;
+    if (@as(u64, width) * height > max_pixels) return error.PcxTooLarge;
+    // Every row needs at least one encoded byte per run, and the palette
+    // takes the last 769 bytes.
+    if (height * ((width + max_run - 1) / max_run) > data.len - 128 - 769)
+        return error.TruncatedPcx;
 
     const pixels = try allocator.alloc(u8, width * height);
     errdefer allocator.free(pixels);
@@ -85,6 +96,20 @@ test "row limits discard run excess and ignore bytesPerLine" {
     try std.testing.expectEqual(@as(usize, 2), image.height);
     try std.testing.expectEqualSlices(u8, &.{ 7, 7, 7, 9, 9, 9 }, image.pixels);
     try std.testing.expectEqual(@as(u32, 0x563412), image.palette[0]);
+}
+
+test "images larger than the shipped ones or too short to fill are refused first" {
+    var data = [_]u8{0} ** (128 + 4 + 769);
+    @memcpy(data[0..4], &[_]u8{ 10, 5, 1, 8 });
+    data[65] = 1;
+    std.mem.writeInt(u16, data[8..10], 0xffff, .little);
+    std.mem.writeInt(u16, data[10..12], 0xffff, .little);
+    try std.testing.expectError(error.PcxTooLarge, decode(std.testing.failing_allocator, &data));
+    std.mem.writeInt(u16, data[8..10], 639, .little);
+    std.mem.writeInt(u16, data[10..12], 479, .little);
+    try std.testing.expectError(error.TruncatedPcx, decode(std.testing.failing_allocator, &data));
+    std.mem.writeInt(u16, data[8..10], 640, .little);
+    try std.testing.expectError(error.PcxTooLarge, decode(std.testing.failing_allocator, &data));
 }
 
 test "malformed runs cannot consume palette bytes and unsupported planes fail" {

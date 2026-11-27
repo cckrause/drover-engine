@@ -20,7 +20,7 @@ fn liveSaveRoundTrip(a: std.mem.Allocator, io: std.Io, path: []const u8, archive
     try @import("../platform/mission.zig").select(&startup, level_name);
     const event = try startup.levelForDiagnostics();
     try mounts.selectDisc(io, event.disc);
-    const old = try Session.openWithState(a, io, mounts.path(), mounts.system(), &startup, 90000, .{});
+    const old = try Session.openWithState(a, @import("../render/test_workspace.zig").get(), io, mounts.path(), mounts.system(), &startup, 90000, .{});
     defer old.deinit(a);
     const audio = try Runtime.open(a, io, mounts.path(), mounts.system());
     defer audio.deinit();
@@ -69,6 +69,11 @@ fn liveSaveRoundTrip(a: std.mem.Allocator, io: std.Io, path: []const u8, archive
     defer a.free(encoded);
     try std.testing.expect(!old.inventory.sheriff_task_linked);
     try std.testing.expectEqual(@as(?u32, 92000), old.inventory.sheriff_due);
+    // A second save of the same level adds nothing to the level's storage.
+    const level_storage = old.arena.queryCapacity();
+    const again = try game.write(a, old, &startup, audio, mounts.active, old.animation_time, "MODULE TEST".* ++ [_]u8{0} ** 4, .{ .width = 2, .height = 2, .pixels = &.{ 1, 2, 3, 4 } });
+    a.free(again);
+    try std.testing.expectEqual(level_storage, old.arena.queryCapacity());
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     var reader: stream.Reader = .{ .bytes = encoded };
@@ -77,7 +82,7 @@ fn liveSaveRoundTrip(a: std.mem.Allocator, io: std.Io, path: []const u8, archive
     var resumed = try campaign.Startup.restore(a, archive, difficulty, saved.recipe.?.filename, saved.recipe.?.ordinal);
     defer resumed.deinit(a);
     try old.closeSounds();
-    const fresh = try Session.openForRestore(a, io, mounts.path(), mounts.system(), &resumed, saved.clock, old.persistentState());
+    const fresh = try Session.openForRestore(a, @import("../render/test_workspace.zig").get(), io, mounts.path(), mounts.system(), &resumed, saved.clock, old.persistentState());
     defer fresh.deinit(a);
     try fresh.bindAudio(audio);
     try game.readBody(fresh, &resumed, audio, &reader, saved);
@@ -169,9 +174,9 @@ test "campaign opens all nine levels across both discs" {
             try mounts.selectDisc(io, event.disc);
             disc_two = disc_two or mounts.active == 2;
             const session = (if (carry) |*state|
-                Session.openWithCampaignState(a, io, mounts.path(), mounts.system(), &startup, @intCast(count * 90000), .{}, state)
+                Session.openWithCampaignState(a, @import("../render/test_workspace.zig").get(), io, mounts.path(), mounts.system(), &startup, @intCast(count * 90000), .{}, state)
             else
-                Session.openWithState(a, io, mounts.path(), mounts.system(), &startup, 0, .{})) catch |err| {
+                Session.openWithState(a, @import("../render/test_workspace.zig").get(), io, mounts.path(), mounts.system(), &startup, 0, .{})) catch |err| {
                 std.debug.print("campaign open {s}, disc{d}: {s}\n", .{ event.name, event.disc, @errorName(err) });
                 if (err == error.ResourceNotFound) if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
                 failures += 1;
@@ -183,7 +188,7 @@ test "campaign opens all nine levels across both discs" {
             const visible = try a.alloc(bool, session.level.sectors.len);
             defer a.free(visible);
             @memset(visible, true);
-            _ = session.loadActors(a, visible, true) catch |err| {
+            _ = session.loadActors(visible, true) catch |err| {
                 std.debug.print("campaign actors {s}, disc{d}: {s}\n", .{ event.name, event.disc, @errorName(err) });
                 failures += 1;
                 count += 1;

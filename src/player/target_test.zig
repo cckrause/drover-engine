@@ -131,7 +131,7 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try @import("../render/session.zig").Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try @import("../render/session.zig").Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     _ = try session.render(a, pixels, 0);
@@ -153,7 +153,7 @@ test "Hideout pistol routes ray hit through queued enemy damage" {
     const visible = try a.alloc(bool, session.level.sectors.len);
     @memset(visible, false);
     visible[expected.sector] = true;
-    _ = try session.loadActorsInSectors(a, visible);
+    _ = try session.loadActorsInSectors(visible);
     const source_index = for (session.objects.entries, 0..) |object, index| {
         if (object.id == expected.victim_id) break index;
     } else return error.MissingReferenceShotTarget;

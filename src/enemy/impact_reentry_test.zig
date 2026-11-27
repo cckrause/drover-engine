@@ -170,7 +170,7 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const old_sectors = session.level.sectors;
     const old_states = session.scene.sectors;
@@ -299,7 +299,7 @@ test "alternating player and enemy pellets share the shared random stream" {
     var startup = try @import("../campaign.zig").Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const old_sectors = session.level.sectors;
     const old_states = session.scene.sectors;

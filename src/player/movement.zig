@@ -189,13 +189,11 @@ pub const Player = struct {
         return true;
     }
 
-    pub fn tick(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32) !void {
-        return self.tickWithAudio(allocator, level, scene, actors, angles, control, look, seconds, null);
+    pub fn tick(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32) !void {
+        return self.tickWithAudio(level, scene, actors, angles, control, look, seconds, null);
     }
 
-    pub fn tickWithAudio(self: *Player, allocator: std.mem.Allocator, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32, audio: ?*player_audio.Context) !void {
-        // TODO: drop this parameter from `tick` and its callers; movement doesn't allocate anymore.
-        _ = allocator;
+    pub fn tickWithAudio(self: *Player, level: *const level_asset.Level, scene: *const scene_module.Scene, actors: collision.Actors, angles: *const camera.Angles, control: input.Control, look: *input.LookState, seconds: f32, audio: ?*player_audio.Context) !void {
         if (!std.math.isFinite(seconds) or seconds < 0) return error.InvalidPlayerTick;
         if (seconds == 0) {
             self.contact_residue.invalidateProjection();
@@ -846,7 +844,7 @@ fn checkWaterReference(fixture_path: []const u8) !void {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             effects.clearRetainingCapacity();
-            player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context) catch |err| {
+            player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context) catch |err| {
                 std.debug.print("wading case {s} frame {d}: {s}\n", .{ case.name, frame_index, @errorName(err) });
                 return err;
             };
@@ -888,7 +886,7 @@ fn checkWaterReference(fixture_path: []const u8) !void {
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (case.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
-            try std.testing.expectError(error.CapturedOriginalBubbleBoundary, player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context));
+            try std.testing.expectError(error.CapturedOriginalBubbleBoundary, player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, 0.016, &context));
             try std.testing.expectEqualDeep(expected, captured.value.?);
         }
     }
@@ -971,7 +969,7 @@ test "player audio matches 539 frames and rolls back failed movement" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, case.seconds, &context);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, case.seconds, &context);
             var frame: [8]u8 = undefined;
             std.mem.writeInt(u32, frame[0..4], @bitCast(sound_state.tired_elapsed), .little);
             std.mem.writeInt(u32, frame[4..8], @intCast(effects.items.len), .little);
@@ -1007,20 +1005,20 @@ test "player audio matches 539 frames and rolls back failed movement" {
     var loaded = [_]bool{false};
     const before = player;
     const before_look = look;
-    try std.testing.expectError(error.CollisionActorsNotLoaded, player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context));
+    try std.testing.expectError(error.CollisionActorsNotLoaded, player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context));
     try std.testing.expectEqualDeep(before, player);
     try std.testing.expectEqualDeep(before_look, look);
     try std.testing.expectEqual(@as(f32, 1.49), sound_state.tired_elapsed);
     try std.testing.expectEqual(@as(usize, 1), effects.items.len);
     loaded[0] = true;
-    try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context);
+    try player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .loaded_sectors = &loaded }, &angles, control, &look, 0.016, &context);
     try std.testing.expectEqual(@as(usize, 2), effects.items.len);
     try std.testing.expect(std.ascii.eqlIgnoreCase("LAND.WAV", effects.items[1].sound.basename));
     player = before;
     player.velocity.y = -46;
     player.energy = 0;
     sound_state.tired_elapsed = 1.49;
-    try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
+    try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016, &context);
     try std.testing.expectEqual(@as(f32, 46), player.impact);
     try std.testing.expectEqual(@as(f32, 0), sound_state.tired_elapsed);
     try std.testing.expectEqual(@as(usize, 4), effects.items.len);
@@ -1112,7 +1110,7 @@ test "player integrator agrees across archived physics control sequences" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+            try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
             const words = [_]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z), @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z), @bitCast(@as(i32, player.pitch)), @bitCast(@as(i32, player.yaw)), @bitCast(@as(i32, player.head_yaw)), @bitCast(player.eye_height), @bitCast(player.body_height), @bitCast(player.floor_cache), @bitCast(player.energy), @bitCast(player.head_bob), @bitCast(player.stride), player.flags, @bitCast(look.pitch_accumulator) };
             for (words) |word| {
                 var encoded: [4]u8 = undefined;
@@ -1142,7 +1140,7 @@ test "player integrator agrees across archived physics control sequences" {
         var packet: input.Packet = .{};
         packet.entries[23] = .{ .value = 100, .flags = 0x20 };
         const control = look.control(&packet);
-        try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+        try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
         try std.testing.expectEqual(pin.position, [3]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z) });
         try std.testing.expectEqual(pin.velocity, [3]u32{ @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z) });
         try std.testing.expectEqual(pin.bob, @as(u32, @bitCast(player.head_bob)));
@@ -1213,7 +1211,7 @@ test "player integrator agrees across archived physics control sequences" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (frame.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, active_level, active_scene, .{ .entries = &.{} }, &angles, control, &look, @bitCast(frame.seconds));
+            try player.tick(active_level, active_scene, .{ .entries = &.{} }, &angles, control, &look, @bitCast(frame.seconds));
             const actual = State{
                 .sector = player.sector,
                 .position = .{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z) },
@@ -1290,7 +1288,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (chunk.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
             const control = look.control(&packet);
-            try player.tick(a, &level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
+            try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
             const words = [_]u32{ @bitCast(player.position.x), @bitCast(player.position.y), @bitCast(player.position.z), @bitCast(player.velocity.x), @bitCast(player.velocity.y), @bitCast(player.velocity.z), @bitCast(@as(i32, player.pitch)), @bitCast(@as(i32, player.yaw)), @bitCast(@as(i32, player.head_yaw)), @bitCast(player.eye_height), @bitCast(player.body_height), @bitCast(player.floor_cache), @bitCast(player.energy), @bitCast(player.head_bob), @bitCast(player.stride), player.flags & 0x2004, @bitCast(look.pitch_accumulator), @intCast(player.sector), @bitCast(player.weapon_offset[0]), @bitCast(player.weapon_offset[1]) };
             for (words) |word| {
                 var encoded: [4]u8 = undefined;
@@ -1318,7 +1316,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
         var sound_state: player_audio.State = .{};
         var context: player_audio.Context = .{ .config = &config, .state = &sound_state, .effects = &effects };
         effects.clearRetainingCapacity();
-        try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{} }, &angles, .{}, &look, 0.016, &context);
+        try player.tickWithAudio(&level, &scene, .{ .entries = &.{} }, &angles, .{}, &look, 0.016, &context);
         const expected: usize = if (sector == 70 and velocity == -10) 0 else 1;
         try std.testing.expectEqual(expected, effects.items.len);
         if (expected != 0) {

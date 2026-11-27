@@ -94,12 +94,12 @@ test "session drains older WAX selections before queued enemy damage" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     const sectors = try a.alloc(bool, session.level.sectors.len);
     @memset(sectors, false);
     sectors[expected.sector] = true;
-    _ = try session.loadActorsInSectors(a, sectors);
+    _ = try session.loadActorsInSectors(sectors);
     const source = for (session.objects.entries, 0..) |object, index| {
         if (object.id == expected.victim_id) break index;
     } else return error.MissingReferenceFifoTarget;

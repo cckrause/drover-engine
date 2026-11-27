@@ -231,10 +231,15 @@ pub const Dialog = struct {
         display: *const [256]u32,
         mouse: Input,
     ) !void {
+        const parent_loaded = if (parent) |p| [2]bool{ p.background_loaded, p.highlight_loaded } else undefined;
         if (parent) |p| {
             p.background_loaded = false;
             p.highlight_loaded = false;
         }
+        errdefer if (parent) |p| {
+            p.background_loaded = parent_loaded[0];
+            p.highlight_loaded = parent_loaded[1];
+        };
         self.* = .{
             .allocator = a,
             .shared = shared,
@@ -254,6 +259,12 @@ pub const Dialog = struct {
         };
         shared.depth += 1;
         errdefer shared.depth -= 1;
+        // Callbacks below can move the shared focus onto widgets that a
+        // failed open frees again.
+        errdefer {
+            shared.focus = self.saved_focus;
+            shared.handler = self.saved_handler;
+        }
         shared.lock = false;
         errdefer self.freeImages();
         if (background) |name| {
@@ -293,8 +304,10 @@ pub const Dialog = struct {
         self.buttons = mouse.buttons;
     }
 
+    /// Frees the widgets and restores the shared state even when the page's
+    /// close callback fails; that error is returned afterwards.
     pub fn close(self: *Dialog) !i32 {
-        try self.page.send(self, .close, 0, 0);
+        const closed = self.page.send(self, .close, 0, 0);
         for (self.widgets) |*widget| self.freeWidget(widget);
         self.allocator.free(self.widgets);
         self.widgets = &.{};
@@ -302,6 +315,7 @@ pub const Dialog = struct {
         self.shared.focus = self.saved_focus;
         self.shared.handler = self.saved_handler;
         self.shared.depth -= 1;
+        try closed;
         return self.result;
     }
 
@@ -318,7 +332,8 @@ pub const Dialog = struct {
         };
         freeLines(self.allocator, data, 0);
         data.bottom_up = bottom_up;
-        for (lines) |line| try data.items.append(self.allocator, try self.allocator.dupe(u8, line));
+        try data.items.ensureUnusedCapacity(self.allocator, lines.len);
+        for (lines) |line| data.items.appendAssumeCapacity(try self.allocator.dupe(u8, line));
     }
 
     pub fn prependLine(self: *Dialog, id: u32, line: []const u8) !void {

@@ -24,7 +24,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), io, path, archive, &startup);
     defer session.deinit(a);
     const original_player = session.player;
     const pixels = try a.alloc(u8, 640 * 480);

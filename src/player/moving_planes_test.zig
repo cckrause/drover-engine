@@ -177,7 +177,7 @@ test "moving planes player transport jump and ceiling relative response" {
             var packet: input.Packet = .{};
             packet.entries[23] = .{ .value = 100, .flags = 0x20 };
             for (frame.slots) |slot| packet.entries[@intCast(slot[0])] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
-            try player.tickWithAudio(a, &level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, config.seconds, &audio);
+            try player.tickWithAudio(&level, &scene, .{ .entries = &.{}, .runtime = &runtime }, &angles, look.control(&packet), &look, config.seconds, &audio);
             var expected = frame.movement;
             expected.flags &= 0x10003004;
             try std.testing.expectEqualDeep(expected, Motion.read(player, look));
@@ -213,7 +213,7 @@ test "moving planes player transport jump and ceiling relative response" {
         scene.collision_check = &collision_check;
         var elevators = try classes(a, case.classes);
         var runtime: runtime_module.Context = .{ .inventory = &inventory, .pickups = &.{}, .removed = &.{}, .now_ms = 1000, .effects = &effects, .contact_state = &native, .inf = &elevators, .level = &level };
-        const world = physics.World{ .allocator = a, .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{}, .runtime = &runtime } };
+        const world = physics.World{ .level = &level, .scene = &scene, .angles = &angles, .actors = .{ .entries = &.{}, .runtime = &runtime } };
         var random = config.seed;
         var particle = try blood.spawn(&costume, &random, 0, point(config.position), 1000);
         particle.state.velocity = point(config.velocity);

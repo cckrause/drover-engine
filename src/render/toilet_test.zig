@@ -26,7 +26,7 @@ test "Hideout toilet seat jumps cross the dry opening and return with audio and 
         var startup = try campaign.Startup.prepare(a, system, .good);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, path, system, &startup);
         defer session.deinit(a);
         const audio = try audio_runtime.Runtime.open(a, std.testing.io, path, system);
         defer audio.deinit();

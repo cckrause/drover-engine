@@ -5,6 +5,7 @@
 //! object.
 
 const std = @import("std");
+const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
 const Object = @import("../assets/level.zig").Object;
 const Actor = @import("../render/objects.zig").Actor;
@@ -38,11 +39,12 @@ pub fn resource(session: anytype, name: []const u8) ![]const u8 {
 
 pub fn model(session: anytype, name: []const u8) !*Model {
     const a = session.arena.allocator();
-    const key = try std.ascii.allocUpperString(a, name);
+    var key_buffer: lab.NameBuffer = undefined;
+    const key = try lab.upperName(&key_buffer, name);
     if (session.models.get(key)) |value| return value;
     const value = try a.create(Model);
     value.* = try Model.parse(a, try resource(session, name), &.{ session.object_archive, session.texture_archive, session.system_archive });
-    try session.models.put(key, value);
+    try session.models.put(try a.dupe(u8, key), value);
     return value;
 }
 
@@ -57,7 +59,8 @@ pub fn bareModel(session: anytype, loaded: *const Model, place: lifecycle.Placem
 fn spawnWith(session: anytype, name: []const u8, place: lifecycle.Placement, given: ?u32) !?usize {
     const a = session.arena.allocator();
     const basename = std.fs.path.stem(std.fs.path.basename(name));
-    const path = try std.fmt.allocPrint(a, "{s}.ITM", .{basename});
+    var path_buffer: lab.NameBuffer = undefined;
+    const path = try lab.printName(&path_buffer, "{s}.ITM", .{basename});
     const bytes = resource(session, path) catch |err| switch (err) {
         error.ResourceNotFound => null,
         else => return err,

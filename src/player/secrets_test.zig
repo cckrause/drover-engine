@@ -60,7 +60,7 @@ test "Hideout secret discovery updates the live HUD once and retains primary fla
     var startup = try campaign.Startup.prepare(a, archive, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, path, archive, &startup);
+    const session = try Session.open(a, @import("../render/test_workspace.zig").get(), std.testing.io, path, archive, &startup);
     defer session.deinit(a);
     try std.testing.expectEqual(@as(u32, 4), session.secrets.total);
     const sector = session.player.sector;

@@ -40,7 +40,7 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         var startup = try campaign.Startup.prepare(a, system, case[0]);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), io, data_path, system, &startup);
         defer session.deinit(a);
         session.view.bottom = 479;
         try std.testing.expect(session.actors.len >= case[1]);
@@ -55,7 +55,10 @@ test "all three campaign difficulties retain the full-viewport world rendering r
         try std.testing.expectEqualSlices(u8, &expected, &actual);
         try std.testing.expectEqual(@as(usize, 65), session.rendered_sector_visits);
         @memset(pixels, 17);
-        _ = try session.renderWorld(a, pixels, 0);
+        // A frame that reveals nothing new allocates nothing at all.
+        const level_storage = session.arena.queryCapacity();
+        _ = try session.renderWorld(std.testing.failing_allocator, pixels, 0);
+        try std.testing.expectEqual(level_storage, session.arena.queryCapacity());
         std.crypto.hash.sha2.Sha256.hash(pixels, &actual, .{});
         try std.testing.expectEqualSlices(u8, &expected, &actual);
         const yaw = session.player.yaw;
@@ -91,7 +94,7 @@ test "campaign HUD and weapon use the reference viewport and independently rende
         var startup = try campaign.Startup.prepare(a, system, case[0]);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
         defer session.deinit(a);
         try std.testing.expectEqual(@as(i32, 439), session.view.bottom);
         try std.testing.expectEqual(@as(i32, 240), session.view.center_y);
@@ -124,7 +127,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     session.view.bottom = 479;
     for (session.scene.sectors) |*sector| {
@@ -134,7 +137,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
     @memset(pixels, 0);
-    var frame = try @import("backends/software/world.zig").Frame.init(a, &session.view, &session.angles, &session.level, &session.scene, session.textures, pixels, .{
+    var frame = try @import("backends/software/world.zig").Frame.init(session.render_workspace, &session.view, &session.angles, &session.level, &session.scene, session.textures, pixels, .{
         .force_depth = 0,
         .depth_bias = 0,
         .depth_strength = 0,
@@ -192,7 +195,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const instance = for (session.texture_animations.instances) |*instance| {
         if (instance.target.wall != null and instance.slot == 1 and std.ascii.eqlIgnoreCase(session.level.textures[instance.resource], "HAWIN2.ATX")) break instance;
@@ -243,7 +246,7 @@ test "player input advances the loaded level and updates the software camera" {
     var startup = try campaign.Startup.prepare(a, system, .good);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const before = session.player.position;
     var input: @import("../player/input.zig").State = .{ .previous_time = 1000 };
@@ -281,7 +284,7 @@ test "walking past adjoining Hideout sectors keeps collision and rendering activ
     var startup = try campaign.Startup.prepare(a, system, .bad);
     defer startup.deinit(a);
     _ = try startup.levelForDiagnostics();
-    const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+    const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
     defer session.deinit(a);
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
@@ -313,7 +316,7 @@ test "backward walking and left strafing reveal animated decorations after turni
         var startup = try campaign.Startup.prepare(a, system, .good);
         defer startup.deinit(a);
         _ = try startup.levelForDiagnostics();
-        const session = try Session.open(a, std.testing.io, data_path, system, &startup);
+        const session = try Session.open(a, @import("test_workspace.zig").get(), std.testing.io, data_path, system, &startup);
         defer session.deinit(a);
         const pixels = try a.alloc(u8, 640 * 480);
         defer a.free(pixels);

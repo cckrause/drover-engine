@@ -196,7 +196,8 @@ pub const Runtime = struct {
     }
 
     pub fn registerAt(self: *Runtime, name: []const u8, resource_type: u32, priority: u8, now: u32) !u32 {
-        const native_name = if (std.fs.path.extension(name).len == 0) try std.fmt.allocPrint(self.arena.allocator(), "{s}.wav", .{name}) else name;
+        var name_buffer: lab.NameBuffer = undefined;
+        const native_name = if (std.fs.path.extension(name).len == 0) try lab.printName(&name_buffer, "{s}.wav", .{name}) else name;
         const registration = self.lookup(native_name) orelse try self.declare(native_name, resource_type, priority, now);
         const wanted = native_name;
         for (self.names.items, 0..) |stored, i| if (self.registration_ids.items[i] == registration and std.ascii.eqlIgnoreCase(stored, wanted)) return @intCast(i);
