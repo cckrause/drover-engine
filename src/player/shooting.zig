@@ -57,15 +57,12 @@ pub const WallHit = struct {
 
 pub const Hit = union(enum) { actor: ActorHit, wall: WallHit };
 
+/// `events` points into the list handed to `trace`.
 pub const Result = struct {
     hit: ?Hit,
-    events: []interaction.Event,
+    events: []const interaction.Event,
     ceiling: f32,
     floor: f32,
-
-    pub fn deinit(self: Result, a: std.mem.Allocator) void {
-        a.free(self.events);
-    }
 };
 
 const Wall = struct { sector: usize, index: usize };
@@ -205,23 +202,19 @@ pub const ContactVisual = struct {
     }
 };
 
-pub fn trace(a: std.mem.Allocator, level: *const level_module.Level, scene: *const scene_module.Scene, angles: *const camera.Angles, actors: collision.Actors, textures: []const Texture, ray: Ray) !Result {
+/// Fills `events`, which must start empty. Walls the ray has already passed
+/// are remembered through the scene's collision check number.
+pub fn trace(events: *interaction.RayEvents, level: *const level_module.Level, scene: *const scene_module.Scene, angles: *const camera.Angles, actors: collision.Actors, textures: []const Texture, ray: Ray) !Result {
+    std.debug.assert(events.items.len == 0);
     if (ray.sector >= level.sectors.len or !(ray.range > 0) or !std.math.isFinite(ray.range) or
         !std.math.isFinite(ray.origin.x) or !std.math.isFinite(ray.origin.y) or !std.math.isFinite(ray.origin.z)) return error.InvalidShotRay;
     if (ray.kind != 0 and ray.kind != 1) return error.UnsupportedShotKind;
-    var events = std.array_list.Managed(interaction.Event).init(a);
-    errdefer events.deinit();
     const origin = Vec2{ .x = ray.origin.x, .z = ray.origin.z };
     const endpoint = ray.end(angles);
     const target = Vec2{ .x = endpoint.x, .z = endpoint.z };
     const yaw = angles.sinCos(ray.yaw);
-    const offsets = try a.alloc(usize, level.sectors.len + 1);
-    defer a.free(offsets);
-    offsets[0] = 0;
-    for (level.sectors, 0..) |sector, i| offsets[i + 1] = offsets[i] + sector.walls.len;
-    const seen = try a.alloc(bool, offsets[level.sectors.len]);
-    defer a.free(seen);
-    @memset(seen, false);
+    scene.startCollisionCheck();
+    const check = scene.collision_check.*;
     var sector = ray.sector;
     var previous: f32 = -0x1p31;
     var ceiling: f32 = 0x1p31;
@@ -234,7 +227,7 @@ pub fn trace(a: std.mem.Allocator, level: *const level_module.Level, scene: *con
         var hit_point: Vec2 = undefined;
         var distance: f32 = 0x1p31;
         for (level.sectors[sector].walls, scene.sectors[sector].walls, 0..) |wall, state, index| {
-            if (seen[offsets[sector] + index]) continue;
+            if (state.last_collision_check == check) continue;
             const vertices = level.sectors[sector].vertices;
             const point = collision.intersection(origin, target, vertices[wall.v1], vertices[wall.v2]) orelse continue;
             if (origin.x == point.x and origin.z == point.z and 0 <= (@as(f64, target.x) - origin.x) * state.direction.z - (@as(f64, target.z) - origin.z) * state.direction.x) continue;
@@ -246,22 +239,16 @@ pub fn trace(a: std.mem.Allocator, level: *const level_module.Level, scene: *con
                 distance = stored;
             }
         }
-        if (hit_wall == null) return .{ .hit = if (actor_hit) |hit| .{ .actor = hit } else null, .events = try events.toOwnedSlice(), .ceiling = ceiling, .floor = floor };
+        if (hit_wall == null) return .{ .hit = if (actor_hit) |hit| .{ .actor = hit } else null, .events = events.items, .ceiling = ceiling, .floor = floor };
         const hit = hit_wall.?;
         previous = distance;
-        seen[offsets[hit.sector] + hit.index] = true;
         const wall = level.sectors[hit.sector].walls[hit.index];
-        for (mirrors(wall)) |mirror| if (mirror) |m| {
-            seen[offsets[m.sector] + m.index] = true;
-            for (mirrors(level.sectors[m.sector].walls[m.index])) |other| if (other) |s| {
-                seen[offsets[s.sector] + s.index] = true;
-            };
-        };
+        interaction.markPassed(level, scene, .{ .sector = hit.sector, .index = hit.index }, check);
         if (actor_hit) |actor| {
             const dx = @as(f64, hit_point.x) - origin.x;
             const dz = @as(f64, hit_point.z) - origin.z;
             const squared = f(dz * dz + dx * dx);
-            if (actor.distance < @sqrt(@as(f64, squared))) return .{ .hit = .{ .actor = actor }, .events = try events.toOwnedSlice(), .ceiling = ceiling, .floor = floor };
+            if (actor.distance < @sqrt(@as(f64, squared))) return .{ .hit = .{ .actor = actor }, .events = events.items, .ceiling = ceiling, .floor = floor };
         }
         const full_length = length(f(@as(f64, target.x) - origin.x), f(@as(f64, target.z) - origin.z));
         if (full_length == 0) return error.InvalidShotRay;
@@ -292,7 +279,7 @@ pub fn trace(a: std.mem.Allocator, level: *const level_module.Level, scene: *con
                 if (try interaction.overlayAccepts(level, scene, textures, entry.sector, entry.wall.?, along, y)) try events.append(entry);
             };
         }
-        return .{ .hit = .{ .wall = .{ .sector = sector, .index = hit.index, .position = position, .along = along } }, .events = try events.toOwnedSlice(), .ceiling = ceiling, .floor = floor };
+        return .{ .hit = .{ .wall = .{ .sector = sector, .index = hit.index, .position = position, .along = along } }, .events = events.items, .ceiling = ceiling, .floor = floor };
     }
 }
 
@@ -390,10 +377,6 @@ fn playerHit(body: collision.Body, sector: usize, ray: Ray, endpoint: Vec3, sin_
     const top = f(@as(f64, body.position.y) + body.height);
     if (y < body.position.y or top < y) return null;
     return .{ .index = local_player, .position = .{ .x = f(@as(f64, sin_yaw) * along + ray.origin.x), .y = y, .z = f(@as(f64, cos_yaw) * along + ray.origin.z) }, .lateral = -f(normal), .height = f(@as(f64, y) - body.position.y), .distance = along };
-}
-
-fn mirrors(wall: level_module.Wall) [2]?Wall {
-    return .{ if (wall.adjoin >= 0) .{ .sector = @intCast(wall.adjoin), .index = @intCast(wall.mirror) } else null, if (wall.dadjoin >= 0) .{ .sector = @intCast(wall.dadjoin), .index = @intCast(wall.dmirror) } else null };
 }
 
 fn approximateDistance(first: Vec2, last: Vec2) f64 {

@@ -197,7 +197,7 @@ pub const Session = struct {
     player_choreographies: player_choreography.Table = .{},
     player_animation: u32 = 0,
     lobby: ?*@import("../ui/dialog.zig").Dialog = null,
-    remote_players: std.ArrayList(network_actors.RemotePlayer) = .empty,
+    remote_players: session_queues.RemotePlayers,
     start_keys_cleared: bool = false,
     router: *network_router.Router,
     server: *network_server.Server,
@@ -790,7 +790,7 @@ pub const Session = struct {
             bodies.runtime = &runtime;
             bodies.allow_pickups = true;
         }
-        if (alive) try self.activatePlayer(allocator, packet, bodies, &runtime);
+        if (alive) try self.activatePlayer(packet, bodies, &runtime);
         if (alive and seconds != 0 and packet.get(.lamp).flags & player_input.pressed != 0)
             try self.lamp_state.toggle(&self.inventory, &self.lamp_config, &effects);
         if (alive) {
@@ -1567,7 +1567,7 @@ pub const Session = struct {
         self.player_choreographies = .{};
         self.player_animation = 0;
         self.lobby = null;
-        self.remote_players = .empty;
+        self.remote_players = .init(&self.queue_storage.remote_players);
         self.start_keys_cleared = false;
         self.router = &startup.router;
         self.server = &startup.server;
@@ -1800,7 +1800,7 @@ pub const Session = struct {
         self.depth_map = texture.defaultDepthMap();
         self.blend_table = shades.build(self.palette, self.level.shades);
         self.system_archive = system;
-        self.object_logic = try object_logic.Runtime.init(a, system);
+        self.object_logic = try object_logic.Runtime.init(a, system, &self.queue_storage.object_selections);
         self.difficulty_mask = @intFromEnum(startup.difficulty) << 8;
         self.actor_capacity = self.objects.entries.len;
         self.actor_storage = try a.alloc(object_render.Actor, self.actor_capacity);
@@ -2081,8 +2081,9 @@ pub const Session = struct {
             const ray = shooting.Ray{ .sector = shot.sector, .origin = shot.origin, .range = shot.range, .pitch = shot.pitch, .yaw = shot.yaw, .kind = @intFromEnum(shot.kind), .exclude_source = source };
             var actors = self.collisionActors();
             if (source != null) actors.player = enemy_session.playerBody(self);
-            const result = try shooting.trace(a, &self.level, &self.scene, &self.angles, actors, self.textures, ray);
-            defer result.deinit(a);
+            var events_buffer: interaction.RayEventBuffer = undefined;
+            var events = interaction.RayEvents.init(&events_buffer);
+            const result = try shooting.trace(&events, &self.level, &self.scene, &self.angles, actors, self.textures, ray);
             for (result.events) |event| try self.inf.event(&self.level, .{ .sector = event.sector, .wall = event.wall, .mask = event.mask, .object_id = event.object_id, .now_ms = self.animation_time });
             if (result.hit) |hit| {
                 switch (hit) {
@@ -2218,13 +2219,14 @@ pub const Session = struct {
         return level_module.Spawn.fromStart(&self.level, starts[starts.len - 1]);
     }
 
-    fn activatePlayer(self: *Session, allocator: std.mem.Allocator, packet: *const player_input.Packet, actors: @import("../player/collision.zig").Actors, runtime: *script_runtime.Context) !void {
+    fn activatePlayer(self: *Session, packet: *const player_input.Packet, actors: @import("../player/collision.zig").Actors, runtime: *script_runtime.Context) !void {
         for ([_]player_input.Slot{ .use, .nudge }) |slot| {
             if (packet.get(slot).flags & player_input.pressed == 0) continue;
             const id: u32 = if (slot == .use) (try self.inventory.useSelected(runtime.effects) orelse continue) else 0;
-            const events = try interaction.activate(allocator, &self.level, &self.scene, &self.angles, self.textures, &self.player, actors, id);
-            defer allocator.free(events);
-            for (events) |event| try runtime.infEvent(event);
+            var events_buffer: interaction.RayEventBuffer = undefined;
+            var events = interaction.RayEvents.init(&events_buffer);
+            try interaction.activate(&events, &self.level, &self.scene, &self.angles, self.textures, &self.player, actors, id);
+            for (events.items) |event| try runtime.infEvent(event);
         }
     }
 

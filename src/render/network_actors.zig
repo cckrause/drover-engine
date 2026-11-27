@@ -423,7 +423,7 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
     session.actor_numbers[source] = value.number;
     session.database.set(value.number, .{ .actor = source }, session.animation_time);
     session.syncActor(source);
-    try session.remote_players.append(session.arena.allocator(), .{ .source = source, .record = record });
+    try session.remote_players.append(.{ .source = source, .record = record });
     router.clients[client].player = .{ .code = std.ascii.toUpper(value.costume[0]), .flags = actor.secondary_flags };
     router.clients[client].in_level = true;
     try session.database.rebuildPlayers(router, session.mode, session.game_type, session.animation_time);

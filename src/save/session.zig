@@ -42,7 +42,7 @@ pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
             try writer.boolean(session.server_enabled);
         },
         .level => try level_save.write(session, writer, audio),
-        .gen => try enemy_save.writeGenWithAudio(writer, session.generators, ids, audio),
+        .gen => try enemy_save.writeGenWithAudio(writer, &session.generators, ids, audio),
         .db => {
             try writer.marker(0x426c6157, 1, 0);
             try writer.marker(0x42636553, 1, 0);

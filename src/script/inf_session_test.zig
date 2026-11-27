@@ -44,9 +44,10 @@ test "Hideout activation ray matches 320 reference traces" {
         player.position = .{ .x = @bitCast(case.position_bits[0]), .y = @bitCast(case.position_bits[1]), .z = @bitCast(case.position_bits[2]) };
         player.yaw = case.yaw;
         player.body_height = @bitCast(case.height_bits);
-        const actual = try interaction.activate(a, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = &.{} }, case.object_id);
-        defer a.free(actual);
-        std.testing.expectEqualDeep(case.events, actual) catch |err| {
+        var events_buffer: interaction.RayEventBuffer = undefined;
+        var events = interaction.RayEvents.init(&events_buffer);
+        try interaction.activate(&events, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = &.{} }, case.object_id);
+        std.testing.expectEqualDeep(case.events, events.items) catch |err| {
             std.debug.print("reference activation ray case{d}, sector{d}, yaw{d}\n", .{ index, case.sector, case.yaw });
             return err;
         };

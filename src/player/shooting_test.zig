@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const shooting = @import("shooting.zig");
+const interaction = @import("../script/interaction.zig");
 const level_module = @import("../assets/level.zig");
 const scene_module = @import("../render/scene.zig");
 const initial_state = @import("../render/initial_state.zig");
@@ -123,7 +124,9 @@ test "Hideout hitscan and enemy damage match the reference" {
         const actors = try a.alloc(Actor, sample.actors.len);
         for (sample.actors, actors) |source, *actor| actor.* = makeActor(source);
         const ray = shooting.Ray{ .sector = sample.sector, .origin = point(sample.origin), .range = sample.range, .pitch = sample.pitch, .yaw = sample.yaw };
-        const result = try shooting.trace(a, &level, &scene, &angles, .{ .entries = actors }, &.{}, ray);
+        var events_buffer: interaction.RayEventBuffer = undefined;
+        var events = interaction.RayEvents.init(&events_buffer);
+        const result = try shooting.trace(&events, &level, &scene, &angles, .{ .entries = actors }, &.{}, ray);
         errdefer std.debug.print("reference shot ray sample {d}, yaw {d}, pitch {d}\n", .{ sample_index, sample.yaw, sample.pitch });
         try std.testing.expectEqual(sample.end_bits, bitPattern(ray.end(&angles)));
         try std.testing.expectEqual(sample.ceiling_bits, @as(u32, @bitCast(result.ceiling)));
@@ -232,7 +235,9 @@ test "sector relinks and player insertion retain equal-distance ray winner" {
                 }
             }.before);
             const player = case.actors[player_source];
-            const result = try shooting.trace(a, &level, &scene, &angles, .{ .entries = actors, .player = .{ .position = point(player.position), .sector = player.sector, .height = player.height, .radius = player.collision_radius, .flags = player.flags, .secondary_flags = player.secondary_flags, .sector_link_order = orders[player_source] } }, &.{}, .{ .sector = case.sector, .origin = point(case.origin), .range = case.range, .pitch = case.pitch, .yaw = case.yaw });
+            var events_buffer: interaction.RayEventBuffer = undefined;
+            var events = interaction.RayEvents.init(&events_buffer);
+            const result = try shooting.trace(&events, &level, &scene, &angles, .{ .entries = actors, .player = .{ .position = point(player.position), .sector = player.sector, .height = player.height, .radius = player.collision_radius, .flags = player.flags, .secondary_flags = player.secondary_flags, .sector_link_order = orders[player_source] } }, &.{}, .{ .sector = case.sector, .origin = point(case.origin), .range = case.range, .pitch = case.pitch, .yaw = case.yaw });
             const hit = result.hit.?.actor;
             const source = if (hit.index == shooting.local_player) player_source else actors[hit.index].source_index.?;
             try std.testing.expectEqual(case.hit.actor.?, source);
@@ -255,7 +260,8 @@ test "sector relinks and player insertion retain equal-distance ray winner" {
             const indices = try a.alloc(?usize, case.actors.len);
             @memset(indices, null);
             for (actors, 0..) |actor, index| indices[actor.source_index.?] = index;
-            const linked = try shooting.trace(a, &level, &scene, &angles, .{
+            events = interaction.RayEvents.init(&events_buffer);
+            const linked = try shooting.trace(&events, &level, &scene, &angles, .{
                 .entries = actors,
                 .links = &links,
                 .source_to_entry = indices,

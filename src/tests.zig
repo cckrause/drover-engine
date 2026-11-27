@@ -33,6 +33,7 @@ test {
     _ = @import("save/game_test.zig");
     _ = @import("projectile/runtime_test.zig");
     _ = @import("player/inventory_interaction_test.zig");
+    _ = @import("render/play_memory_test.zig");
     _ = @import("enemy/config_test.zig");
     _ = @import("enemy/generator.zig");
     _ = @import("enemy/sanchez_test.zig");

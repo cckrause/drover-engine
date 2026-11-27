@@ -48,10 +48,12 @@ test "actor use rays preserve filters bounds and recipient ordering" {
         for (case.actors, actors, 0..) |value, *actor, source| {
             actor.* = .{ .source_index = source, .sector = value.sector, .position = .{ .x = value.position[0], .y = value.position[1], .z = value.position[2] }, .yaw = 0, .flags = value.flags, .secondary_flags = value.secondary_flags, .scale_x = 1, .scale_y = 1, .height = value.height, .collision_radius = value.radius, .choreography = 0, .frame = 0, .angle_offset = 0 };
         }
-        const actual = try interaction.activate(a, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = actors }, case.ray.object_id);
+        var events_buffer: interaction.RayEventBuffer = undefined;
+        var events = interaction.RayEvents.init(&events_buffer);
+        try interaction.activate(&events, &session.level, &session.scene, &session.angles, session.textures, &player, .{ .entries = actors }, case.ray.object_id);
         var recipients: std.ArrayList(usize) = .empty;
         var geometry: std.ArrayList(interaction.Event) = .empty;
-        for (actual) |event| {
+        for (events.items) |event| {
             if (event.actor) |source| try recipients.append(a, source) else try geometry.append(a, event);
         }
         try std.testing.expectEqualSlices(usize, case.recipients, recipients.items);
