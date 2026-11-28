@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="664" height="208" viewBox="0 0 664 208"><style>
+  text { font-family: -apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;Noto Sans&quot;,Helvetica,Arial,sans-serif; }
+  .card { fill: #ffffff; stroke: #d1d9e0; }
+  .title { font-size: 15px; font-weight: 600; fill: #1f2328; }
+  .text { font-size: 13px; fill: #59636e; }
+  .small { font-size: 12px; fill: #59636e; }
+  .count { font-size: 34px; font-weight: 600; fill: #1f2328; }
+  .track { fill: #d1d9e0; }
+  @media (prefers-color-scheme: dark) {
+    .card { fill: #0d1117; stroke: #3d444d; }
+    .title, .count { fill: #f0f6fc; }
+    .text, .small { fill: #9198a1; }
+    .track { fill: #3d444d; }
+  }
+</style><g transform="translate(0,0)"><rect class="card" x="0.5" y="0.5" width="663" height="99" rx="6"/><circle cx="23" cy="24" r="6" fill="none" stroke="#bf8700" stroke-width="2"/><circle cx="23" cy="24" r="1.6" fill="#bf8700"/><text class="title" x="38" y="29">Multiplayer <tspan class="text" font-weight="400">#2</tspan></text><rect x="533.7" y="14" width="114.3" height="20" rx="10.0" fill="#bf8700" fill-opacity="0.15" stroke="#bf8700" stroke-opacity="0.5"/><text x="590.9" y="28.3" text-anchor="middle" font-size="12" font-weight="600" fill="#bf8700">🏗 In progress</text><text class="text" x="16" y="56">Playable over UDP, free-for-all only.</text><rect class="track" x="16" y="70" width="332.0" height="8" rx="4"/><rect x="16" y="70" width="124.5" height="8" rx="4" fill="#bf8700"/><text class="small" x="360.0" y="78"><tspan font-weight="600">37%</tspan> · 3 done · 5 to do</text></g><g transform="translate(0,108)"><rect class="card" x="0.5" y="0.5" width="663" height="99" rx="6"/><circle cx="23" cy="24" r="6" fill="none" stroke="#bf8700" stroke-width="2"/><circle cx="23" cy="24" r="1.6" fill="#bf8700"/><text class="title" x="38" y="29">Memory: fixed storage from startup <tspan class="text" font-weight="400">#11</tspan></text><rect x="533.7" y="14" width="114.3" height="20" rx="10.0" fill="#bf8700" fill-opacity="0.15" stroke="#bf8700" stroke-opacity="0.5"/><text x="590.9" y="28.3" text-anchor="middle" font-size="12" font-weight="600" fill="#bf8700">🏗 In progress</text><text class="text" x="16" y="56">Drover should reserve all the memory it needs once, when it starts, reuse it while you play,…</text><rect class="track" x="16" y="70" width="332.0" height="8" rx="4"/><rect x="16" y="70" width="192.2" height="8" rx="4" fill="#bf8700"/><text class="small" x="360.0" y="78"><tspan font-weight="600">57%</tspan> · 11 done · 8 to do</text></g></svg>

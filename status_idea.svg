@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="96" viewBox="0 0 140 96"><style>
+  text { font-family: -apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;Noto Sans&quot;,Helvetica,Arial,sans-serif; }
+  .card { fill: #ffffff; stroke: #d1d9e0; }
+  .title { font-size: 15px; font-weight: 600; fill: #1f2328; }
+  .text { font-size: 13px; fill: #59636e; }
+  .small { font-size: 12px; fill: #59636e; }
+  .count { font-size: 34px; font-weight: 600; fill: #1f2328; }
+  .track { fill: #d1d9e0; }
+  @media (prefers-color-scheme: dark) {
+    .card { fill: #0d1117; stroke: #3d444d; }
+    .title, .count { fill: #f0f6fc; }
+    .text, .small { fill: #9198a1; }
+    .track { fill: #3d444d; }
+  }
+</style><rect class="card" x="0.5" y="0.5" width="139" height="95" rx="6"/><rect x="33.1" y="14" width="73.8" height="20" rx="10.0" fill="#8250df" fill-opacity="0.15" stroke="#8250df" stroke-opacity="0.5"/><text x="70.0" y="28.3" text-anchor="middle" font-size="12" font-weight="600" fill="#8250df">💡 Ideas</text><text class="count" x="70.0" y="80" text-anchor="middle">0</text></svg>
