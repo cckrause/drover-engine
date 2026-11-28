@@ -12,6 +12,7 @@ const header = @import("header.zig");
 const stream = @import("stream.zig");
 const Session = @import("../render/session.zig").Session;
 const Runtime = @import("../audio/runtime.zig").Runtime;
+const bits = @import("../util/bits.zig");
 
 fn liveSaveRoundTrip(
     a: std.mem.Allocator,
@@ -81,7 +82,7 @@ fn liveSaveRoundTrip(
     const dirty = old.player.sector;
 
     old.level.sectors[dirty].ambient = 37;
-    old.scene.sectors[dirty].runtime_flags |= 1;
+    old.scene.sectors[dirty].runtime_flags.changed = true;
     old.inf.elevators[0].speed += 0.25;
 
     const speed = old.inf.elevators[0].speed;
@@ -251,14 +252,14 @@ fn expectRestoredNumbers(session: *Session) !void {
         );
 
     for (session.scene.sectors, 0..) |sector, index| {
-        try std.testing.expectEqual(sector.runtime_flags & 0x10 != 0, sector.number != 0);
+        try std.testing.expectEqual(sector.runtime_flags.number_changed, sector.number != 0);
 
         if (sector.number != 0) try std.testing.expect(
             std.meta.eql(session.database.find(sector.number).?, Object{ .sector = index }),
         );
 
         for (sector.walls, 0..) |wall, wall_index| {
-            if (wall.runtime_flags & 8 != 0 and sector.number == 0) try std.testing.expect(
+            if (wall.runtime_flags.number_changed and sector.number == 0) try std.testing.expect(
                 wall.number != 0,
             );
 

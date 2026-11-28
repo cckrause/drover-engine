@@ -9,12 +9,17 @@ const std = @import("std");
 
 const message = @import("message.zig");
 const router_module = @import("router.zig");
+const actor_flags = @import("../actor_flags.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = actor_flags.ActorFlags;
+const ActorKind = actor_flags.ActorKind;
 const Router = router_module.Router;
 
 pub const update_size = 0x3e;
 
 pub const Record = struct {
-    flags: u32 = 1,
+    /// Send at the next chance, even if nothing changed.
+    send_soon: bool = true,
     rate: f32 = 0.2,
     limit: u16 = 0x38e,
     rate2: f32 = 0.2,
@@ -22,8 +27,8 @@ pub const Record = struct {
     made: u32,
     sent: u32 = 0,
     sector: u16 = 0,
-    actor_flags: u32 = 0,
-    entity: u32 = 0,
+    actor_flags: ActorFlags = .{},
+    entity: ActorKind = .{},
     position: [3]f32,
     angles: [3]i16 = @splat(0),
     origin: [3]f32,
@@ -60,8 +65,8 @@ pub const Record = struct {
 
 pub const Actor = struct {
     number: u32,
-    flags: u32,
-    entity: u32,
+    flags: ActorFlags,
+    entity: ActorKind,
     position: [3]f32,
     angles: [3]i16,
     sector: u16,
@@ -79,8 +84,8 @@ pub const Update = struct {
     angles: [3]i16,
     velocity: [3]u32,
     time: u32,
-    actor_flags: u32,
-    entity: u32,
+    actor_flags: ActorFlags,
+    entity: ActorKind,
 };
 
 pub const Change = struct {
@@ -142,7 +147,7 @@ pub const ArchitectureQueue = struct {
             );
 
             std.mem.writeInt(u16, bytes[0x10..0x12], @truncate(index - start), .little);
-            _ = try router.post(destination, 0x80000419, bytes[0 .. length + 0x12]);
+            _ = try router.post(destination, .{ .code = 0x419, .must_arrive = true }, bytes[0 .. length + 0x12]);
         }
 
         self.count = 0;
@@ -171,8 +176,8 @@ pub fn readUpdate(bytes: []const u8) !Update {
             message.get(bytes, 0x2e),
         },
         .time = message.get(bytes, 0x32),
-        .actor_flags = message.get(bytes, 0x36),
-        .entity = message.get(bytes, 0x3a),
+        .actor_flags = bits.from(ActorFlags, message.get(bytes, 0x36)),
+        .entity = bits.from(ActorKind, message.get(bytes, 0x3a)),
     };
 
     for (update.position) |value| if (!std.math.isFinite(
@@ -207,8 +212,8 @@ pub fn sendActor(router: *Router, actor: Actor, now: u32) !void {
     message.set(&bytes, 0x26, actor.velocity[0]);
     message.set(&bytes, 0x2a, @bitCast(vertical));
     message.set(&bytes, 0x2e, actor.velocity[2]);
-    message.set(&bytes, 0x36, actor.flags);
-    message.set(&bytes, 0x3a, actor.entity);
+    message.set(&bytes, 0x36, bits.word(actor.flags));
+    message.set(&bytes, 0x3a, bits.word(actor.entity));
 
     const own = message.addressWord(message.Queue.dead_reckoning, @truncate(router.own_client));
     const word = actor.number & 0x7ff | own;
@@ -216,9 +221,9 @@ pub fn sendActor(router: *Router, actor: Actor, now: u32) !void {
     message.set(&bytes, message.sender_offset, word);
     message.set(&bytes, message.reply_offset, word);
 
-    _ = try router.post(0x200000, 0x418, &bytes);
+    _ = try router.post(0x200000, .{ .code = 0x418 }, &bytes);
     message.set(&bytes, 0x32, now);
-    _ = try router.post(word, 0x418, &bytes);
+    _ = try router.post(word, .{ .code = 0x418 }, &bytes);
 }
 
 pub fn packOne(change: Change, out: []u8) !usize {

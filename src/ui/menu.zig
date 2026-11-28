@@ -10,6 +10,7 @@
 //! of the table, which is how the descriptors express "nothing selected".
 
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
 const lab = @import("../assets/lab.zig");
 const pcx = @import("../assets/pcx.zig");
@@ -58,7 +59,7 @@ pub const Menu = struct {
     mouse_x: i32 = 0,
     mouse_y: i32 = 0,
     mouse_suppressed: bool = true,
-    mouse_buttons: u32 = 0,
+    mouse_buttons: MouseButtons = .{},
     pending_result: ?i32 = null,
     flash_presented_at: ?u32 = null,
     audio_selection: ?i32 = null,
@@ -135,12 +136,12 @@ pub const Menu = struct {
         self.mouseState(x, y, self.mouse_buttons, now);
     }
 
-    pub fn mouseState(self: *Menu, x: i32, y: i32, buttons: u32, now: u32) void {
+    pub fn mouseState(self: *Menu, x: i32, y: i32, buttons: MouseButtons, now: u32) void {
         if (self.pending_result == null) {
-            if (buttons & 1 != 0 and !self.mouse_suppressed and self.selected != -1)
+            if (buttons.left and !self.mouse_suppressed and self.selected != -1)
                 self.beginExit(self.selected);
 
-            if (self.mouse_suppressed and (buttons != 0 or
+            if (self.mouse_suppressed and (buttons.any() or
                 x < self.mouse_x - 5 or x > self.mouse_x + 5 or
                 y < self.mouse_y - 5 or y > self.mouse_y + 5))
                 self.mouse_suppressed = false;
@@ -151,7 +152,7 @@ pub const Menu = struct {
                 self.select(hitTestItems(self.item_defs, x, y), now);
             }
 
-            if ((self.mouse_buttons ^ buttons) & 1 != 0) self.mouse_suppressed = true;
+            if (self.mouse_buttons.left != buttons.left) self.mouse_suppressed = true;
         }
 
         self.mouse_buttons = buttons;
@@ -220,10 +221,10 @@ pub const Menu = struct {
             self.flash_presented_at = now;
     }
 
-    pub fn takeResult(self: *Menu, now: u32, buttons: u32) ?i32 {
+    pub fn takeResult(self: *Menu, now: u32, buttons: MouseButtons) ?i32 {
         const result = self.pending_result orelse return null;
         const started = self.flash_presented_at orelse return null;
-        if (now < started +% 100 or buttons != 0) return null;
+        if (now < started +% 100 or buttons.any()) return null;
 
         self.pending_result = null;
         self.flash_presented_at = null;
@@ -477,24 +478,24 @@ test "mouse button transitions retain suppression and activation order" {
     screen.mouse_x = 100;
     screen.mouse_y = 280;
 
-    screen.mouseState(100, 280, 1, 10);
+    screen.mouseState(100, 280, .{ .left = true }, 10);
 
     try std.testing.expectEqual(@as(i32, 1), screen.selected);
     try std.testing.expect(screen.mouse_suppressed);
     try std.testing.expectEqual(@as(?i32, null), screen.pending_result);
 
-    screen.mouseState(100, 280, 1, 20);
+    screen.mouseState(100, 280, .{ .left = true }, 20);
 
     try std.testing.expect(!screen.mouse_suppressed);
     try std.testing.expectEqual(@as(?i32, null), screen.pending_result);
 
-    screen.mouseState(100, 280, 1, 30);
+    screen.mouseState(100, 280, .{ .left = true }, 30);
     try std.testing.expectEqual(@as(?i32, 1), screen.pending_result);
 
     screen = controlMenu(.main);
     screen.mouse_suppressed = false;
 
-    screen.mouseState(100, 280, 1, 10);
+    screen.mouseState(100, 280, .{ .left = true }, 10);
 
     try std.testing.expectEqual(@as(?i32, 0), screen.pending_result);
     try std.testing.expectEqual(@as(i32, 1), screen.selected);
@@ -503,24 +504,24 @@ test "mouse button transitions retain suppression and activation order" {
 test "confirmation waits for first presentation, 100ms, and all released buttons" {
     var screen = controlMenu(.difficulty);
     screen.enter();
-    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1000, 0));
+    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1000, .{}));
 
     screen.presented(1000);
     screen.tab(false, 1050);
 
     try std.testing.expectEqual(@as(i32, 0), screen.selected);
-    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1099, 0));
+    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1099, .{}));
 
     screen.presented(1100);
 
-    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1100, 4));
-    try std.testing.expectEqual(@as(?i32, 0), screen.takeResult(1101, 0));
-    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1102, 0));
+    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1100, .{ .right = true }));
+    try std.testing.expectEqual(@as(?i32, 0), screen.takeResult(1101, .{}));
+    try std.testing.expectEqual(@as(?i32, null), screen.takeResult(1102, .{}));
 
     screen.escape();
     screen.presented(1200);
 
-    try std.testing.expectEqual(@as(?i32, -1), screen.takeResult(1300, 0));
+    try std.testing.expectEqual(@as(?i32, -1), screen.takeResult(1300, .{}));
     screen = controlMenu(.main);
     screen.escape();
     try std.testing.expectEqual(@as(?i32, null), screen.pending_result);

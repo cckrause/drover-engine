@@ -17,6 +17,10 @@ const model_render = @import("backends/software/model.zig");
 const planes = @import("backends/software/planes.zig");
 const walls = @import("backends/software/walls.zig");
 const scene_module = @import("scene.zig");
+const actor_flags = @import("../actor_flags.zig");
+const bits = @import("../util/bits.zig");
+pub const ActorFlags = actor_flags.ActorFlags;
+pub const ActorKind = actor_flags.ActorKind;
 
 pub const Actor = struct {
     logic_id: u32 = 0,
@@ -47,8 +51,8 @@ pub const Actor = struct {
     yaw: i16,
     pitch: i16 = 0,
     roll: i16 = 0,
-    flags: u32,
-    secondary_flags: u32,
+    flags: ActorFlags,
+    secondary_flags: ActorKind,
     scale_x: f32,
     scale_y: f32,
     height: f32,
@@ -218,7 +222,7 @@ pub const Objects = struct {
         var indices: [256]usize = undefined;
         var count: usize = 0;
         const source = self.context.level.sectors[sector];
-        const other: ?usize = if (source.vadjoin >= 0 and self.context.scene.sectors[sector].flags & 0x80 == 0) @intCast(source.vadjoin) else null;
+        const other: ?usize = if (source.vadjoin >= 0 and !self.context.scene.sectors[sector].flags.underwater) @intCast(source.vadjoin) else null;
 
         for ([_]?usize{ sector, other }) |selected| {
             const own = selected orelse continue;
@@ -298,7 +302,7 @@ pub const Objects = struct {
         const maximum = m.mul(@floatFromInt(@as(i32, depth.maximum) << 12), 0x1p-16);
 
         for (self.collected[0..self.count]) |i| {
-            if (self.actors[i].flags & 4 == 0 or self.actors[i].model != null or maximum <= self.transformed[i].z) continue;
+            if (!self.actors[i].flags.visible or self.actors[i].model != null or maximum <= self.transformed[i].z) continue;
 
             var lighting = self.context.lighting;
             lighting.ambient = m.integer(
@@ -334,14 +338,14 @@ pub const Objects = struct {
         self.transformed_sectors[sector] = true;
 
         if (self.context.native_player) |player| {
-            if (self.context.links.?.player.sector == sector and player.flags & 4 != 0)
+            if (self.context.links.?.player.sector == sector and player.flags.visible)
                 player.transformed = transformPosition(self.context.view, player.position);
         }
 
         var actors = self.sectorActors(sector);
 
         while (actors.next()) |index| {
-            if (self.actors[index].flags & 4 != 0) self.transformActor(index);
+            if (self.actors[index].flags.visible) self.transformActor(index);
         }
     }
 
@@ -356,7 +360,7 @@ pub const Objects = struct {
 
     fn eligible(self: *const Objects, index: usize, left: i32, right: i32) bool {
         const actor = self.actors[index];
-        if (actor.flags & 4 == 0) return false;
+        if (!actor.flags.visible) return false;
         if (actor.model) |model| return model_render.eligible(
             self.context.view,
             self.transformed[index],
@@ -387,8 +391,8 @@ pub const Objects = struct {
         const owner = self.context.level.sectors[actor.sector];
         const owner_flags = self.context.scene.sectors[actor.sector].flags;
         const camera_flags = self.context.scene.sectors[self.context.camera_sector].flags;
-        const water_clip = owner_flags & 0x80 != 0 or owner.vadjoin >= 0;
-        const bounds_sector: usize = if (camera_flags & 0x80 == 0 and owner_flags & 0x80 != 0)
+        const water_clip = owner_flags.underwater or owner.vadjoin >= 0;
+        const bounds_sector: usize = if (!camera_flags.underwater and owner_flags.underwater)
             if (owner.vadjoin >= 0) @intCast(
                 owner.vadjoin,
             ) else return error.WaterObjectWithoutVerticalAdjoin
@@ -401,13 +405,13 @@ pub const Objects = struct {
         try state.validateSlopes();
 
         const ceiling = surfaceHeight(
-            if (state.flags & 0x80000000 != 0) state.ceiling_slope else null,
+            if (state.flags.sloped_ceiling) state.ceiling_slope else null,
             bounds.ceiling.height,
             actor.position,
         );
 
         const floor = surfaceHeight(
-            if (state.flags & 0x40000000 != 0) state.floor_slope else null,
+            if (state.flags.sloped_floor) state.floor_slope else null,
             bounds.floor.height,
             actor.position,
         );
@@ -417,7 +421,7 @@ pub const Objects = struct {
 
         for (frame.parts) |part| {
             const cell = (try actor.sprite()).cells[part.cell];
-            const mirrored = part.flags & 0x100 != 0;
+            const mirrored = part.flags.mirrored;
             const world_height = m.mul(part.height, actor.scale_y);
             const offset_x = m.add(
                 if (mirrored) m.sub(part.width, part.offset_x) else part.offset_x,
@@ -519,13 +523,13 @@ pub const Objects = struct {
             right = @min(right, clip_right);
             var table: ?*const [256]u8 = if (lighting.color_map) |map| if (map.len >= 256) map[0..256] else return error.InvalidColorMap else null;
 
-            if (actor.flags & 8 != 0) table = try lighting.wallTable(point.z, 0);
+            if (actor.flags.shaded) table = try lighting.wallTable(point.z, 0);
 
-            if (actor.secondary_flags & 3 != 0 and table == null) {
+            if (actor.secondary_flags.team & 3 != 0 and table == null) {
                 if (lighting.color_map) |map| table = map[0..256];
             }
 
-            const blend: Blend = if (self.context.blend_table == null) .none else if (actor.secondary_flags & 0x2000000 != 0) if (lighting.ambient < 25) .shadow5 else .shadow1 else if (cell.flags & 0x20 != 0) .colors else .none;
+            const blend: Blend = if (self.context.blend_table == null) .none else if (actor.secondary_flags.shadow) if (lighting.ambient < 25) .shadow5 else .shadow1 else if (cell.flags.translucent) .colors else .none;
             var x = left;
 
             while (x <= right) : ({
@@ -851,7 +855,7 @@ test "local player transform cache follows visible sector traversal" {
         var level: level_module.Level = undefined;
         level.sectors = &sectors;
         var states: [2]scene_module.SectorState = @splat(std.mem.zeroes(scene_module.SectorState));
-        states[0].flags = if (case.water) 0x80 else 0;
+        states[0].flags = .{ .underwater = case.water };
 
         var collision_check: u32 = 0;
         const scene = scene_module.Scene{
@@ -872,7 +876,7 @@ test "local player transform cache follows visible sector traversal" {
             .z = @bitCast(case.position_bits[2]),
         };
 
-        player.flags = case.flags;
+        bits.setWord(&player.flags, case.flags);
         player.transformed = .{ .x = 123, .y = 456, .z = 789 };
 
         const lighting = std.mem.zeroes(walls.Lighting);
@@ -941,7 +945,7 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
 
     for (&texels, 0..) |*byte, i| byte.* = @truncate(i * 17);
 
-    var cells = [_]nwx.Cell{.{ .width = 9, .height = 11, .flags = 0, .pixels = &texels }};
+    var cells = [_]nwx.Cell{.{ .width = 9, .height = 11, .flags = .{}, .pixels = &texels }};
     var parts = [_]nwx.Part{
         .{
             .cell = 0,
@@ -951,7 +955,7 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
             .offset_y = 3.5,
             .width = 3.75,
             .height = 4.25,
-            .flags = 0,
+            .flags = .{},
         },
     };
 
@@ -975,8 +979,8 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
             .sector = 0,
             .position = .{ .x = -0.4, .y = 0.6, .z = 7.25 },
             .yaw = 0,
-            .flags = 12,
-            .secondary_flags = 0,
+            .flags = .{ .visible = true, .shaded = true },
+            .secondary_flags = .{},
             .scale_x = 1.2,
             .scale_y = 0.85,
             .height = 4.25,
@@ -1050,11 +1054,12 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
     for (hashes, 0..) |expected_hash, sample| {
         const water = sample == 3 or sample == 4 or sample >= 8;
 
-        sector_states[0].flags = if (water) 0x80 else 0;
+        sector_states[0].flags = .{ .underwater = water };
         sectors[0].vadjoin = if (water) 1 else -1;
         sectors[1].ceiling.height = if (water) 3 else 8;
         sectors[1].floor.height = if (water) -1 else -4;
-        sector_states[1].flags = if (sample == 8 or sample == 9) 0xc0000000 else 0;
+        const sloped = sample == 8 or sample == 9;
+        sector_states[1].flags = .{ .sloped_floor = sloped, .sloped_ceiling = sloped };
         sector_states[1].ceiling_slope = if (sample >= 8) std.mem.zeroInit(
             scene_module.Slope,
             .{ .coeff_x = 0.1, .coeff_z = -0.05, .constant = 1.5 },
@@ -1065,13 +1070,13 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
             .{ .coeff_x = 0.1, .coeff_z = -0.05, .constant = -0.25 },
         ) else null;
 
-        parts[0].flags = if (sample == 2) 0x100 else 0;
+        parts[0].flags = .{ .mirrored = sample == 2 };
 
         const blend = sample == 6 or sample == 7;
 
-        cells[0].flags = if (blend) 0x20 else 0;
-        actors[0].flags = if (sample == 5) 4 else 12;
-        actors[0].secondary_flags = if (sample == 7) 0x2000000 else 0;
+        cells[0].flags = .{ .translucent = blend };
+        actors[0].flags = .{ .visible = true, .shaded = sample != 5 };
+        actors[0].secondary_flags = .{ .shadow = sample == 7 };
 
         const lighting = walls.Lighting{
             .force_depth = 0,
@@ -1117,7 +1122,7 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
         try std.testing.expectEqualSlices(u8, &expected, &actual);
 
         if (sample == 0) {
-            for ([_]u32{ 0x40000000, 0x80000000 }) |flag| {
+            for ([_]scene_module.SectorFlags{ .{ .sloped_floor = true }, .{ .sloped_ceiling = true } }) |flag| {
                 sector_states[0].flags = flag;
                 try std.testing.expectError(
                     error.MissingSceneSlope,
@@ -1125,7 +1130,7 @@ test "sprite projection, water clipping, strips, mirroring and blending match th
                 );
             }
 
-            sector_states[0].flags = 0;
+            sector_states[0].flags = .{};
         }
     }
 }

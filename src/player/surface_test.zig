@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const level_module = @import("../assets/level.zig");
@@ -17,6 +18,7 @@ const damage = @import("damage.zig");
 const input = @import("input.zig");
 const inventory_module = @import("inventory.zig");
 const movement = @import("movement.zig");
+const bits = @import("../util/bits.zig");
 
 const Motion = struct {
     sector: usize,
@@ -54,7 +56,7 @@ const Motion = struct {
             .head_bob = @bitCast(player.head_bob),
             .weapon_offset = player.weapon_offset,
             .stride = @bitCast(player.stride),
-            .flags = player.flags & 0x10003004,
+            .flags = bits.word(bits.only(player.flags, .{ .on_ground = true, .dying = true, .jumped = true, .dead = true })),
             .pitch_accumulator = look.pitch_accumulator,
         };
     }
@@ -104,8 +106,8 @@ fn compareFrame(
     shriek_name: []const u8,
 ) !void {
     var expected_motion = frame.movement;
-    try std.testing.expectEqual(expected_motion.flags, player.flags);
-    expected_motion.flags &= 0x10003004;
+    try std.testing.expectEqual(expected_motion.flags, bits.word(player.flags));
+    expected_motion.flags = bits.word(bits.only(bits.from(PlayerFlags, expected_motion.flags), .{ .on_ground = true, .dying = true, .jumped = true, .dead = true }));
     try std.testing.expectEqualDeep(expected_motion, Motion.read(player, look));
     const state = frame.state;
 
@@ -180,7 +182,7 @@ fn soundEvent(effect: inventory_module.Effect, shriek_name: []const u8) ![4]u32 
 
     try std.testing.expect(sound.position == null and sound.sector == null);
 
-    return .{ id, @bitCast(sound.priority.?), @bitCast(sound.volume.?), sound.flags.? };
+    return .{ id, @bitCast(sound.priority.?), @bitCast(sound.volume.?), bits.word(sound.flags.?) };
 }
 
 test "dry surface contact damage sounds and death reports" {
@@ -262,7 +264,7 @@ test "dry surface contact damage sounds and death reports" {
         sectors[0].ceiling.height = 30;
         sectors[0].floor_sound = "FLOOR.WAV";
         sectors[0].vadjoin = -1;
-        sectors[0].flags = config.sector_flags;
+        bits.setWord(&sectors[0].flags, config.sector_flags);
         sectors[0].velocity = .{
             .x = config.conveyor[0],
             .y = config.conveyor[1],
@@ -273,7 +275,7 @@ test "dry surface contact damage sounds and death reports" {
         level.sectors = &sectors;
         var sector_states = [_]scene_module.SectorState{std.mem.zeroes(scene_module.SectorState)};
 
-        sector_states[0].flags = config.sector_flags;
+        bits.setWord(&sector_states[0].flags, config.sector_flags);
         sector_states[0].velocity_present = config.conveyor[0] != 0 or config.conveyor[1] != 0 or config.conveyor[2] != 0;
 
         var scene: scene_module.Scene = undefined;
@@ -299,13 +301,13 @@ test "dry surface contact damage sounds and death reports" {
             .z = config.velocity[2],
         };
 
-        player.flags = config.flags;
+        player.flags = bits.from(PlayerFlags, config.flags);
         player.floor_cache = config.floor_cache;
 
         var inventory = inventory_module.Inventory{
             .health = config.health,
             .sheriff_active = config.sheriff != 0,
-            .player_flags = config.flags,
+            .player_flags = bits.from(PlayerFlags, config.flags),
         };
 
         var look: input.LookState = .{};
@@ -323,13 +325,14 @@ test "dry surface contact damage sounds and death reports" {
             effects.clearRetainingCapacity();
             player.dead = inventory.health == 0;
 
-            if (player.dead and player.flags & 4 != 0 and player.flags & 0x10000000 == 0) {
-                player.flags = (player.flags | 0x10000000) & ~@as(u32, 0x20000000);
+            if (player.dead and player.flags.on_ground and !player.flags.dead) {
+                player.flags.dead = true;
+                player.flags.lamp_on = false;
                 player.head_bob = 0;
             }
 
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
             const control = look.controlForLife(&packet, !player.dead);
             try player.tickWithAudio(
                 &level,

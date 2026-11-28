@@ -13,6 +13,7 @@ const scene_module = @import("../render/scene.zig");
 const blood = @import("blood.zig");
 const bubble = @import("bubble.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     position_bits: [3]u32,
@@ -36,10 +37,10 @@ fn check(
 ) !void {
     const playback = actor.playback.?;
     const actual = Snapshot{
-        .position_bits = bits(actor.position),
-        .velocity_bits = bits(state.velocity),
-        .flags = actor.flags,
-        .secondary_flags = actor.secondary_flags,
+        .position_bits = vectorBits(actor.position),
+        .velocity_bits = vectorBits(state.velocity),
+        .flags = bits.word(actor.flags),
+        .secondary_flags = bits.word(actor.secondary_flags),
         .scale_bits = .{ @bitCast(actor.scale_x), @bitCast(actor.scale_y) },
         .height_bits = @bitCast(actor.height),
         .radius_bits = @bitCast(actor.collision_radius),
@@ -51,7 +52,7 @@ fn check(
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
             @intFromBool(playback.terminated),
         },
         .random = random,
@@ -65,7 +66,7 @@ fn point(v: [3]f32) level_module.Vec3 {
     return .{ .x = v[0], .y = v[1], .z = v[2] };
 }
 
-fn bits(v: level_module.Vec3) [3]u32 {
+fn vectorBits(v: level_module.Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -162,17 +163,17 @@ test "bubble batches preserve RNG construction drift and ceiling flags" {
 
         const state = &states[0];
 
-        state.flags = config.flags;
+        bits.setWord(&state.flags, config.flags);
 
         if (config.ceiling_slope) |slope| {
-            state.flags |= 0x80000000;
+            state.flags.sloped_ceiling = true;
             state.ceiling_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = slope[0], .coeff_z = slope[1], .constant = slope[2] },
             );
         }
 
-        state.flags &= ~config.clear_flags;
+        state.flags = bits.without(state.flags, bits.from(scene_module.SectorFlags, config.clear_flags));
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
         var collision_check: u32 = 0;
@@ -242,7 +243,7 @@ test "Hideout underwater bubbles grow live actor lists and preserve saved-next s
     session.player.sector = 66;
     session.player.position = .{ .x = 465.5, .y = -10, .z = 460 };
     session.player.velocity = .{ .x = 0, .y = 0, .z = 0 };
-    session.player.flags = 0;
+    session.player.flags = .{};
     session.player.yaw = 0;
     session.player.head_yaw = 0;
 
@@ -273,7 +274,7 @@ test "Hideout underwater bubbles grow live actor lists and preserve saved-next s
         try std.testing.expect(slot.?.position.y > origin_y);
 
     for (session.actor_slots[first + 2 ..]) |slot|
-        try std.testing.expect(slot.?.flags & 0x80 != 0);
+        try std.testing.expect(slot.?.flags.updated);
 
     var sounds: usize = 0;
 

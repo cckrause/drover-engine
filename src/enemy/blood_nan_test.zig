@@ -13,6 +13,7 @@ const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
 const blood = @import("blood.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
 const Vec3 = level_module.Vec3;
 
 const Snapshot = struct {
@@ -91,9 +92,9 @@ fn pendingHit(angles: *const camera.Angles, impact: Impact, target: usize) shoot
 
 fn check(expected: Snapshot, particle: blood.Spawn, random: u32) !void {
     try std.testing.expectEqualDeep(expected, Snapshot{
-        .position_bits = bits(particle.actor.position),
-        .velocity_bits = bits(particle.state.velocity),
-        .flags = particle.actor.flags,
+        .position_bits = vectorBits(particle.actor.position),
+        .velocity_bits = vectorBits(particle.state.velocity),
+        .flags = bits.word(particle.actor.flags),
         .floor_cache_bits = @bitCast(particle.state.floor_cache),
         .random = random,
     });
@@ -124,7 +125,7 @@ fn fromBits(words: [3]u32) Vec3 {
     return .{ .x = @bitCast(words[0]), .y = @bitCast(words[1]), .z = @bitCast(words[2]) };
 }
 
-fn bits(value: Vec3) [3]u32 {
+fn vectorBits(value: Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -157,7 +158,7 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
         const expected = impact.messages[0];
         const damage = pending.damageInput();
 
-        try std.testing.expectEqualDeep(expected.position_bits, bits(pending.messagePosition()));
+        try std.testing.expectEqualDeep(expected.position_bits, vectorBits(pending.messagePosition()));
         try std.testing.expectEqualDeep(
             [5]u32{
                 expected.damage_bits,
@@ -190,7 +191,7 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
 
             try std.testing.expectEqual(visual.count, @as(u32, @bitCast(actual.count)));
             try std.testing.expectEqual(visual.sector, actual.sector);
-            try std.testing.expectEqualDeep(visual.position_bits, bits(actual.average()));
+            try std.testing.expectEqualDeep(visual.position_bits, vectorBits(actual.average()));
         }
     }
 
@@ -206,7 +207,7 @@ test "NaN blood floor branch preserves payloads and removes before collision" {
         var state = std.mem.zeroes(scene_module.SectorState);
 
         if (case.floor_slope) |slope| {
-            state.flags = 0x40000000;
+            state.flags = .{ .sloped_floor = true };
             state.floor_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = slope[0], .coeff_z = slope[1], .constant = slope[2] },
@@ -288,11 +289,11 @@ test "NaN blood contact survives delivery and is removed on next live frame" {
         try std.testing.expectEqualStrings("fx_BloodLogic", actor.logic_name);
         try std.testing.expectEqualDeep(
             fixture.impacts[0].visuals[0].position_bits,
-            bits(actor.position),
+            vectorBits(actor.position),
         );
 
         try std.testing.expect(!session.removed_actors[index]);
-        try std.testing.expectEqual(@as(u32, 0), actor.flags & 0x400);
+        try std.testing.expect(!actor.flags.physics);
     }
 
     _ = try session.render(pixels, session.animation_time);

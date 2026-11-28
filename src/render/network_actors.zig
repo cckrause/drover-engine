@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const level_module = @import("../assets/level.zig");
 const nwx = @import("../assets/nwx.zig");
 const item_spawn = @import("../enemy/item_spawn.zig");
@@ -24,6 +25,9 @@ const enemy_dynamic = @import("../enemy/dynamic.zig");
 const collision = @import("../player/collision.zig");
 const inventory = @import("../player/inventory.zig");
 const network_combat = @import("network_combat.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 pub const remote_logic = "DRECK_PEX";
 
@@ -32,8 +36,14 @@ pub const RemotePlayer = struct {
     record: ?dead_reckoning.Record = null,
     floor_cache: f32 = -0x1p31,
     wall_memory: collision.WallMemory = .{},
-    tint_flags: u8 = 0,
+    tint_flags: TintFlags = .{},
     tint_due: u32 = 0,
+};
+
+const TintFlags = packed struct(u8) {
+    team_picked: bool = false,
+    level_picked: bool = false,
+    unused_2: u6 = 0,
 };
 
 const Listed = union(enum) { player, actor: usize };
@@ -83,7 +93,7 @@ pub fn answerObjectRequest(session: anytype, sender: u32) !void {
 pub fn sendActor(session: anytype, source: usize, destination: u32) !void {
     const actor = session.actor_slots[source] orelse return error.MissingNetworkActor;
     const number = session.actor_numbers[source];
-    if (message.client(number) != session.router.own_client or actor.flags & 0x8000 != 0) return;
+    if (message.client(number) != session.router.own_client or actor.flags.local_only) return;
 
     const record = try save_actor.capture(session, actor, 0);
     var animation: i32 = 0;
@@ -92,13 +102,13 @@ pub fn sendActor(session: anytype, source: usize, destination: u32) !void {
         instance.playback.choreography,
     ) else -1;
 
-    if (animation == -1 or actor.secondary_flags & 0x10 != 0) {
-        if (actor.flags & 0x20 != 0) return error.NetworkActorPlayerRecordNotPorted;
+    if (animation == -1 or actor.secondary_flags.player) {
+        if (actor.flags.has_player_record) return error.NetworkActorPlayerRecordNotPorted;
     }
 
     if (animation == -1) animation = 0;
 
-    if (actor.secondary_flags & 0x30 != 0) return error.NetworkPlayerActorNotPorted;
+    if (actor.secondary_flags.player or actor.secondary_flags.projectile) return error.NetworkPlayerActorNotPorted;
 
     var costume_buffer: [0x100]u8 = undefined;
     if (record.resource.len >= costume_buffer.len) return error.MalformedNetworkMessage;
@@ -147,16 +157,18 @@ pub fn sendActor(session: anytype, source: usize, destination: u32) !void {
         .item = actor.network_item,
     });
 
-    _ = try session.router.post(destination, 0x3fd | 0x40000000, bytes);
+    _ = try session.router.post(destination, .{ .code = 0x3fd, .buffered = true }, bytes);
 }
 
 pub fn actorMessage(session: anytype, index: usize, bytes: []u8) !void {
-    const number = message.get(bytes, message.number_offset);
-    const code = number & 0xffff7fff;
+    var number: message.Number = @bitCast(message.get(bytes, message.number_offset));
+    const repeat = number.repeat;
+    number.repeat = false;
+    const code: u32 = @bitCast(number);
 
     message.set(bytes, message.number_offset, code);
 
-    const previous = if (number & 0x8000 != 0) session.database.swapRepeat(1) else null;
+    const previous = if (repeat) session.database.swapRepeat(1) else null;
     defer if (previous) |value| {
         session.database.repeating = value;
     };
@@ -167,7 +179,7 @@ pub fn actorMessage(session: anytype, index: usize, bytes: []u8) !void {
         0x402 => try answer(session, listed, message.get(bytes, message.sender_offset)),
         0x3ff => {
             if (index == local_player) return error.NetworkDeleteOfOwnPlayerNotPorted;
-            if (session.game_type == 5 and (session.mode == 1 or session.mode == 3) and remoteOf(
+            if (session.game_type == .hosting and (session.mode == 1 or session.mode == 3) and remoteOf(
                 session,
                 index,
             ) != null)
@@ -222,7 +234,7 @@ pub fn createItem(
     name: []const u8,
     place: @import("../enemy/lifecycle.zig").Placement,
 ) !?usize {
-    if (session.game_type != 4 and session.game_type != 5) return enemy_session.spawnItem(
+    if (!session.game_type.isNetwork()) return enemy_session.spawnItem(
         session,
         name,
         place,
@@ -303,7 +315,7 @@ pub fn postDelete(router: anytype, number: u32) !void {
     var bytes = message.request(0x3ff, router.own_client);
     message.set(&bytes, message.sender_offset, (router.own_client & 0xff) << 11);
     message.set(&bytes, message.reply_offset, number);
-    _ = try router.post(0, 0x3ff | 0x80000000, &bytes);
+    _ = try router.post(0, .{ .code = 0x3ff, .must_arrive = true }, &bytes);
 }
 
 pub fn isRemote(session: anytype, index: usize) bool {
@@ -378,17 +390,17 @@ pub fn schedule(
     index: usize,
 ) !void {
     const actor = session.actor_slots[index].?;
-    if (actor.flags & 1 == 0) return;
+    if (!actor.flags.active) return;
 
     try tint(session, remoteOf(session, index) orelse return error.NetworkActorRecordNotPorted);
-    if (actor.flags & 0x40 == 0 or actor.secondary_flags & 0x01000000 != 0 or @as(
+    if (!actor.flags.has_logic or actor.secondary_flags.waiting_for_start or @as(
         u32,
         @bitCast(session.actor_next_update[index]),
     ) > session.animation_time or actor.logic_name.len == 0) return;
 
     try reckon(session, allocator, effects, index);
 
-    session.actor_slots[index].?.flags |= 0x80000080;
+    session.actor_slots[index].?.flags = bits.with(session.actor_slots[index].?.flags, .{ .updated = true, .changed = true });
     session.syncActor(index);
 }
 
@@ -402,7 +414,7 @@ pub fn updateRemote(
     if (index >= session.actor_slots.len or session.removed_actors[index] or session.actor_slots[index] == null) return error.MissingNetworkActor;
 
     const actor = &session.actor_slots[index].?;
-    if (actor.secondary_flags & 0x30 == 0) return;
+    if (!actor.secondary_flags.player and !actor.secondary_flags.projectile) return;
 
     const value = try dead_reckoning.readUpdate(bytes);
     const entry = remoteOf(session, index) orelse return error.NetworkActorRecordNotPorted;
@@ -421,8 +433,17 @@ pub fn updateRemote(
     actor.pitch = record.angles[0];
     actor.yaw = record.angles[1];
     actor.roll = record.angles[2];
-    actor.flags = ((record.actor_flags ^ actor.flags) & 0x491c ^ actor.flags) | 0x80000000;
-    actor.secondary_flags = (record.entity ^ actor.secondary_flags) & 0x2000000 ^ actor.secondary_flags;
+    // Only how the actor looks and whether it's alive come across.
+    actor.flags = bits.merge(actor.flags, record.actor_flags, .{
+        .visible = true,
+        .shaded = true,
+        .glowing = true,
+        .not_solid = true,
+        .level_tint = true,
+        .dead = true,
+    });
+    actor.flags.changed = true;
+    actor.secondary_flags.shadow = record.entity.shadow;
 
     if (actor.logic_kind == @as(
         ?u32,
@@ -510,7 +531,7 @@ fn answer(session: anytype, listed: Listed, destination: u32) !void {
 
             if (message.client(
                 session.player_number,
-            ) == session.router.own_client and flags & 0x8000 == 0)
+            ) == session.router.own_client and !flags.local_only)
                 try network_level.announcePlayer(session, destination);
         },
         .actor => |source| try sendActor(session, source, destination),
@@ -519,12 +540,12 @@ fn answer(session: anytype, listed: Listed, destination: u32) !void {
 
 fn logicMessage(session: anytype, index: usize, code: u32, bytes: ?[]const u8) !void {
     const actor = session.actor_slots[index] orelse return error.MissingNetworkActor;
-    if (actor.flags & 0x40 == 0 or actor.logic_name.len == 0) return;
+    if (!actor.flags.has_logic or actor.logic_name.len == 0) return;
     if (std.mem.eql(u8, actor.logic_name, remote_logic)) return;
 
     switch (cmm.resolve(actor.logic_name) catch return error.NetworkActorLogicNotPorted) {
         .ground_object, .instant_ground_object, .ground_sheriff_star, .ground_vanishing_cream => {},
-        .projectile_dispatch => if (code == 0x7d1) {
+        .projectile_dispatch => if (code == @intFromEnum(MessageCode.damage)) {
             const value = try message.readDamage(bytes orelse return error.MalformedNetworkMessage);
             const sender = message.get(bytes.?, message.sender_offset);
             const from: ?usize = if (sender == 0) null else if (session.database.find(
@@ -577,17 +598,13 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
     }
 
     router.clients[client].player = null;
-    var flags: u32 = 0x8000000f;
-
-    for ([_]u32{
-        1,
-        4,
-        8,
-        0x40,
-    }) |bit| flags = if (value.flags & bit != 0) flags | bit else flags & ~bit;
-
-    flags &= ~@as(u32, 0x80);
-    flags = if (value.flags & 0x10 != 0) flags | 0x10 else flags & ~@as(u32, 0x10);
+    const flags = bits.merge(ActorFlags.new, bits.from(ActorFlags, value.flags), .{
+        .active = true,
+        .visible = true,
+        .shaded = true,
+        .glowing = true,
+        .has_logic = true,
+    });
 
     const position_value: level_module.Vec3 = .{
         .x = @bitCast(value.position[0]),
@@ -611,7 +628,7 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
         .yaw = value.angles[1],
         .roll = value.angles[2],
         .flags = flags,
-        .secondary_flags = value.entity,
+        .secondary_flags = bits.from(ActorKind, value.entity),
         .scale_x = 1,
         .scale_y = 1,
         .height = body.height,
@@ -641,7 +658,7 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
 
     var record: ?dead_reckoning.Record = null;
 
-    if (flags & 0x40 != 0) {
+    if (flags.has_logic) {
         actor.logic_name = remote_logic;
         record = dead_reckoning.Record.init(
             .{ position_value.x, position_value.y, position_value.z },
@@ -674,7 +691,7 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
         actor.angle_offset = playback.angle_offset;
     }
 
-    actor.secondary_flags |= 0x90;
+    actor.secondary_flags = bits.with(actor.secondary_flags, .{ .player = true, .takes_hits = true });
     const source = try enemy_session.appendActor(session, actor, null);
     session.actor_numbers[source] = value.number;
 
@@ -699,24 +716,26 @@ fn createPlayer(session: anytype, value: message.ActorCreate) !void {
 
 fn tint(session: anytype, entry: *RemotePlayer) !void {
     const actor = session.actor_slots[entry.source].?;
-    if (actor.secondary_flags & 0x10 == 0 or actor.playback == null or actor.logic_kind != @as(
+    if (!actor.secondary_flags.player or actor.playback == null or actor.logic_kind != @as(
         ?u32,
         1,
     ) or !(entry.tint_due < session.animation_time)) return;
 
-    if (actor.secondary_flags & 0x180000 != 0) return error.PlayerTintTableNotPorted;
+    const kind = actor.secondary_flags;
+    if (kind.tint_table != 0) return error.PlayerTintTableNotPorted;
 
     switch (session.mode) {
-        1, 4, 5 => if (entry.tint_flags & 1 == 0 or actor.secondary_flags & 0x70000 == 0) {
-            if (entry.tint_flags & 2 == 0 and actor.flags & 0x800 != 0) return error.PlayerTintTableNotPorted;
-            if (actor.secondary_flags & 0xf == 1 or actor.secondary_flags & 0xf == 2) return error.PlayerTintTableNotPorted;
-            entry.tint_flags = entry.tint_flags & ~@as(u8, 2) | 1;
+        1, 4, 5 => if (!entry.tint_flags.team_picked or kind.own_tint == 0) {
+            if (!entry.tint_flags.level_picked and actor.flags.level_tint) return error.PlayerTintTableNotPorted;
+            if (kind.team == 1 or kind.team == 2) return error.PlayerTintTableNotPorted;
+            entry.tint_flags.level_picked = false;
+            entry.tint_flags.team_picked = true;
         } else {
-            entry.tint_flags &= ~@as(u8, 1);
+            entry.tint_flags.team_picked = false;
         },
         2, 3, 6 => {
-            if (entry.tint_flags & 2 == 0 and actor.flags & 0x800 != 0) return error.PlayerTintTableNotPorted;
-            entry.tint_flags &= ~@as(u8, 2);
+            if (!entry.tint_flags.level_picked and actor.flags.level_tint) return error.PlayerTintTableNotPorted;
+            entry.tint_flags.level_picked = false;
         },
         else => {},
     }
@@ -809,7 +828,7 @@ fn move(
                     .basename = name,
                     .priority = 0x20,
                     .volume = 0x19,
-                    .flags = 4,
+                    .flags = .default,
                     .sector = step.sector,
                     .position = step.position,
                 },

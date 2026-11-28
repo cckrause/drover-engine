@@ -13,6 +13,8 @@ const visibility = @import("../audio/occlusion.zig");
 const random = @import("../player/weapon.zig");
 const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const Vec2 = level_module.Vec2;
 const Vec3 = level_module.Vec3;
 
@@ -22,8 +24,8 @@ pub const Subject = struct {
     height: f32,
     radius: f32,
     yaw: i16,
-    flags: u32,
-    secondary_flags: u32,
+    flags: ActorFlags,
+    secondary_flags: ActorKind,
 
     pub fn fromActor(actor: @import("../render/objects.zig").Actor) Subject {
         return .{
@@ -105,7 +107,7 @@ pub fn fieldOfView(
 ) i16 {
     const dist = f(distance(point(from.position), point(to.position)));
 
-    if (from.secondary_flags & 0x200000 != 0 and to.secondary_flags & 0x10 != 0 and dist < kill_dist) kill.* = true;
+    if (from.secondary_flags.boss and to.secondary_flags.player and dist < kill_dist) kill.* = true;
 
     if (!(dist < fov_dist)) return 0;
 
@@ -135,7 +137,7 @@ pub fn fieldOfView(
     range = f(@as(f64, to.height) * @as(f64, @as(f32, 0.15384616)) * range);
     if (!(dist < range)) return 0;
 
-    const light = if (to.flags & 0x10 != 0) 31 else target_light;
+    const light = if (to.flags.glowing) 31 else target_light;
     var intensity = f(@as(f64, @floatFromInt(light)) * @as(f64, @as(f32, 0.04347826)));
 
     if (light < 10) intensity = f(@as(f64, intensity) * @as(f64, @as(f32, 0.8)));

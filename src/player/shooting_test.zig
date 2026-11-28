@@ -12,6 +12,9 @@ const scene_module = @import("../render/scene.zig");
 const interaction = @import("../script/interaction.zig");
 const shooting = @import("shooting.zig");
 const Actor = @import("../render/objects.zig").Actor;
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const ActorInput = struct {
     sector: usize,
@@ -117,8 +120,8 @@ fn makeActor(source: ActorInput) Actor {
         .sector = source.sector,
         .position = point(source.position),
         .yaw = 0,
-        .flags = source.flags,
-        .secondary_flags = source.secondary_flags,
+        .flags = bits.from(ActorFlags, source.flags),
+        .secondary_flags = bits.from(ActorKind, source.secondary_flags),
         .scale_x = 1,
         .scale_y = 1,
         .height = source.height,
@@ -249,7 +252,7 @@ test "Hideout hitscan and enemy damage match the reference" {
         for (sample.events, result.events[0..sample.events.len]) |expected, actual| {
             try std.testing.expectEqual(expected.wall[0], actual.sector);
             try std.testing.expectEqual(expected.wall[1], actual.wall.?);
-            try std.testing.expectEqual(expected.mask, actual.mask);
+            try std.testing.expectEqual(expected.mask, bits.word(actual.mask));
             try std.testing.expectEqual(expected.object_id, actual.object_id);
         }
     }
@@ -448,8 +451,8 @@ test "sector relinks and player insertion retain equal-distance ray winner" {
                         .sector = player.sector,
                         .height = player.height,
                         .radius = player.collision_radius,
-                        .flags = player.flags,
-                        .secondary_flags = player.secondary_flags,
+                        .flags = bits.from(ActorFlags, player.flags),
+                        .secondary_flags = bits.from(ActorKind, player.secondary_flags),
                         .sector_link_order = orders[player_source],
                     },
                 },
@@ -504,8 +507,8 @@ test "sector relinks and player insertion retain equal-distance ray winner" {
                     .sector = player.sector,
                     .height = player.height,
                     .radius = player.collision_radius,
-                    .flags = player.flags,
-                    .secondary_flags = player.secondary_flags,
+                    .flags = bits.from(ActorFlags, player.flags),
+                    .secondary_flags = bits.from(ActorKind, player.secondary_flags),
                 },
             }, &.{}, .{
                 .sector = case.sector,

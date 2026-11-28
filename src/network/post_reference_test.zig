@@ -275,7 +275,7 @@ test "failed object deliveries release their packet and restore the repeat flag"
     for ([_]u32{ sector, generator }) |target| {
         var bytes = message.request(0x87d6, router.own_client);
         message.set(&bytes, message.reply_offset, target);
-        _ = try router.post(target, 0x87d6, &bytes);
+        _ = try router.post(target, .{ .code = message.Number.of(.trigger).code, .repeat = true }, &bytes);
 
         try std.testing.expectError(error.MalformedNetworkMessage, db.next(&router, true, 0));
         try std.testing.expectEqual(@as(u32, 7), db.repeating);
@@ -285,7 +285,7 @@ test "failed object deliveries release their packet and restore the repeat flag"
 
     var request = message.request(0x8402, router.own_client);
     message.set(&request, message.reply_offset, sector);
-    _ = try router.post(sector, 0x8402, &request);
+    _ = try router.post(sector, .{ .code = 0x402, .repeat = true }, &request);
 
     try std.testing.expectError(error.ObjectRequestNotPorted, db.next(&router, true, 0));
     try std.testing.expectEqual(@as(u32, 7), db.repeating);

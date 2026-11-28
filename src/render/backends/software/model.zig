@@ -7,6 +7,7 @@
 //! changing it moves vertices by a pixel.
 
 const std = @import("std");
+const bits = @import("../../../util/bits.zig");
 
 const asset = @import("../../../assets/model.zig");
 const texture = @import("../../../assets/texture.zig");
@@ -453,7 +454,7 @@ pub fn raster(
 
 pub fn draw(ctx: Context, model: *const asset.Model, pose: Pose) !void {
     if (model.vertices.len > 500 or model.polygons.len > 400) return error.ModelLimitsExceeded;
-    if (model.flags == 4) return error.UnsupportedModelVertexMode;
+    if (bits.word(model.flags) == bits.word(asset.ModelFlags{ .vertex_colors = true })) return error.UnsupportedModelVertexMode;
 
     const view = ctx.view;
     const camera_matrix = [9]f32{
@@ -523,7 +524,7 @@ pub fn draw(ctx: Context, model: *const asset.Model, pose: Pose) !void {
     const directions = lights(view);
     var shades: [500]f32 = undefined;
 
-    if (model.flags & 2 != 0) {
+    if (model.flags.smooth) {
         if (model.vertex_normals.len != model.vertices.len) return error.MissingModelVertexNormals;
 
         for (model.vertex_normals, 0..) |normal, i| shades[i] = try vertexShade(

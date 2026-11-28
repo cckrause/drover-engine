@@ -9,6 +9,7 @@ const inventory = @import("../player/inventory.zig");
 const weapon = @import("../player/weapon.zig");
 const blood = @import("blood.zig");
 const enemy_session = @import("session.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 pub const costume_name = "FIRE01.NWX";
 
@@ -33,8 +34,8 @@ pub fn spawn(
             .sector = sector,
             .position = position,
             .yaw = 0,
-            .flags = 0x8000014f,
-            .secondary_flags = 0x800000,
+            .flags = ActorFlags.new_effect,
+            .secondary_flags = .{ .effect = true },
             .scale_x = scale,
             .scale_y = scale,
             .height = 1,
@@ -62,7 +63,7 @@ pub fn burst(
         .basename = "explode.wav",
         .priority = 64,
         .volume = 127,
-        .flags = 4,
+        .flags = .default,
         .sector = sector,
         .position = position,
     };

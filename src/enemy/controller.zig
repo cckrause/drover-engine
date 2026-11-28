@@ -6,6 +6,8 @@
 //! than the current one, so a tick is self-consistent.
 
 const std = @import("std");
+const MessageCode = @import("../message_code.zig").MessageCode;
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const level = @import("../assets/level.zig");
 const camera = @import("../render/backends/software/camera.zig");
@@ -20,6 +22,8 @@ const ballistics = @import("ballistics.zig");
 const lifecycle = @import("lifecycle.zig");
 const perception = @import("perception.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 pub const Subject = perception.Subject;
 
 pub const TargetId = union(enum) { player, actor: usize };
@@ -160,7 +164,7 @@ pub const Context = struct {
         ) anyerror!void,
     } = null,
     nodes: []Node = &.{},
-    difficulty: u32 = 0x100000,
+    difficulty: Difficulty = .good,
     before_sound: ?struct {
         context: *anyopaque,
         drain: *const fn (*anyopaque) anyerror!void,
@@ -173,7 +177,7 @@ pub const Context = struct {
     statistics: ?*@import("../player/inventory.zig").Statistics = null,
     hit_result: ?struct {
         context: *anyopaque,
-        enqueue: *const fn (*anyopaque, ?TargetId, u32) anyerror!void,
+        enqueue: *const fn (*anyopaque, ?TargetId, MessageCode) anyerror!void,
     } = null,
     complete_level: ?struct {
         context: *anyopaque,
@@ -233,7 +237,7 @@ pub const Context = struct {
         self: *Context,
         actor: Actor,
         name: []const u8,
-        flags: u32,
+        flags: @import("../audio/engine.zig").RequestFlags,
         base: f32,
         span: f32,
         speech: bool,
@@ -244,7 +248,7 @@ pub const Context = struct {
 
         var volume: i32 = 127;
 
-        if (flags & 0x10 == 0) if (self.player) |listener| {
+        if (!flags.ignores_walls) if (self.player) |listener| {
             if (!try self.visibility.connected(
                 self.level,
                 self.scene,
@@ -302,7 +306,7 @@ pub const Context = struct {
                 weapon.randomFloat(self.random, span) + @as(f64, base),
             );
 
-            if (speech) params.flags = @import("../audio/engine.zig").Flags.speech;
+            if (speech) params.flags = .{ .speech = true };
 
             try runtime.engine.adjust(id, params);
         }
@@ -616,7 +620,7 @@ pub fn message(
 
             if (ctx.player) |player| if ((ctx.shared.entry_random & 0xff) <= @as(
                 u32,
-                if (ctx.difficulty == 0x800000) 13 else 25,
+                if (ctx.difficulty == .ugly) 13 else 25,
             ) or try ctx.visible(
                 Subject.fromActor(actor.*),
                 player,
@@ -630,7 +634,7 @@ pub fn message(
         0x82 => if (target.mode == 1) {
             if (ctx.player) |player| if ((ctx.shared.entry_random & 0xff) <= @as(
                 u32,
-                if (ctx.difficulty == 0x800000) 13 else 25,
+                if (ctx.difficulty == .ugly) 13 else 25,
             ) or try ctx.visible(
                 Subject.fromActor(actor.*),
                 player,
@@ -656,7 +660,7 @@ pub fn hitMessage(
 ) !void {
     if (target.sanchez and !ctx.shared.sanchez_enabled) return;
     if (target.native == .farmer or target.native == .slim or target.native == .bob) {
-        if (ctx.hit_sender) |sender| if (sender.secondary_flags & 0x40 != 0) return;
+        if (ctx.hit_sender) |sender| if (sender.secondary_flags.ai_controlled) return;
 
         const death = try shooting.damageEnemy(ctx.angles, actor.*, &target.damage, input);
         target.ai.physics.velocity = target.damage.velocity;
@@ -675,9 +679,9 @@ pub fn hitMessage(
     if (death) |choreography| {
         _ = try event(target, actor, 6, ctx);
 
-        if (ctx.hit_result) |sink| try sink.enqueue(sink.context, ctx.hit_sender_id, 0x7e3);
+        if (ctx.hit_result) |sink| try sink.enqueue(sink.context, ctx.hit_sender_id, .hit_killed);
 
-        actor.flags |= 0x80000100;
+        actor.flags = bits.with(actor.flags, .{ .not_solid = true, .changed = true });
         target.dead = true;
 
         if (!try target.select(
@@ -685,22 +689,22 @@ pub fn hitMessage(
             choreography,
         )) _ = try target.select(actor, target.config.chest_die_chor);
     } else {
-        if (ctx.hit_result) |sink| try sink.enqueue(sink.context, ctx.hit_sender_id, 0x7e4);
+        if (ctx.hit_result) |sink| try sink.enqueue(sink.context, ctx.hit_sender_id, .hit_survived);
 
         _ = try event(target, actor, 5, ctx);
 
         if (input.shooter_position != null) {
-            if (actor.secondary_flags == 0 or (ctx.hit_sender != null and ctx.hit_sender.?.secondary_flags == 0)) try retarget(target, actor, ctx.hit_sender_id orelse .player, ctx);
+            if (actor.secondary_flags == ActorKind{} or (ctx.hit_sender != null and ctx.hit_sender.?.secondary_flags == ActorKind{})) try retarget(target, actor, ctx.hit_sender_id orelse .player, ctx);
             target.sight_at = ctx.shared.now +% 2000;
         }
     }
 
-    if (ctx.hit_sender) |sender| if (sender.secondary_flags != 0) if (ctx.statistics) |stats| {
+    if (ctx.hit_sender) |sender| if (sender.secondary_flags != ActorKind{}) if (ctx.statistics) |stats| {
         if (death == null) stats.hits +%= 1 else stats.kills +%= 1;
     };
 
-    if (actor.secondary_flags & 0x04000000 != 0) if (ctx.hit_sender) |sender| {
-        if (sender.secondary_flags & 0x10 != 0) {
+    if (actor.secondary_flags.reflects_player_damage) if (ctx.hit_sender) |sender| {
+        if (sender.secondary_flags.player) {
             var reflected = input;
 
             reflected.damage = 1;
@@ -714,7 +718,7 @@ pub fn hitMessage(
 }
 
 pub fn completeLevel(ctx: *Context) !void {
-    if (ctx.player) |player| if (player.flags & 0x4000 != 0) return;
+    if (ctx.player) |player| if (player.flags.dead) return;
     const sink = ctx.complete_level orelse return error.MissingLevelCompletionSink;
     try sink.enqueue(sink.context);
 }
@@ -770,9 +774,9 @@ pub fn taunt(target: anytype, actor: Actor, requested: u32, force: bool, ctx: *C
     if (perception.distance(
         perception.point(actor.position),
         perception.point(player.position),
-    ) > 200 or player.flags & 0x4000 != 0) return;
+    ) > 200 or player.flags.dead) return;
 
-    const forced = force or actor.secondary_flags & 0x200000 != 0;
+    const forced = force or actor.secondary_flags.boss;
 
     if (ctx.shared.now +% 30000 < ctx.shared.next_taunt) ctx.shared.next_taunt = ctx.shared.now -% 1;
 
@@ -811,7 +815,7 @@ pub fn taunt(target: anytype, actor: Actor, requested: u32, force: bool, ctx: *C
     }
 
     target.ai.last_taunt = selected;
-    try ctx.sound(actor, selected, 0x10, 0.9, 0.2, true);
+    try ctx.sound(actor, selected, .{ .ignores_walls = true }, 0.9, 0.2, true);
 }
 
 pub fn bobCombat(target: anytype, actor: *Actor, code: u32, ctx: *Context) !bool {
@@ -950,9 +954,9 @@ pub fn event(target: anytype, actor: *Actor, code: u32, ctx: *Context) anyerror!
             target.mode = 0x3c0;
             target.dead = true;
             target.ai.physics.movement_disabled = true;
-            actor.flags |= 0x80000100;
+            actor.flags = bits.with(actor.flags, .{ .not_solid = true, .changed = true });
 
-            try ctx.sound(actor.*, target.config.die_sound, 0, 0.8, 0.4, false);
+            try ctx.sound(actor.*, target.config.die_sound, .{}, 0.8, 0.4, false);
             target.ai.physics.sample(actor.*, target.damage.velocity);
 
             if (try lifecycle.deathImpulse(
@@ -981,7 +985,7 @@ pub fn event(target: anytype, actor: *Actor, code: u32, ctx: *Context) anyerror!
                 ) - ctx.level.sectors[actor.sector].floor.height > 17 and !target.ai.fall_voice) {
                     target.ai.fall_voice = true;
                     if (ctx.fall_sound.len == 0) return error.MissingEnemyFallSound;
-                    try ctx.sound(actor.*, ctx.fall_sound, 0, 0.85, 0.3, false);
+                    try ctx.sound(actor.*, ctx.fall_sound, .{}, 0.85, 0.3, false);
                 }
 
                 return false;
@@ -1162,7 +1166,7 @@ pub fn event(target: anytype, actor: *Actor, code: u32, ctx: *Context) anyerror!
             if (target.mode == 0x80000008) {
                 target.mode = 8;
                 try stateSelect(target, actor, target.config.hit_chor, ctx);
-                try ctx.sound(actor.*, target.config.hit_sound, 0, 0.8, 0.4, false);
+                try ctx.sound(actor.*, target.config.hit_sound, .{}, 0.8, 0.4, false);
             }
 
             if (target.animation_ended) try restore(target, actor);
@@ -1193,12 +1197,12 @@ pub fn randomDelay(state: *u32, mask: u32, base: i32) u32 {
     return (weapon.randomNext(state) & mask) +% @as(u32, @bitCast(base));
 }
 
-pub fn packetMessage(target: anytype, actor: *Actor, code: u32, ctx: *Context) !void {
+pub fn packetMessage(target: anytype, actor: *Actor, code: MessageCode, ctx: *Context) !void {
     switch (code) {
-        0x7d3 => activationMessage(target, ctx),
-        0x7e3 => try resultMessage(target, actor, true, ctx),
-        0x7e4 => try resultMessage(target, actor, false, ctx),
-        0x7d1, 0x7d2 => return error.MissingEnemyPacketPayload,
+        .activate => activationMessage(target, ctx),
+        .hit_killed => try resultMessage(target, actor, true, ctx),
+        .hit_survived => try resultMessage(target, actor, false, ctx),
+        .damage, .push => return error.MissingEnemyPacketPayload,
         else => {
             if (target.sanchez and !ctx.shared.sanchez_enabled) return;
             if (target.native == .farmer) return;
@@ -1233,8 +1237,8 @@ fn sense(target: anytype, actor: *Actor, ctx: *Context) !void {
     if (ctx.subject(target.ai.target) == null) target.ai.target = null;
 
     if (target.ai.target == null) {
-        if (actor.secondary_flags & 0x4100 != 0) {
-            if (ctx.player) |player| if (player.flags & 0x100 == 0 and try ctx.visible(
+        if (actor.secondary_flags.bystander or actor.secondary_flags.enemy) {
+            if (ctx.player) |player| if (!player.flags.not_solid and try ctx.visible(
                 Subject.fromActor(actor.*),
                 player,
             )) {
@@ -1250,7 +1254,7 @@ fn sense(target: anytype, actor: *Actor, ctx: *Context) !void {
                     break :blk ctx.actor_slots[i] orelse continue;
                 } else ctx.actors.get(i);
 
-                if (other.secondary_flags & 0x100 == 0 or other.flags & 0x100 != 0) continue;
+                if (!other.secondary_flags.enemy or other.flags.not_solid) continue;
 
                 if (try ctx.visible(Subject.fromActor(actor.*), Subject.fromActor(other))) {
                     target.ai.target = .{
@@ -1355,7 +1359,7 @@ fn broadcast(target: anytype, actor: Actor, code: u32, ctx: *Context) !void {
 
             const candidate = ctx.actors.get(i);
 
-            if (candidate.sector != sector or candidate.source_index == actor.source_index or candidate.secondary_flags & 0x40 == 0 or candidate.logic_name.len == 0) continue;
+            if (candidate.sector != sector or candidate.source_index == actor.source_index or !candidate.secondary_flags.ai_controlled or candidate.logic_name.len == 0) continue;
 
             if (!(perception.distance(
                 perception.point(target.ai.physics.position),
@@ -1457,7 +1461,7 @@ fn combat(target: anytype, actor: *Actor, code: u32, ctx: *Context) !bool {
 
             ctx.schedule(target.attack_at);
 
-            if (target.ai.base_mode != 1) if (ctx.player) |player| if (player.flags & 0x4000 != 0) {
+            if (target.ai.base_mode != 1) if (ctx.player) |player| if (player.flags.dead) {
                 target.attack_at = ctx.shared.now +% 120000;
                 ctx.schedule(target.attack_at);
             };
@@ -2147,7 +2151,7 @@ fn fire(target: anytype, actor: *Actor, ctx: *Context) !void {
     actor.yaw = yaw & 0x3fff;
     target.ai.physics.yaw = actor.yaw;
 
-    if (actor.secondary_flags & 0x200000 != 0 and subject.secondary_flags & 0x10 != 0 and f(
+    if (actor.secondary_flags.boss and subject.secondary_flags.player and f(
         perception.distance(
             perception.point(actor.position),
             perception.point(target.ai.last_seen),
@@ -2242,9 +2246,10 @@ fn fire(target: anytype, actor: *Actor, ctx: *Context) !void {
             .impact_effect = index == 0,
         };
 
-        const no_collide = actor.flags & 0x100;
+        // The shooter can't hit itself while its shot goes out.
+        const was_not_solid = actor.flags.not_solid;
 
-        actor.flags |= 0x80000100;
+        actor.flags = bits.with(actor.flags, .{ .not_solid = true, .changed = true });
 
         if (ctx.shot_sink) |sink| try sink.emit(
             sink.context,
@@ -2254,10 +2259,11 @@ fn fire(target: anytype, actor: *Actor, ctx: *Context) !void {
             shot,
         ) else try ctx.effects.append(.{ .fire = .{ .source = actor.source_index, .shot = shot } });
 
-        actor.flags = (actor.flags & ~@as(u32, 0x100)) | no_collide | 0x80000000;
+        actor.flags.not_solid = was_not_solid;
+        actor.flags.changed = true;
     }
 
-    try ctx.sound(actor.*, target.config.shoot_sound, 0, 1, 0, false);
+    try ctx.sound(actor.*, target.config.shoot_sound, .{}, 1, 0, false);
 }
 
 fn inaccuracy(random: *u32, amount: f32) i16 {

@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 
 const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -20,6 +21,7 @@ const ceiling_contact = @import("ceiling_contact.zig");
 const input = @import("input.zig");
 const inventory_module = @import("inventory.zig");
 const movement = @import("movement.zig");
+const bits = @import("../util/bits.zig");
 
 const Class = struct {
     kind: u32,
@@ -47,8 +49,8 @@ const Motion = struct {
     fn read(p: movement.Player, look: input.LookState) Motion {
         return .{
             .sector = p.sector,
-            .position = bits(p.position),
-            .velocity = bits(p.velocity),
+            .position = vectorBits(p.position),
+            .velocity = vectorBits(p.velocity),
             .angles = .{ p.pitch, p.yaw, p.head_yaw },
             .eye_height = @bitCast(p.eye_height),
             .body_height = @bitCast(p.body_height),
@@ -57,7 +59,7 @@ const Motion = struct {
             .head_bob = @bitCast(p.head_bob),
             .weapon_offset = p.weapon_offset,
             .stride = @bitCast(p.stride),
-            .flags = p.flags & 0x10003004,
+            .flags = bits.word(bits.only(p.flags, .{ .on_ground = true, .dying = true, .jumped = true, .dead = true })),
             .pitch_accumulator = look.pitch_accumulator,
         };
     }
@@ -138,7 +140,7 @@ fn classes(a: std.mem.Allocator, configs: []const Class) !inf.Runtime {
             .kind = @enumFromInt(config.kind),
             .speed = config.speed,
             .value = config.value,
-            .runtime_flags = @intFromBool(config.active),
+            .runtime_flags = .{ .moving = config.active },
         };
 
         if (config.target) |target| {
@@ -167,14 +169,14 @@ fn sound(effect: inventory_module.Effect) ![4]u32 {
         if (std.ascii.eqlIgnoreCase(name, request.basename)) break @intCast(index);
     } else return error.UnexpectedMovingPlaneSound;
 
-    return .{ id, @bitCast(request.priority.?), @bitCast(request.volume.?), request.flags.? };
+    return .{ id, @bitCast(request.priority.?), @bitCast(request.volume.?), bits.word(request.flags.?) };
 }
 
 fn point(value: [3]f32) level_module.Vec3 {
     return .{ .x = value[0], .y = value[1], .z = value[2] };
 }
 
-fn bits(value: level_module.Vec3) [3]u32 {
+fn vectorBits(value: level_module.Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -225,7 +227,7 @@ test "moving planes player transport jump and ceiling relative response" {
             else => 0.7,
         }, case.speed);
 
-        try std.testing.expectEqualDeep(case.result_bits, bits(velocity));
+        try std.testing.expectEqualDeep(case.result_bits, vectorBits(velocity));
         try std.testing.expectEqual(case.impact_bits, @as(u32, @bitCast(impact)));
     }
 
@@ -259,7 +261,7 @@ test "moving planes player transport jump and ceiling relative response" {
         var sector_state = std.mem.zeroes(scene_module.SectorState);
 
         if (config.ceiling_slope) |s| {
-            sector_state.flags = 0x80000000 & ~config.cleared_slope_flags;
+            sector_state.flags = bits.without(scene_module.SectorFlags{ .sloped_ceiling = true }, bits.from(scene_module.SectorFlags, config.cleared_slope_flags));
             sector_state.ceiling_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = s[0], .coeff_z = s[1], .constant = s[2] },
@@ -294,7 +296,7 @@ test "moving planes player transport jump and ceiling relative response" {
         );
 
         player.velocity = point(config.velocity);
-        player.flags = config.flags;
+        player.flags = bits.from(PlayerFlags, config.flags);
         player.floor_cache = config.floor_cache;
 
         var look: input.LookState = .{};
@@ -313,13 +315,13 @@ test "moving planes player transport jump and ceiling relative response" {
 
             effects.clearRetainingCapacity();
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (frame.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             try player.tickWithAudio(
                 &level,
@@ -333,7 +335,7 @@ test "moving planes player transport jump and ceiling relative response" {
             );
 
             var expected = frame.movement;
-            expected.flags &= 0x10003004;
+            expected.flags = bits.word(bits.only(bits.from(PlayerFlags, expected.flags), .{ .on_ground = true, .dying = true, .jumped = true, .dead = true }));
             try std.testing.expectEqualDeep(expected, Motion.read(player, look));
             const has_request = player.impact != 0 or player.sector_damage != 0;
             try std.testing.expectEqual(@as(usize, if (has_request) 1 else 0), frame.requests.len);
@@ -372,7 +374,7 @@ test "moving planes player transport jump and ceiling relative response" {
         var state = std.mem.zeroes(scene_module.SectorState);
 
         if (config.ceiling_slope) |s| {
-            state.flags = 0x80000000 & ~config.cleared_slope_flags;
+            state.flags = bits.without(scene_module.SectorFlags{ .sloped_ceiling = true }, bits.from(scene_module.SectorFlags, config.cleared_slope_flags));
             state.ceiling_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = s[0], .coeff_z = s[1], .constant = s[2] },
@@ -414,9 +416,9 @@ test "moving planes player transport jump and ceiling relative response" {
             sector.floor.height = frame.floor;
             try blood.generalPhysics(&particle.actor, &particle.state, world, 0.016);
             const actual = Generic{
-                .position_bits = bits(particle.actor.position),
-                .velocity_bits = bits(particle.state.velocity),
-                .flags = particle.actor.flags,
+                .position_bits = vectorBits(particle.actor.position),
+                .velocity_bits = vectorBits(particle.state.velocity),
+                .flags = bits.word(particle.actor.flags),
                 .floor_cache_bits = @bitCast(particle.state.floor_cache),
                 .random = random,
                 .same_sector = particle.actor.sector == 0,

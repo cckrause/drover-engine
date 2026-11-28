@@ -95,8 +95,8 @@ pub const Main = struct {
             .changed => try self.changed(d, id, value),
             .step => try d.stepFocus(id, value),
             .focus => switch (id) {
-                0xa => d.setColor(0xb, if (value == 0) 0 else 0xffffff, 0x40000000),
-                0xe => d.setColor(0xf, if (value == 0) 0 else 0xffffff, 0x40000000),
+                0xa => d.setColor(0xb, if (value == 0) 0 else 0xffffff, .{ .middle = true }),
+                0xe => d.setColor(0xf, if (value == 0) 0 else 0xffffff, .{ .middle = true }),
                 else => {},
             },
             .activate => try self.activate(d, id),
@@ -126,7 +126,7 @@ pub const Main = struct {
 
         try d.setValue(0xb, .of("&7505"), 0);
         d.setFont(0xb, &self.fonts.row);
-        d.setColor(0xb, 0xffffff, 0x40000000);
+        d.setColor(0xb, 0xffffff, .{ .middle = true });
 
         const current = self.state.view_box.index - 1;
 
@@ -136,7 +136,7 @@ pub const Main = struct {
         try d.setValue(0xf, .of(self.labelText()), 0);
         d.setFont(0xf, &self.fonts.row);
         try d.setValue(0xe, .int(0x4fffc), self.saved_gamma);
-        d.setColor(0xf, 0, 0x40000000);
+        d.setColor(0xf, 0, .{ .middle = true });
 
         for ([_]struct {
             u32,

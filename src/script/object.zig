@@ -6,12 +6,15 @@
 //! amount is in the message, not in the dispatch.
 
 const std = @import("std");
+const MessageCode = @import("../message_code.zig").MessageCode;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const Actor = @import("../render/objects.zig").Actor;
 const lab = @import("../assets/lab.zig");
 const nwx = @import("../assets/nwx.zig");
 const indexed = @import("../audio/indexed.zig");
 const inventory = @import("../player/inventory.zig");
 const FixedList = @import("../util/fixed_list.zig").FixedList;
+const bits = @import("../util/bits.zig");
 
 pub const Selection = struct { source: usize, choreography: u16, serial: u64 };
 pub const Selections = FixedList(Selection, error{TooManyObjectSelections});
@@ -71,14 +74,14 @@ fn AnimationContext(comptime Session: type) type {
                         &session.level,
                         .{
                             .sector = actor.sector,
-                            .mask = 0x4000,
-                            .entity_mask = 0xffffffff,
+                            .mask = .{ .object_script = true },
+                            .entity_mask = bits.from(ActorKind, 0xffffffff),
                             .from_player = false,
                             .now_ms = now,
                         },
                     );
                 },
-                4 => actor.flags |= 0x80000100,
+                4 => actor.flags = bits.with(actor.flags, .{ .not_solid = true, .changed = true }),
                 5 => {
                     const sector = actor.sector;
                     const position = actor.position;
@@ -91,8 +94,8 @@ fn AnimationContext(comptime Session: type) type {
                         &session.level,
                         .{
                             .sector = sector,
-                            .mask = 0x4000,
-                            .entity_mask = 0xffffffff,
+                            .mask = .{ .object_script = true },
+                            .entity_mask = bits.from(ActorKind, 0xffffffff),
                             .from_player = false,
                             .now_ms = now,
                         },
@@ -119,20 +122,20 @@ pub fn bound(actor: Actor) bool {
 }
 
 pub fn hit(session: anytype, source: usize) !void {
-    try receive(session, source, 0x7d1);
+    try receive(session, source, .damage);
 }
 
-pub fn receive(session: anytype, source: usize, code: u32) !void {
+pub fn receive(session: anytype, source: usize, code: MessageCode) !void {
     const actor = session.actor_slots[source] orelse return error.MissingObjectActor;
     if (!bound(actor)) return error.InvalidObjectBinding;
     if (actor.model != null) return;
 
-    if (code != 0x7d1) {
-        if (code != 0x7d3) return;
-        if (actor.secondary_flags & 0x1000 != 0) try enqueue(session, source, actor);
+    if (code != .damage) {
+        if (code != .activate) return;
+        if (actor.secondary_flags.used_when_activated) try enqueue(session, source, actor);
     }
 
-    if (actor.secondary_flags & 0x2000 != 0) try enqueue(session, source, actor);
+    if (actor.secondary_flags.used_when_shot) try enqueue(session, source, actor);
 }
 
 pub fn deliverNext(session: anytype, effects: *inventory.Effects) !void {
@@ -183,11 +186,11 @@ pub fn advance(session: anytype, source: usize, effects: *inventory.Effects) !vo
 
 pub fn tick(session: anytype, source: usize) void {
     const actor = &session.actor_slots[source].?;
-    if (actor.flags & 0x41 != 0x41 or actor.secondary_flags & 0x01000000 != 0 or
+    if (!actor.flags.logicReady() or actor.secondary_flags.waiting_for_start or
         @as(u32, @bitCast(session.actor_next_update[source])) > session.animation_time) return;
 
     schedule(session, source);
-    actor.flags |= 0x80000080;
+    actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
     session.syncActor(source);
 }
 

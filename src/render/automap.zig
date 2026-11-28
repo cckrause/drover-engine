@@ -6,6 +6,7 @@
 //! keys come through a 32-entry ring that overwrites rather than blocks.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const level_module = @import("../assets/level.zig");
 const local_messages = @import("../assets/messages.zig");
@@ -69,9 +70,21 @@ pub const Secrets = struct {
     v111: bool = false,
 };
 
+pub const MapFlags = packed struct(u32) {
+    /// On its own screen instead of over the view.
+    separate: bool = false,
+    /// Set for the modes drawn over the view; nothing reads it.
+    unused_1: bool = false,
+    /// Turns with the player instead of keeping north up.
+    oriented: bool = false,
+    /// Kept across mode changes, but nothing sets it.
+    unused_3: bool = false,
+    unused_4: u28 = 0,
+};
+
 pub const State = struct {
     mode: u32 = 0,
-    flags: u32 = 0,
+    flags: MapFlags = .{},
     preference: u32 = 3,
     controller: u32 = 0,
     previous_controller: u32 = 0,
@@ -90,7 +103,7 @@ pub const State = struct {
 
     pub fn packet(self: *State, controls: *const input.Packet) void {
         const entry = controls.get(.map);
-        if (entry.value != 1 or entry.flags & input.pressed == 0) return;
+        if (entry.value != 1 or !entry.flags.pressed) return;
 
         self.setMode(
             if (self.preference == 0) self.mode +% 1 else if (self.mode != 0) 0 else self.preference,
@@ -98,7 +111,7 @@ pub const State = struct {
     }
 
     pub fn setMode(self: *State, mode: u32) void {
-        const retained = self.flags & 8;
+        const retained: MapFlags = .{ .unused_3 = self.flags.unused_3 };
 
         switch (mode) {
             0 => {
@@ -110,13 +123,13 @@ pub const State = struct {
             1 => self.initialized = true,
             2...5 => {
                 self.mode = mode;
-                self.flags = retained | switch (mode) {
-                    2 => @as(u32, 2),
-                    3 => 6,
-                    4 => 1,
-                    5 => 5,
+                self.flags = bits.with(retained, switch (mode) {
+                    2 => MapFlags{ .unused_1 = true },
+                    3 => MapFlags{ .unused_1 = true, .oriented = true },
+                    4 => MapFlags{ .separate = true },
+                    5 => MapFlags{ .separate = true, .oriented = true },
                     else => unreachable,
-                };
+                });
             },
             else => {
                 self.mode = 0;
@@ -128,7 +141,7 @@ pub const State = struct {
     }
 
     pub fn separate(self: *const State) bool {
-        return self.flags & 1 != 0;
+        return self.flags.separate;
     }
 
     pub fn draw(
@@ -184,7 +197,7 @@ pub const State = struct {
             angles,
             self.center,
             player.yaw +% player.head_yaw,
-            self.flags & 4 != 0,
+            self.flags.oriented,
             self.zoom,
             width,
             height,
@@ -227,14 +240,14 @@ pub const State = struct {
         rect: Rect,
     ) void {
         for (level.sectors, scene.sectors) |sector, live| {
-            if ((!self.all_layers and sector.layer != self.selected_layer) or live.flags & 0x20000000 != 0) continue;
+            if ((!self.all_layers and sector.layer != self.selected_layer) or live.flags.hidden_on_map) continue;
 
             for (sector.walls, live.walls) |wall, state| {
-                if (state.flags & 0x20000 != 0) continue;
+                if (state.flags.hidden_on_map) continue;
 
-                const seen = state.runtime_flags & 0x40000000 != 0;
+                const seen = state.runtime_flags.seen;
 
-                if (!seen and (!self.reveal or state.flags & 0x40000 != 0)) continue;
+                if (!seen and (!self.reveal or state.flags.map_only_when_seen)) continue;
 
                 var first = sector.vertices[wall.v1];
                 var last = sector.vertices[wall.v2];

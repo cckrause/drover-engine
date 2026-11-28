@@ -10,7 +10,7 @@ pub const Request = struct {
     basename: []const u8,
     priority: ?i32 = null,
     volume: ?i32 = null,
-    flags: ?u32 = null,
+    flags: ?sound.RequestFlags = null,
     sector: ?usize = null,
     position: ?level.Vec3 = null,
     source: ?usize = null,

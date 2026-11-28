@@ -6,6 +6,7 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const lab = @import("../assets/lab.zig");
 const inventory = @import("../player/inventory.zig");
 const cmm = @import("../script/cmm.zig");
@@ -111,7 +112,7 @@ pub fn capture(a: std.mem.Allocator, audio: anytype, pickup: inventory.Pickup) !
     return .{
         .entries = entries,
         .sound = try sound.capture(audio, pickup.sound),
-        .flags = pickup.flags,
+        .flags = @bitCast(pickup.flags),
     };
 }
 
@@ -120,7 +121,7 @@ pub fn restore(
     archives: []const lab.Archive,
     audio: anytype,
     native: cmm.Native,
-    game_type: u32,
+    game_type: GameType,
     record: Record,
 ) !inventory.Pickup {
     const entries = try a.alloc(inventory.Entry, record.entries.len);
@@ -140,7 +141,7 @@ pub fn restore(
         .game_type = game_type,
         .sound = try sound.restore(audio, record.sound),
         .sound_names_resolved = true,
-        .flags = record.flags,
+        .flags = @bitCast(record.flags),
         .enabled = true,
     };
 }

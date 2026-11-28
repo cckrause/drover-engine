@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const lab = @import("../assets/lab.zig");
 const level_module = @import("../assets/level.zig");
@@ -90,7 +91,7 @@ test "INF consumes the selected handle including mismatched USE_ID" {
         runtime.triggers = try runtime.arena.allocator().alloc(inf.Trigger, 1);
         runtime.triggers[0] = .{
             .target = .{ .sector = 0 },
-            .flags = case.flags,
+            .flags = bits.from(inf.TriggerFlags, case.flags),
             .object_id = 101,
         };
 
@@ -100,12 +101,12 @@ test "INF consumes the selected handle including mismatched USE_ID" {
         for (case.samples) |expected| {
             try runtime.event(
                 &level,
-                .{ .sector = 0, .mask = 0x20, .object_id = case.supplied, .now_ms = 0 },
+                .{ .sector = 0, .mask = .{ .nudge_back = true }, .object_id = case.supplied, .now_ms = 0 },
             );
 
-            try runtime.flushQueued(&level, null, 0, &.{}, 0xf00000);
+            try runtime.flushQueued(&level, null, 0, &.{}, .all);
 
-            try std.testing.expectEqual(expected.flags, runtime.triggers[0].flags);
+            try std.testing.expectEqual(expected.flags, bits.word(runtime.triggers[0].flags));
             try std.testing.expectEqual(expected.selected, owned.selected);
 
             var present: [25]usize = undefined;

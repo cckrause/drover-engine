@@ -6,6 +6,7 @@
 //! are the same registration as far as this layer is concerned.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const lab = @import("../assets/lab.zig");
 const level = @import("../assets/level.zig");
@@ -24,7 +25,7 @@ pub const Registration = struct {
     name: []const u8,
     resource_type: u32 = 0x57415644,
     priority: u8 = 64,
-    flags: u32 = 0x10000,
+    flags: sound.Flags = .{ .effects = true },
     registered_at: u32,
     volume: u8 = 127,
 };
@@ -47,7 +48,7 @@ pub const Runtime = struct {
     engine: sound.Engine = .{ .effects_volume = 58, .speech_volume = 58 },
     waves: std.ArrayList(asset.Wave) = .empty,
     names: std.ArrayList([]const u8) = .empty,
-    resource_flags: std.ArrayList(u32) = .empty,
+    resource_flags: std.ArrayList(sound.Flags) = .empty,
     registrations: std.ArrayList(Registration) = .empty,
     registration_refs: std.ArrayList(
         struct { count: i32 = 1, active: bool = true, stop_all_instances: u32 = 0 },
@@ -430,7 +431,7 @@ pub const Runtime = struct {
             self.allocator,
             geometry,
             objects,
-            @intFromEnum(difficulty),
+            difficulty,
         );
 
         errdefer scheduler.deinit(self.allocator);
@@ -470,7 +471,7 @@ pub const Runtime = struct {
                 const record = self.registrations.items[registration];
                 var params = source.params();
 
-                params.flags = record.flags | sound.Flags.spatial | sound.Flags.loop | sound.Flags.ambient;
+                params.flags = bits.with(record.flags, .{ .spatial = true, .loop = true, .ambient = true });
                 params.priority = @bitCast(record.priority);
                 params.volume = @bitCast(record.volume);
                 _ = try self.engine.admit(
@@ -539,7 +540,7 @@ pub const Runtime = struct {
         };
 
         var volume = request.volume orelse 127;
-        const flags = request.flags orelse 4;
+        const flags = request.flags orelse sound.RequestFlags.default;
 
         if (!request.occlusion_applied) if (request.sector) |sector| {
             const context = world orelse return error.MissingAudioWorld;
@@ -569,11 +570,11 @@ pub const Runtime = struct {
             if (request.position) |p| .{ p.x, p.y, p.z } else null,
         );
 
-        params.flags |= self.resource_flags.items[resource];
-        params.flags |= self.registrations.items[self.registration_ids.items[resource]].flags;
+        params.flags = bits.with(params.flags, self.resource_flags.items[resource]);
+        params.flags = bits.with(params.flags, self.registrations.items[self.registration_ids.items[resource]].flags);
 
         for (self.ambient_resources) |registered| if (registered == resource) {
-            params.flags |= sound.Flags.loop;
+            params.flags.loop = true;
             break;
         };
 
@@ -901,7 +902,7 @@ test "mission popup music pause preserves the reference CD deadline and nested c
     defer runtime.loops.deinit();
 
     runtime.music_deadline = 201882;
-    const effect = (try runtime.engine.start(0, 11025, .{ .flags = sound.Flags.effects }, 1000)).?;
+    const effect = (try runtime.engine.start(0, 11025, .{ .flags = .{ .effects = true } }, 1000)).?;
     runtime.pauseMusic(6000);
 
     try std.testing.expectEqual(@as(?u32, 195882), runtime.music_pause_remaining);
@@ -1030,7 +1031,7 @@ test "queued audio uses emission state and retries only never-started loops" {
         .position = .{ .x = 200, .y = 0, .z = 0 },
         .sector = 0,
         .volume = 63,
-        .flags = 1,
+        .flags = .{ .loop = true },
         .source = 0,
         .mode = .loop,
         .occlusion_applied = true,
@@ -1113,7 +1114,8 @@ test "ambient runtime preserves failed admission and shared resource loop state"
     objects.entries[0].name = "BELL";
     objects.entries[0].sector_id = geometry.sectors[0].id;
     objects.entries[0].position = .{ .x = 0, .y = 0, .z = 0 };
-    objects.entries[0].flags = .{ 1, 0x20000000 };
+    objects.entries[0].flags = .{ .sound_only = true };
+    objects.entries[0].availability = .{ .difficulties = .{ .bad = true } };
 
     try runtime.beginAmbient(&geometry, &objects, .bad);
     try std.testing.expectEqual(@as(usize, 1), runtime.ambient.?.sources.len);
@@ -1135,14 +1137,11 @@ test "ambient runtime preserves failed admission and shared resource loop state"
     const ambient_handle = runtime.ambient.?.sources[0].handle;
     try std.testing.expectEqual(
         @as(u32, 0x10015),
-        runtime.engine.find(ambient_handle).?.params.flags,
+        bits.word(runtime.engine.find(ambient_handle).?.params.flags),
     );
 
     const second = (try runtime.play(.{ .basename = "BELL" }, null, 1505)).?;
-    try std.testing.expectEqual(
-        @as(u32, 1),
-        runtime.engine.find(second).?.params.flags & sound.Flags.loop,
-    );
+    try std.testing.expect(runtime.engine.find(second).?.params.flags.loop);
 
     runtime.ambient.?.sources[0].handle = second;
     try runtime.advanceAmbient(2005, 1);

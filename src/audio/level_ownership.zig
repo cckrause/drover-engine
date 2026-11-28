@@ -6,6 +6,7 @@
 //! not be counted as owned here or they would be freed twice.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 
@@ -54,7 +55,7 @@ pub const Ownership = struct {
         var points: std.ArrayList([]const u8) = .empty;
 
         for (session.objects.entries) |object| {
-            if (object.flags[0] & 1 == 0 or object.flags[1] & session.difficulty_mask == 0 or session.level.sectorIndex(object.sector_id) == null) continue;
+            if (!object.flags.sound_only or !bits.any(object.availability.difficulties, session.difficulty.set()) or session.level.sectorIndex(object.sector_id) == null) continue;
             try points.append(a, try wav(a, object.name));
         }
 

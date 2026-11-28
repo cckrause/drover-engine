@@ -168,7 +168,7 @@ pub fn run(
 
         var mouse = mission_menu.mouseState();
 
-        if (left_pressed) mouse.buttons |= 1;
+        if (left_pressed) mouse.buttons.left = true;
 
         left_pressed = false;
 
@@ -187,7 +187,7 @@ pub fn run(
 
             if (dialog.control.takeSound())
                 _ = try audio.play(
-                    .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = 4 },
+                    .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = .default },
                     null,
                     c.SDL_GetTicks(),
                 );

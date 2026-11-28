@@ -9,11 +9,13 @@
 const std = @import("std");
 
 const level = @import("../../../assets/level.zig");
+const WallParts = @import("../../scene.zig").WallParts;
 const texture = @import("../../../assets/texture.zig");
 const camera = @import("camera.zig");
 const math = @import("math.zig");
 const projection = @import("projection.zig");
 const raster = @import("raster.zig");
+const bits = @import("../../../util/bits.zig");
 
 pub const Edge = extern struct {
     visited: u32 = 0,
@@ -30,7 +32,9 @@ pub const Edge = extern struct {
     count: i32,
     left: i32,
     right: i32,
-    flags: u32,
+    /// Only `lower_opening` is ever set: the edge belongs to the lower of
+    /// two openings.
+    parts: WallParts,
 
     pub fn init(
         top: f32,
@@ -41,7 +45,7 @@ pub const Edge = extern struct {
         bottom_step: f32,
         left: i32,
         count: i32,
-        flags: u32,
+        lower_opening: bool,
     ) Edge {
         const y1 = math.integer(top);
         const y2 = math.integer(top_last);
@@ -62,7 +66,7 @@ pub const Edge = extern struct {
             .count = count,
             .left = left,
             .right = left +% count -% 1,
-            .flags = flags,
+            .parts = .{ .lower_opening = lower_opening },
         };
     }
 };
@@ -83,7 +87,7 @@ pub const EdgeList = struct {
         bottom_step: f32,
         left: i32,
         count: i32,
-        flags: u32,
+        parts: WallParts,
     ) !void {
         if (self.count > 0x567) {
             std.log.debug("Render_AddWallEdge: exceeded MAX_WALL_EDGES", .{});
@@ -110,17 +114,17 @@ pub const EdgeList = struct {
             bottom_step,
             left,
             count,
-            0,
+            false,
         );
 
         self.entries[self.count] = edge;
 
-        if (flags & 4 == 0) {
+        if (!parts.double_adjoin) {
             if (self.top_limit < edge.top_max -% 1) self.top_limit = edge.top_max -% 1;
             if (edge.bottom_min +% 1 < self.bottom_limit) self.bottom_limit = edge.bottom_min +% 1;
             if (self.bottom_limit < self.view_top) self.bottom_limit = self.view_top;
         } else {
-            if (flags & 8 != 0) {
+            if (parts.lower_opening) {
                 if (edge.bottom_min +% 1 < self.bottom_limit) self.bottom_limit = edge.bottom_min +% 1;
                 if (self.bottom_limit < self.view_top) self.bottom_limit = self.view_top;
                 self.count += 1;
@@ -291,7 +295,7 @@ pub const SurfaceEndpoints = struct {
     lower_sloped: bool,
 };
 
-pub const Portal = struct { edge: Edge, projected: projection.ProjectedWall, flags: u32 };
+pub const Portal = struct { edge: Edge, projected: projection.ProjectedWall, lower_opening: bool };
 
 pub const WindowList = struct {
     entries: [60]Portal = undefined,
@@ -307,7 +311,7 @@ pub const WindowList = struct {
         bottom_step: f32,
         left: i32,
         count: i32,
-        flags: u32,
+        parts: WallParts,
     ) !void {
         if (self.total_count.* > 0x467) {
             std.log.debug("Render_AddWallWindow: exceeded MAX_WALL_WINDOWS", .{});
@@ -338,10 +342,10 @@ pub const WindowList = struct {
                 bottom_step,
                 left,
                 count,
-                flags & 8,
+                parts.lower_opening,
             ),
             .projected = projected,
-            .flags = flags & 8,
+            .lower_opening = parts.lower_opening,
         };
 
         self.total_count.* += 1;
@@ -356,8 +360,8 @@ pub const AdjoinEndpoints = struct {
     neighbor_lower1: f32,
     neighbor_lower2: f32,
     neighbor_upper_sloped: bool,
-    sector_flags: u32,
-    neighbor_flags: u32,
+    sector_flags: level.SectorFlags,
+    neighbor_flags: level.SectorFlags,
 };
 
 const ScreenLine = struct {
@@ -519,7 +523,7 @@ pub fn drawSolid(
     if (ctx.window_bottom < math.integer(top) and ctx.window_bottom < math.integer(top_last)) {
         @memset(ctx.top_y[@intCast(left)..@intCast(right + 1)], ctx.window_bottom);
         const y = float(ctx.window_bottom + 1);
-        try ctx.edges.add(y, 0, y, 0, left, count, 0);
+        try ctx.edges.add(y, 0, y, 0, left, count, .{});
 
         for (@as(usize, @intCast(left))..@as(usize, @intCast(right + 1))) |x|
             try ctx.recordDepth(
@@ -540,7 +544,7 @@ pub fn drawSolid(
     if (math.integer(bottom) < ctx.window_top and math.integer(bottom_last) < ctx.window_top) {
         @memset(ctx.bottom_y[@intCast(left)..@intCast(right + 1)], ctx.window_top);
         const y = float(ctx.window_top - 1);
-        try ctx.edges.add(y, 0, y, 0, left, count, 0);
+        try ctx.edges.add(y, 0, y, 0, left, count, .{});
 
         for (@as(usize, @intCast(left))..@as(usize, @intCast(right + 1))) |x|
             try ctx.recordDepth(
@@ -602,7 +606,7 @@ pub fn drawSolid(
         math.mul(math.sub(projected.x2, projected.x1), view.focal),
     );
 
-    try ctx.edges.add(top, top_step, bottom, bottom_step, left, count, 0);
+    try ctx.edges.add(top, top_step, bottom, bottom_step, left, count, .{});
 
     var current_top = top;
     var current_bottom = bottom;
@@ -647,7 +651,7 @@ pub fn drawSolid(
                 @bitCast(math.fixed(u) >> 16),
             ) & @as(u32, @intCast(tex.width - 1));
 
-            if (wall.flags & 4 != 0) column_index = @as(
+            if (wall.flags.flip_texture) column_index = @as(
                 u32,
                 @intCast(tex.width),
             ) - column_index - 1;
@@ -746,7 +750,7 @@ pub fn drawSolid(
                             .dv = dv,
                         };
 
-                        const overlay_translation = if (wall.flags & 2 == 0) translation else null;
+                        const overlay_translation = if (!wall.flags.full_bright_overlay) translation else null;
 
                         if (overlay.isTransparent()) try raster.overlayColumn(
                             ctx.pixels,
@@ -796,7 +800,7 @@ pub fn drawMasked(
                 @bitCast(math.fixed(u) >> 16),
             ) & @as(u32, @intCast(tex.width - 1));
 
-            if (wall.flags & 4 != 0) column_index = @as(
+            if (wall.flags.flip_texture) column_index = @as(
                 u32,
                 @intCast(tex.width),
             ) - column_index - 1;
@@ -825,7 +829,7 @@ pub fn drawMasked(
 
             const translation = try ctx.lighting.wallTable(sample.distance, wall.light);
 
-            if (wall.flags & 0x20 != 0 and blend != null) try raster.blendedColumn(
+            if (wall.flags.translucent and blend != null) try raster.blendedColumn(
                 ctx.pixels,
                 c,
                 blend.?,
@@ -847,7 +851,7 @@ pub fn drawOpen(
     sector_index: usize,
     projected: projection.ProjectedWall,
     endpoints: AdjoinEndpoints,
-    render_flags: u32,
+    render_flags: WallParts,
 ) !void {
     const view = ctx.view;
     const left = projected.visible_left;
@@ -855,8 +859,8 @@ pub fn drawOpen(
     const count = right - left + 1;
     const range_start: usize = @intCast(left);
     const range_end: usize = @intCast(right + 1);
-    const upper_sky = endpoints.sector_flags & 1 != 0 and endpoints.neighbor_flags & 4 != 0;
-    const lower_sky = endpoints.sector_flags & 2 != 0 and endpoints.neighbor_flags & 8 != 0;
+    const upper_sky = endpoints.sector_flags.sky_ceiling and endpoints.neighbor_flags.sky_ceiling_adjoin;
+    const lower_sky = endpoints.sector_flags.sky_floor and endpoints.neighbor_flags.sky_floor_adjoin;
     const top = ScreenLine.init(
         view,
         projected,
@@ -868,7 +872,7 @@ pub fn drawOpen(
     if (ctx.window_bottom < math.integer(
         top.raw_first,
     ) and ctx.window_bottom < math.integer(top.last)) {
-        if (render_flags & 8 == 0) @memset(ctx.top_y[range_start..range_end], ctx.window_bottom);
+        if (!render_flags.lower_opening) @memset(ctx.top_y[range_start..range_end], ctx.window_bottom);
         const y = float(ctx.window_bottom + 1);
         try ctx.edges.add(y, 0, y, 0, left, count, render_flags);
         return depthRange(ctx, sector_index, projected);
@@ -885,9 +889,9 @@ pub fn drawOpen(
     if (math.integer(
         bottom.raw_first,
     ) < ctx.window_top and math.integer(bottom.last) < ctx.window_top) {
-        if (render_flags != 4) @memset(ctx.bottom_y[range_start..range_end], ctx.window_top);
+        if (!upperOpening(render_flags)) @memset(ctx.bottom_y[range_start..range_end], ctx.window_top);
 
-        if (render_flags == 4 and endpoints.sector_flags & 1 != 0) @memset(
+        if (upperOpening(render_flags) and endpoints.sector_flags.sky_ceiling) @memset(
             ctx.top_y[range_start..range_end],
             ctx.window_top - 1,
         );
@@ -916,9 +920,9 @@ pub fn drawOpen(
     var y2 = bottom.first;
 
     for (range_start..range_end) |x| {
-        if (render_flags & 4 == 0 or render_flags & 8 == 0) ctx.top_y[x] = math.integer(y1) -% 1;
+        if (!render_flags.double_adjoin or !render_flags.lower_opening) ctx.top_y[x] = math.integer(y1) -% 1;
 
-        if (render_flags & 4 == 0 or render_flags & 8 != 0) ctx.bottom_y[x] = math.integer(y2) +% 1;
+        if (!render_flags.double_adjoin or render_flags.lower_opening) ctx.bottom_y[x] = math.integer(y2) +% 1;
 
         try ctx.recordDepth(x, intersection(view, projected, x, intercept).distance, sector_index);
 
@@ -934,7 +938,7 @@ pub fn drawAdjoin(
     wall: level.Wall,
     p: projection.ProjectedWall,
     e: AdjoinEndpoints,
-    render_flags: u32,
+    render_flags: WallParts,
     part: AdjoinPart,
 ) !void {
     const view = ctx.view;
@@ -943,8 +947,8 @@ pub fn drawAdjoin(
     const start: usize = @intCast(left);
     const end: usize = @intCast(right + 1);
     const count = right - left + 1;
-    const upper_sky = part == .lower and e.sector_flags & 1 != 0 and e.neighbor_flags & 4 != 0;
-    const lower_sky = part == .upper and e.sector_flags & 2 != 0 and e.neighbor_flags & 8 != 0;
+    const upper_sky = part == .lower and e.sector_flags.sky_ceiling and e.neighbor_flags.sky_ceiling_adjoin;
+    const lower_sky = part == .upper and e.sector_flags.sky_floor and e.neighbor_flags.sky_floor_adjoin;
     const top = ScreenLine.init(
         view,
         p,
@@ -956,7 +960,7 @@ pub fn drawAdjoin(
     if (ctx.window_bottom < math.integer(
         top.raw_first,
     ) and ctx.window_bottom < math.integer(top.last)) {
-        if (render_flags & 8 == 0) @memset(ctx.top_y[start..end], ctx.window_bottom);
+        if (!render_flags.lower_opening) @memset(ctx.top_y[start..end], ctx.window_bottom);
         const y = float(ctx.window_bottom + 1);
         try ctx.edges.add(y, 0, y, 0, left, count, render_flags);
         return depthRange(ctx, sector_index, p);
@@ -973,7 +977,7 @@ pub fn drawAdjoin(
     if (math.integer(
         bottom.raw_first,
     ) < ctx.window_top and math.integer(bottom.last) < ctx.window_top) {
-        if (render_flags != 4) @memset(ctx.bottom_y[start..end], ctx.window_top);
+        if (!upperOpening(render_flags)) @memset(ctx.bottom_y[start..end], ctx.window_top);
         const y = float(ctx.window_top - 1);
         try ctx.edges.add(y, 0, y, 0, left, count, render_flags);
         return depthRange(ctx, sector_index, p);
@@ -1035,10 +1039,10 @@ pub fn drawAdjoin(
 
     if (part != .lower) {
         if (upper_offscreen) {
-            if (render_flags & 8 == 0) @memset(ctx.top_y[start..end], ctx.window_top - 1);
+            if (!render_flags.lower_opening) @memset(ctx.top_y[start..end], ctx.window_top - 1);
 
             if (part == .upper) {
-                if (render_flags == 4 and e.sector_flags & 1 != 0) @memset(
+                if (upperOpening(render_flags) and e.sector_flags.sky_ceiling) @memset(
                     ctx.top_y[start..end],
                     ctx.window_top - 1,
                 );
@@ -1047,7 +1051,7 @@ pub fn drawAdjoin(
 
                 for (start..end) |x| {
                     const clipped = @min(math.integer(y), ctx.clip_bottom[x]);
-                    if (render_flags != 4) ctx.bottom_y[x] = clipped +% 1;
+                    if (!upperOpening(render_flags)) ctx.bottom_y[x] = clipped +% 1;
                     y = math.add(y, bottom.step);
                 }
 
@@ -1084,13 +1088,13 @@ pub fn drawAdjoin(
 
     if (part != .upper) {
         if (lower_offscreen) {
-            if (render_flags != 4) @memset(ctx.bottom_y[start..end], ctx.window_bottom + 1);
+            if (!upperOpening(render_flags)) @memset(ctx.bottom_y[start..end], ctx.window_bottom + 1);
 
             if (part == .lower) {
                 var y = top.first;
 
                 for (start..end) |x| {
-                    if (render_flags & 8 == 0) ctx.top_y[x] = math.integer(y) -% 1;
+                    if (!render_flags.lower_opening) ctx.top_y[x] = math.integer(y) -% 1;
                     y = math.add(y, top.step);
                 }
 
@@ -1156,6 +1160,11 @@ pub fn drawAdjoin(
     }
 }
 
+/// Drawing the upper of two openings.
+fn upperOpening(parts: WallParts) bool {
+    return parts.double_adjoin and !parts.lower_opening;
+}
+
 fn float(value: i32) f32 {
     return @floatFromInt(value);
 }
@@ -1214,7 +1223,7 @@ fn drawStrip(
     both: bool,
     outer_top: ScreenLine,
     outer_bottom: ScreenLine,
-    render_flags: u32,
+    render_flags: WallParts,
 ) !void {
     var strip = strip_value;
     const view = ctx.view;
@@ -1236,16 +1245,16 @@ fn drawStrip(
         var y1 = math.integer(y_top);
         var y2 = math.integer(y_bottom);
 
-        if (part == .upper) y1 +%= @intFromBool(render_flags & 8 != 0);
+        if (part == .upper) y1 +%= @intFromBool(render_flags.lower_opening);
 
         if (both) {
-            if (part == .upper and render_flags & 8 == 0) ctx.top_y[x] = y1 -% 1;
-            if (part == .lower and render_flags != 4) ctx.bottom_y[x] = y2 +% 1;
+            if (part == .upper and !render_flags.lower_opening) ctx.top_y[x] = y1 -% 1;
+            if (part == .lower and !upperOpening(render_flags)) ctx.bottom_y[x] = y2 +% 1;
         } else {
-            if (render_flags & 4 == 0 or render_flags & 8 == 0)
+            if (!render_flags.double_adjoin or !render_flags.lower_opening)
                 ctx.top_y[x] = if (part == .upper) y1 -% 1 else math.integer(plane_top) -% 1;
 
-            if (render_flags & 4 == 0 or render_flags & 8 != 0)
+            if (!render_flags.double_adjoin or render_flags.lower_opening)
                 ctx.bottom_y[x] = if (part == .lower) y2 +% 1 else math.integer(plane_bottom) +% 1;
         }
 
@@ -1267,7 +1276,7 @@ fn drawStrip(
                 @bitCast(math.fixed(u) >> 16),
             ) & @as(u32, @intCast(tex.width - 1));
 
-            if (wall.flags & 4 != 0) column_index = @as(
+            if (wall.flags.flip_texture) column_index = @as(
                 u32,
                 @intCast(tex.width),
             ) - column_index - 1;
@@ -1363,7 +1372,7 @@ fn drawStrip(
                             .dv = dv,
                         };
 
-                        const overlay_translation = if (wall.flags & 2 == 0) translation else null;
+                        const overlay_translation = if (!wall.flags.full_bright_overlay) translation else null;
 
                         if (overlay.isTransparent()) try raster.overlayColumn(
                             ctx.pixels,
@@ -1391,7 +1400,7 @@ test "wall-edge record preserves minima, maxima and branch-specific limits" {
     try std.testing.expectEqual(@as(usize, 0x30), @offsetOf(Edge, "left"));
 
     var edges = EdgeList{ .view_top = 0, .view_bottom = 479, .top_limit = -1, .bottom_limit = 480 };
-    try edges.add(10.9, -0.5, 30.9, 0.25, 3, 5, 0);
+    try edges.add(10.9, -0.5, 30.9, 0.25, 3, 5, .{});
     const edge = edges.entries[0];
 
     try std.testing.expectEqual(@as(i32, 8), edge.top_min);
@@ -1528,14 +1537,14 @@ test "wall raster paths match isolated reference routines" {
                 .height = if (generic) 32 else 64,
                 .pixels = texels[0..if (generic) 2048 else 4096],
                 .height_shift = if (generic) 5 else 6,
-                .flags = if (transparent) 14 else 6,
+                .flags = .{ .width_power_of_two = true, .height_power_of_two = true, .transparent = transparent },
             },
             .{
                 .width = 16,
                 .height = if (tall_overlay) 128 else 16,
                 .pixels = overlay_texels[0..if (tall_overlay) 2048 else 256],
                 .height_shift = if (tall_overlay) 7 else 4,
-                .flags = 14,
+                .flags = .{ .width_power_of_two = true, .height_power_of_two = true, .transparent = true },
             },
         };
 
@@ -1636,15 +1645,11 @@ test "wall raster paths match isolated reference routines" {
         wall.bottom = .{ .texture = 0, .offset = .{ .x = 3.125, .z = 6.125 } };
         wall.overlay = .{ .texture = if (overlay) 1 else -1, .offset = .{ .x = 25, .z = -6.25 } };
         wall.light = -2;
-        wall.flags = if (std.mem.eql(
-            u8,
-            case.variant,
-            "flipped",
-        )) 4 else if (std.mem.eql(
-            u8,
-            case.variant,
-            "overlay_unlit",
-        )) 2 else if (std.mem.startsWith(u8, case.variant, "blend")) 0x20 else 0;
+        wall.flags = .{
+            .flip_texture = std.mem.eql(u8, case.variant, "flipped"),
+            .full_bright_overlay = std.mem.eql(u8, case.variant, "overlay_unlit"),
+            .translucent = std.mem.startsWith(u8, case.variant, "blend"),
+        };
 
         var h: [4][2]f32 = undefined;
 
@@ -1682,8 +1687,8 @@ test "wall raster paths match isolated reference routines" {
             .neighbor_lower1 = h[3][0],
             .neighbor_lower2 = h[3][1],
             .neighbor_upper_sloped = case.slopes.len != 0,
-            .sector_flags = if (std.mem.endsWith(u8, case.variant, "sky")) 3 else 0,
-            .neighbor_flags = if (std.mem.endsWith(u8, case.variant, "sky")) 12 else 0,
+            .sector_flags = if (std.mem.endsWith(u8, case.variant, "sky")) .{ .sky_ceiling = true, .sky_floor = true } else .{},
+            .neighbor_flags = if (std.mem.endsWith(u8, case.variant, "sky")) .{ .sky_ceiling_adjoin = true, .sky_floor_adjoin = true } else .{},
         };
 
         for (0..case.repeats) |_| {
@@ -1697,7 +1702,7 @@ test "wall raster paths match isolated reference routines" {
                     -0.125,
                     p.visible_left,
                     p.visible_right - p.visible_left + 1,
-                    0,
+                    false,
                 );
 
                 try drawMasked(
@@ -1722,7 +1727,7 @@ test "wall raster paths match isolated reference routines" {
                 u8,
                 case.kind,
                 "open",
-            )) try drawOpen(&ctx, &windows, 0, p, endpoints, case.render_flags) else {
+            )) try drawOpen(&ctx, &windows, 0, p, endpoints, bits.from(WallParts, case.render_flags)) else {
                 const part = std.meta.stringToEnum(AdjoinPart, case.kind).?;
                 drawAdjoin(
                     &ctx,
@@ -1731,7 +1736,7 @@ test "wall raster paths match isolated reference routines" {
                     wall,
                     p,
                     endpoints,
-                    case.render_flags,
+                    bits.from(WallParts, case.render_flags),
                     part,
                 ) catch |err| {
                     std.debug.print(

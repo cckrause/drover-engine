@@ -14,6 +14,8 @@ const stream = @import("stream.zig");
 const Mode = @import("../player/weapon_config.zig").Mode;
 const inventory_module = @import("../player/inventory.zig");
 const weapon_config = @import("../player/weapon_config.zig");
+const PlayerFlags = @import("../player/flags.zig").PlayerFlags;
+const bits = @import("../util/bits.zig");
 
 pub const Weapon = struct {
     native_88: []const u8,
@@ -505,7 +507,7 @@ pub fn capture(session: anytype, audio: anytype) !State {
             @bitCast(session.player.underwater_elapsed),
             @bitCast(session.player.slope_velocity),
         },
-        .flags = inventory.player_flags,
+        .flags = bits.word(inventory.player_flags),
         .short_9c = @bitCast(session.player.normal_yaw),
         .booleans_a4 = .{
             inventory.cloak_active,
@@ -571,11 +573,13 @@ pub fn apply(session: anytype, audio: anytype, value: State) !void {
     session.player.underwater_elapsed = @bitCast(value.words_8c[1]);
     session.player.slope_velocity = @bitCast(value.words_8c[2]);
     session.player.normal_yaw = @bitCast(value.short_9c);
-    inventory.player_flags = value.flags;
-    session.player.flags = value.flags;
+    const flags = bits.from(PlayerFlags, value.flags);
+
+    inventory.player_flags = flags;
+    session.player.flags = flags;
     session.player.dead = !(@as(i32, @bitCast(value.health)) > 0);
 
-    if (value.flags & 8 != 0) {
+    if (flags.on_rail) {
         var rail: @import(
             "../audio/rail.zig",
         ).Context = .{
@@ -599,8 +603,8 @@ pub fn apply(session: anytype, audio: anytype, value: State) !void {
 
     for (value.inventory, 1..) |item, index| inventory.slots[index] = if (item) |owned| try restoreInventory(owned, audio) else null;
 
-    if (value.flags & 0x20000000 != 0) {
-        inventory.player_flags &= ~@as(u32, 0x20000000);
+    if (flags.lamp_on) {
+        inventory.player_flags.lamp_on = false;
 
         var effects_buffer: inventory_module.EffectBuffer = undefined;
         var effects = inventory_module.Effects.init(&effects_buffer);

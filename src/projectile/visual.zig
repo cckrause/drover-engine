@@ -5,6 +5,7 @@
 //! rate would fault the modulo, so rates are checked before use.
 
 const std = @import("std");
+const Events = @import("../script/inf_flags.zig").Events;
 const Config = @import("runtime.zig").Config;
 const Actor = @import("../render/objects.zig").Actor;
 const level = @import("../assets/level.zig");
@@ -26,13 +27,12 @@ pub fn explode(
     _ = allocator;
     const sector = session.scene.sectors[actor.sector];
 
-    if (sector.flags & 0x80 == 0) {
+    if (!sector.flags.underwater) {
         if (config.explosion) |name| {
             const source = try bound(session, name, actor.sector, actor.position);
-            session.actor_slots[source].?.flags = (session.actor_slots[source].?.flags & ~@as(
-                u32,
-                8,
-            )) | 0x80000000;
+            // Explosions light themselves.
+            session.actor_slots[source].?.flags.shaded = false;
+            session.actor_slots[source].?.flags.changed = true;
 
             session.syncActor(source);
         }
@@ -93,7 +93,7 @@ pub fn explode(
             .position = actor.position,
             .priority = 64,
             .volume = 127,
-            .flags = 4,
+            .flags = .default,
         },
     });
 
@@ -115,12 +115,12 @@ pub fn explode(
         session.scope_explosion_flash +%= 10;
     }
 
-    try events(session, effects, actor.sector, actor.position, config.wall_radius, 0x40);
-    try events(session, effects, actor.sector, actor.position, config.radius, 0x8000);
+    try events(session, effects, actor.sector, actor.position, config.wall_radius, .{ .explosion = true });
+    try events(session, effects, actor.sector, actor.position, config.radius, .{ .blast = true });
 
     const upper = session.level.sectors[actor.sector].vadjoin;
 
-    if (sector.flags & 0x80 != 0 and upper >= 0) {
+    if (sector.flags.underwater and upper >= 0) {
         var position = actor.position;
 
         position.y = try session.scene.ceilingHeight(
@@ -138,7 +138,7 @@ pub fn explode(
                 .position = position,
                 .priority = 64,
                 .volume = 127,
-                .flags = 4,
+                .flags = .default,
             },
         });
     }
@@ -150,7 +150,7 @@ pub fn events(
     origin_sector: usize,
     position: level.Vec3,
     radius: f32,
-    mask: u32,
+    mask: Events,
 ) !void {
     const cache = &session.enemy_visibility;
 
@@ -175,7 +175,7 @@ pub fn events(
         );
 
         if (@as(f64, total) / @as(f32, @floatFromInt(sector.vertices.len)) < radius) {
-            var context = enemy.scriptContext(session, effects, 0);
+            var context = enemy.scriptContext(session, effects, .{});
             try context.infEvent(.{ .sector = source, .mask = mask });
 
             for (sector.walls, 0..) |wall, index| {

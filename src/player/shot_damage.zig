@@ -192,7 +192,7 @@ fn strike(
         .z = f(horizontal * yaw.cos),
     };
 
-    if (player.flags & 8 == 0) {
+    if (!player.flags.on_rail) {
         player.velocity.x = f(@as(f64, player.velocity.x) + impulse.x);
         player.velocity.y = f(@as(f64, player.velocity.y) + impulse.y);
         player.velocity.z = f(@as(f64, player.velocity.z) + impulse.z);
@@ -274,7 +274,7 @@ fn absorb(
 
 fn sound(effects: *inventory_module.Effects, name: []const u8) !void {
     if (name.len != 0) try effects.append(.{
-        .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = 0 },
+        .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = .{} },
     });
 }
 

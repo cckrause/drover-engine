@@ -5,6 +5,7 @@
 //! the final ray's result before it plays its connect sound.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const level = @import("../assets/level.zig");
 const nwx = @import("../assets/nwx.zig");
@@ -18,6 +19,7 @@ const choreography = @import("choreography.zig");
 pub const Config = @import("weapon_config.zig").Config;
 pub const Mode = @import("weapon_config.zig").Mode;
 const FixedList = @import("../util/fixed_list.zig").FixedList;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 /// Shots one pass may collect before they are cast: four trigger pulls of
 /// two rounds with the most pellets any shipped weapon fires (30). Frame time
@@ -71,7 +73,7 @@ pub const ProjectileSink = struct {
     launch: *const fn (*anyopaque, usize, projectile.Owner, f32) anyerror!void,
 };
 
-pub const AutoAimCandidate = struct { flags: u32, x: f32, y: f32, z: f32, height: f32 };
+pub const AutoAimCandidate = struct { flags: ActorKind, x: f32, y: f32, z: f32, height: f32 };
 
 pub const State = struct {
     action: i32 = -1,
@@ -106,7 +108,7 @@ pub const State = struct {
         packet: *const input.Packet,
         now: u32,
     ) !void {
-        if (inventory.player_flags & 0x10000000 != 0 or inventory.health <= 0) return;
+        if (inventory.player_flags.dead or inventory.health <= 0) return;
         try self.selectInput(inventory, packet.get(.weapon));
         try self.fireInput(inventory, packet, now);
     }
@@ -116,9 +118,9 @@ pub const State = struct {
         inventory: *inventory_module.Inventory,
         select: input.Entry,
     ) !void {
-        if (inventory.player_flags & 0x10000000 != 0 or inventory.health <= 0) return;
+        if (inventory.player_flags.dead or inventory.health <= 0) return;
 
-        if (select.flags & (input.absolute | input.pressed) == input.absolute | input.pressed and select.value >= 0) {
+        if (bits.all(select.flags, .{ .absolute = true, .pressed = true }) and select.value >= 0) {
             const slot: usize = @intCast(select.value);
             if (slot >= inventory.slots.len) return error.InvalidInventorySlot;
 
@@ -142,7 +144,7 @@ pub const State = struct {
         packet: *const input.Packet,
         now: u32,
     ) !void {
-        if (inventory.player_flags & 0x10000000 != 0 or inventory.health <= 0) return;
+        if (inventory.player_flags.dead or inventory.health <= 0) return;
 
         const owned = inventory.slots[inventory.selected_weapon] orelse return;
         if (owned.definition.weapon == null) return;
@@ -151,14 +153,14 @@ pub const State = struct {
             const entry = packet.get(slot);
             const mode = mappedMode(owned.definition.function, i);
 
-            if (entry.flags & input.released != 0) {
+            if (entry.flags.released) {
                 self.held[i] = false;
                 if (mode != -1 and (i != 3 or !owned.definition.infinite)) {
                     if (self.action == mode) self.released = true else if (self.pending == mode) self.pending = -1;
                 }
             }
 
-            if (entry.flags & input.pressed != 0) {
+            if (entry.flags.pressed) {
                 self.held[i] = true;
                 if (self.last_press +% 250 > now) continue;
                 self.last_press = now;
@@ -235,6 +237,17 @@ pub const State = struct {
     }
 };
 
+/// Game-wide options the weapon code checks. Nothing turns them on yet.
+pub const GameOptions = packed struct(u32) {
+    unused_0: bool = false,
+    no_blood: bool = false,
+    unused_2: bool = false,
+    unlimited_ammo: bool = false,
+    unused_4: u2 = 0,
+    auto_reload: bool = false,
+    unused_7: u25 = 0,
+};
+
 pub const Context = struct {
     state: *State,
     inventory: *inventory_module.Inventory,
@@ -250,11 +263,11 @@ pub const Context = struct {
     ready: bool,
     animation_slot: ?usize = null,
     underwater: bool = false,
-    game_flags: u32 = 0,
+    game_flags: GameOptions = .{},
     auto_aim: bool = true,
     aim_horizontal: i16 = 182,
     aim_vertical: i16 = 182,
-    player_team_flags: u32 = 0,
+    player_team_flags: u4 = 0,
     friendly_fire: bool = false,
     quadruple_mass: bool = false,
     candidates: []const AutoAimCandidate = &.{},
@@ -284,15 +297,15 @@ pub const Context = struct {
         costume: *const nwx.Costume,
         packet: *const input.Packet,
     ) !void {
-        if (self.inventory.player_flags & 0x10000000 != 0 or self.inventory.health <= 0) return;
+        if (self.inventory.player_flags.dead or self.inventory.health <= 0) return;
         try self.selectInput(packet.get(.weapon));
         try self.fireInput(playback, costume, packet);
     }
 
     pub fn selectInput(self: *Context, select: input.Entry) !void {
-        if (self.inventory.player_flags & 0x10000000 != 0 or self.inventory.health <= 0) return;
+        if (self.inventory.player_flags.dead or self.inventory.health <= 0) return;
 
-        if (select.flags & (input.absolute | input.pressed) == input.absolute | input.pressed and select.value >= 0 and select.value != self.inventory.selected_weapon) {
+        if (bits.all(select.flags, .{ .absolute = true, .pressed = true }) and select.value >= 0 and select.value != self.inventory.selected_weapon) {
             const slot: usize = @intCast(select.value);
             if (slot >= self.inventory.slots.len) return error.InvalidInventorySlot;
             if (slot == 0 or (self.inventory.slots[slot] != null and self.inventory.slots[slot].?.definition.weapon != null)) try self.dropHeld();
@@ -307,11 +320,11 @@ pub const Context = struct {
         costume: *const nwx.Costume,
         packet: *const input.Packet,
     ) !void {
-        if (self.inventory.player_flags & 0x10000000 != 0 or self.inventory.health <= 0) return;
+        if (self.inventory.player_flags.dead or self.inventory.health <= 0) return;
 
         if (packet.get(
             .fire,
-        ).flags & input.released != 0 and (self.state.action == 4 or self.state.action == 5)) {
+        ).flags.released and (self.state.action == 4 or self.state.action == 5)) {
             self.state.action = if (self.state.action == 4) 0 else 1;
             self.state.throw_fraction = @min(
                 @max(
@@ -331,12 +344,12 @@ pub const Context = struct {
 
             var budget: usize = 0;
 
-            while (playback.flags & 2 == 0) : (budget += 1) {
+            while (!playback.flags.held) : (budget += 1) {
                 if (budget >= costume.choreographies[playback.choreography].frames.len + 1) return error.MissingProjectileChargePause;
                 try playback.advanceWithContext(costume, 1, self.now, self);
             }
 
-            playback.flags &= ~@as(u32, 2);
+            playback.flags.held = false;
         }
 
         try self.state.fireInput(self.inventory, packet, self.now);
@@ -437,7 +450,7 @@ pub const Context = struct {
             const mode: usize = @intCast(pending);
             state.action = pending;
 
-            if ((self.game_flags & 0x40 != 0 or config.auto_reload) and item.loaded == 0) try self.refill();
+            if ((self.game_flags.auto_reload or config.auto_reload) and item.loaded == 0) try self.refill();
 
             const empty = (item.loaded == 0 or self.underwater) and !item.definition.infinite;
             const sequence = if (state.scope) (if (empty) config.scope_empty[mode] else config.scope_fire[mode]) else (if (empty) config.empty[mode] else config.fire[mode]);
@@ -481,7 +494,7 @@ pub const Context = struct {
             }
 
             const ammo = self.inventory.find(item.definition.ammo);
-            if (self.game_flags & 8 == 0 and (ammo == 0 or self.inventory.slots[ammo].?.count < 1)) return;
+            if (!self.game_flags.unlimited_ammo and (ammo == 0 or self.inventory.slots[ammo].?.count < 1)) return;
 
             if (config.reload != 0 and item.loaded < item.definition.capacity) {
                 state.action = 3;
@@ -608,7 +621,7 @@ pub const Context = struct {
         self.state.held_projectile = null;
         try self.sound(config.fire_sound[@intCast(self.state.action)]);
 
-        if (self.game_flags & 8 == 0) item.count -%= 1;
+        if (!self.game_flags.unlimited_ammo) item.count -%= 1;
     }
 
     fn projectileDescriptor(
@@ -655,7 +668,7 @@ pub const Context = struct {
         const item = try self.owned();
         const config = item.definition.weapon.?;
 
-        if (self.game_flags & 8 != 0) {
+        if (self.game_flags.unlimited_ammo) {
             item.loaded = @min(item.loaded +% 1, item.definition.capacity);
             if (item.loaded == item.definition.capacity) try self.rest(playback, costume, config);
         } else {
@@ -688,8 +701,8 @@ pub const Context = struct {
     fn refill(self: *Context) !void {
         const item = try self.owned();
         const before = item.loaded;
-        if (self.game_flags & 8 != 0) item.loaded = item.definition.capacity else try self.inventory.reload(self.animation_slot orelse self.inventory.selected_weapon);
-        if (self.game_flags & 8 == 0 and item.loaded != before and !item.definition.infinite) try self.sound(item.definition.weapon.?.reload_sound);
+        if (self.game_flags.unlimited_ammo) item.loaded = item.definition.capacity else try self.inventory.reload(self.animation_slot orelse self.inventory.selected_weapon);
+        if (!self.game_flags.unlimited_ammo and item.loaded != before and !item.definition.infinite) try self.sound(item.definition.weapon.?.reload_sound);
     }
 
     fn sound(self: *Context, name: ?[]const u8) !void {
@@ -762,7 +775,7 @@ pub const Context = struct {
             return;
         }
 
-        if (self.game_flags & 0x40 != 0 and item.loaded == 0) try self.refill();
+        if (self.game_flags.auto_reload and item.loaded == 0) try self.refill();
 
         var fired: i32 = 0;
 
@@ -787,9 +800,9 @@ pub const Context = struct {
                 try self.emitShot(shot);
             }
 
-            if (self.game_flags & 8 == 0) item.loaded -%= 1;
+            if (!self.game_flags.unlimited_ammo) item.loaded -%= 1;
 
-            if (self.game_flags & 0x40 != 0 and item.loaded == 0) try self.refill();
+            if (self.game_flags.auto_reload and item.loaded == 0) try self.refill();
         }
 
         if (fired == 0) {
@@ -910,9 +923,9 @@ pub const Context = struct {
         const below = self.angles.tan(shot.pitch -% self.aim_vertical);
 
         for (self.candidates) |candidate| {
-            if (candidate.flags & 0x110 == 0) continue;
+            if (!candidate.flags.player and !candidate.flags.enemy) continue;
 
-            if (candidate.flags & 0x10 != 0 and !self.friendly_fire and (candidate.flags ^ self.player_team_flags) & 15 == 0) continue;
+            if (candidate.flags.player and !self.friendly_fire and candidate.flags.team == self.player_team_flags) continue;
 
             const vertical: f32 = @floatCast(
                 @as(f64, candidate.height) * @as(f32, 0.85) + candidate.y,
@@ -985,7 +998,7 @@ pub fn randomFloat(state: *u32, maximum: f32) f64 {
 }
 
 fn localSound(name: []const u8) @import("../audio/request.zig").Request {
-    return .{ .basename = name, .priority = 0x40, .volume = 0x7f, .flags = 0 };
+    return .{ .basename = name, .priority = 0x40, .volume = 0x7f, .flags = .{} };
 }
 
 fn mappedMode(native: Native, index: usize) i32 {

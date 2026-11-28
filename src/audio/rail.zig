@@ -4,6 +4,7 @@
 //! instance, so every instance of it loops.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const sound = @import("engine.zig");
 const Vec3 = @import("../assets/level.zig").Vec3;
@@ -32,8 +33,8 @@ pub const Context = struct {
         const rail = try self.retain("rail.wav");
 
         self.state.rail_resource = rail;
-        self.runtime.resource_flags.items[rail] |= sound.Flags.loop;
-        self.runtime.registrations.items[self.runtime.registration_ids.items[rail]].flags |= sound.Flags.loop;
+        self.runtime.resource_flags.items[rail].loop = true;
+        self.runtime.registrations.items[self.runtime.registration_ids.items[rail]].flags.loop = true;
 
         if (try self.create(rail, 0, position)) |id| self.state.rail_handle = id;
 
@@ -41,8 +42,8 @@ pub const Context = struct {
         const pull_resource = try self.retain("pull.wav");
 
         self.state.pull_resource = pull_resource;
-        self.runtime.resource_flags.items[pull_resource] |= sound.Flags.loop;
-        self.runtime.registrations.items[self.runtime.registration_ids.items[pull_resource]].flags |= sound.Flags.loop;
+        self.runtime.resource_flags.items[pull_resource].loop = true;
+        self.runtime.registrations.items[self.runtime.registration_ids.items[pull_resource]].flags.loop = true;
     }
 
     pub fn stop(self: *Context) !void {
@@ -93,7 +94,7 @@ pub const Context = struct {
                     .basename = "thunk.wav",
                     .priority = 64,
                     .volume = 127,
-                    .flags = 4,
+                    .flags = .default,
                     .position = position,
                 },
                 null,
@@ -125,7 +126,7 @@ pub const Context = struct {
         const id = self.runtime.allocateInstance(registration) orelse return null;
 
         _ = try self.runtime.engine.admit(id, resource, self.runtime.waves.items[resource].sample_rate, .{
-            .flags = sound.Flags.spatial | self.runtime.registrations.items[registration].flags,
+            .flags = bits.with(self.runtime.registrations.items[registration].flags, .{ .spatial = true }),
             .volume = volume,
             .priority = @bitCast(self.runtime.registrations.items[registration].priority),
             .position = .{ position.x, position.y, position.z },
@@ -139,7 +140,7 @@ pub const Context = struct {
         var params = voice.params;
 
         params.position = .{ point.x, point.y, point.z };
-        params.flags |= sound.Flags.spatial;
+        params.flags.spatial = true;
 
         try self.runtime.engine.adjust(handle, params);
     }
@@ -311,7 +312,7 @@ test "rail audio matches instance ownership and threshold operations" {
                     step.next_id,
                 ) orelse return error.MissingRailVoice;
 
-                try std.testing.expectEqual(expected.flags, voice.params.flags);
+                try std.testing.expectEqual(expected.flags, bits.word(voice.params.flags));
                 try std.testing.expectEqual(expected.volume, voice.params.volume);
                 try std.testing.expectEqual(expected.priority, voice.params.priority);
                 try std.testing.expectEqual(expected.position, voice.params.position);
@@ -483,7 +484,7 @@ test "rail and ambient ownership survives instance reuse and exhaustion" {
                     op.now,
                 );
 
-                if (op.flags) |flags| runtime.registrations.items[registration].flags = flags;
+                if (op.flags) |flags| runtime.registrations.items[registration].flags = bits.from(sound.Flags, flags);
 
                 if (op.volume) |volume| runtime.registrations.items[registration].volume = volume;
             } else if (std.mem.eql(u8, op.kind, "release")) {
@@ -508,9 +509,9 @@ test "rail and ambient ownership survives instance reuse and exhaustion" {
                 }
             } else if (std.mem.eql(u8, op.kind, "ambient")) {
                 const registration = try runtime.declare(op.name.?, 0x57415644, 64, op.now);
-                runtime.registrations.items[registration].flags |= sound.Flags.loop;
+                runtime.registrations.items[registration].flags.loop = true;
                 const resource = try runtime.registerAt(op.name.?, 0x57415644, 64, op.now);
-                runtime.resource_flags.items[resource] |= sound.Flags.loop;
+                runtime.resource_flags.items[resource].loop = true;
                 try runtime.beginEmptyAmbient();
 
                 runtime.ambient.?.sources = try a.alloc(@import("ambient.zig").Source, 1);
@@ -564,7 +565,7 @@ test "rail and ambient ownership survives instance reuse and exhaustion" {
                     Record{
                         .name = record.name,
                         .priority = record.priority,
-                        .flags = record.flags,
+                        .flags = bits.word(record.flags),
                         .registered_at = record.registered_at,
                         .references = refs.count,
                         .instances = runtime.instanceCount(@intCast(id)),
@@ -593,7 +594,7 @@ test "rail and ambient ownership survives instance reuse and exhaustion" {
                     runtime.registrations.items[runtime.registration_ids.items[actual.asset]].name,
                 );
 
-                try std.testing.expectEqual(voice.flags, actual.params.flags);
+                try std.testing.expectEqual(voice.flags, bits.word(actual.params.flags));
                 try std.testing.expectEqual(voice.priority, actual.params.priority);
                 try std.testing.expectEqual(voice.volume, actual.params.volume);
                 try std.testing.expectEqual(voice.position, actual.params.position);

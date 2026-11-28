@@ -121,7 +121,7 @@ pub const Device = struct {
             }
 
             host.buffer.playing = voice.playing;
-            host.buffer.loop = voice.params.flags & 1 != 0;
+            host.buffer.loop = voice.params.flags.loop;
             host.buffer.gain = mix.gains(voice.controls.volume_db, voice.controls.pan_db);
         }
 

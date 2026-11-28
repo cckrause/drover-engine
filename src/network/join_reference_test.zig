@@ -116,7 +116,7 @@ test "the join's server answer and router queue match the reference" {
             const request = try std.fmt.hexToBytes(&buffer, op.get("bytes").?.string);
             try std.testing.expectEqual(
                 router_module.Posted.queued,
-                try router.post(0x100800, 0x3e9, request),
+                try router.post(0x100800, .{ .code = 0x3e9 }, request),
             );
 
             try server_module.processRequests(
@@ -124,7 +124,7 @@ test "the join's server answer and router queue match the reference" {
                 &router,
                 .{
                     .now = router.now,
-                    .game_type = 1,
+                    .game_type = .campaign,
                     .level_loaded = loaded,
                     .allocator = a,
                     .user_messages = &user_messages,
@@ -249,23 +249,23 @@ test "the router refuses join messages that do not fit its records" {
     );
 
     message.set(outside, 0x10, 0x100);
-    _ = try router.post(own_queue, 0x3f7, outside);
+    _ = try router.post(own_queue, .{ .code = 0x3f7 }, outside);
     var endless: [0x30]u8 = @splat('n');
     @memcpy(endless[0..message.header_size], &message.request(0x3f7, 1));
     message.set(&endless, 0x10, 4);
-    _ = try router.post(own_queue, 0x3f7, &endless);
+    _ = try router.post(own_queue, .{ .code = 0x3f7 }, &endless);
     var long: [message.header_size + 0x29]u8 = @splat('t');
     @memcpy(long[0..message.header_size], &message.request(0x3fb, 1));
 
     long[long.len - 1] = 0;
-    _ = try router.post(own_queue, 0x3fb, &long);
+    _ = try router.post(own_queue, .{ .code = 0x3fb }, &long);
 
     var bundle: [0x18]u8 = @splat(0);
     @memcpy(bundle[0..message.header_size], &message.request(0x3f8, 1));
     message.set(&bundle, 0x10, 3);
 
     bundle[0x14] = 0xff;
-    _ = try router.post(own_queue, 0x3f8, &bundle);
+    _ = try router.post(own_queue, .{ .code = 0x3f8 }, &bundle);
 
     try router.process();
 

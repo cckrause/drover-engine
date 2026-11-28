@@ -11,6 +11,7 @@ const automap = @import("automap.zig");
 const camera = @import("backends/software/camera.zig");
 const hud_messages = @import("hud_messages.zig");
 const scene_module = @import("scene.zig");
+const bits = @import("../util/bits.zig");
 
 const Raster = struct { rect: [4]i32, first: [2]i32, last: [2]i32, sha256: []const u8 };
 
@@ -127,17 +128,17 @@ test "automap Hideout walls, layers, projection and player glyph match the refer
         errdefer std.debug.print("automap frame {d}\n", .{index});
 
         for (scene.sectors, level.sectors, 0..) |*sector, source_sector, i| {
-            sector.flags = case.sector_flags orelse source_sector.flags;
+            sector.flags = if (case.sector_flags) |raw| bits.from(scene_module.SectorFlags, raw) else source_sector.flags;
 
             for (sector.walls, source_sector.walls, 0..) |*wall, source_wall, j| {
-                wall.flags = case.wall_flags orelse source_wall.flags;
-                wall.runtime_flags = if (case.seen orelse ((i + j) % 3 == 0)) 0x40000000 else 0;
+                wall.flags = if (case.wall_flags) |raw| bits.from(scene_module.WallFlags, raw) else source_wall.flags;
+                wall.runtime_flags = .{ .seen = case.seen orelse ((i + j) % 3 == 0) };
             }
         }
 
         var state = automap.State{
             .mode = if (case.oriented) 3 else 2,
-            .flags = if (case.oriented) 6 else 2,
+            .flags = .{ .unused_1 = true, .oriented = case.oriented },
             .controller = 1,
             .previous_controller = 1,
             .initialized = true,
@@ -234,7 +235,7 @@ test "automap live Session combines explored walls weapon HUD and secret text li
         @intFromEnum(
             @import("../player/input.zig").Slot.map,
         )
-    ] = .{ .value = 1, .flags = 8 };
+    ] = .{ .value = 1, .flags = .{ .pressed = true } };
 
     session.automap.packet(&packet);
 
@@ -269,7 +270,7 @@ test "automap controls preserve frame timing layers pan zoom and secret messages
 
     for (level.sectors, scene.sectors) |*sector, *live| {
         sector.layer = 0;
-        live.flags |= 0x20000000;
+        live.flags.hidden_on_map = true;
     }
 
     level.sectors[0].layer = -2;
@@ -286,7 +287,7 @@ test "automap controls preserve frame timing layers pan zoom and secret messages
         @intFromEnum(
             @import("../player/input.zig").Slot.map,
         )
-    ] = .{ .value = 1, .flags = 8 };
+    ] = .{ .value = 1, .flags = .{ .pressed = true } };
 
     state.packet(&packet);
 
@@ -323,7 +324,7 @@ test "automap controls preserve frame timing layers pan zoom and secret messages
 
         const words = [_]u32{
             state.mode,
-            state.flags,
+            bits.word(state.flags),
             state.controller,
             state.previous_controller,
             @intFromBool(state.initialized),

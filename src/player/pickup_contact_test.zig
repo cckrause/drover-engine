@@ -14,12 +14,13 @@ const runtime = @import("../script/runtime.zig");
 const collision = @import("collision.zig");
 const inventory_module = @import("inventory.zig");
 const Actor = @import("../render/objects.zig").Actor;
+const bits = @import("../util/bits.zig");
 
 fn point(value: [3]f32) level_module.Vec3 {
     return .{ .x = value[0], .y = value[1], .z = value[2] };
 }
 
-fn bits(value: level_module.Vec3) [3]u32 {
+fn vectorBits(value: level_module.Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -116,8 +117,8 @@ test "pickup contacts retain reference ordering bounds and slide filter changes"
             actor.* = undefined;
             actor.sector = source.sector;
             actor.position = point(source.position);
-            actor.flags = source.flags;
-            actor.secondary_flags = source.secondary_flags;
+            bits.setWord(&actor.flags, source.flags);
+            bits.setWord(&actor.secondary_flags, source.secondary_flags);
             actor.height = source.height;
             actor.collision_radius = source.collision_radius;
             actor.source_index = index;
@@ -200,9 +201,9 @@ test "pickup contacts retain reference ordering bounds and slide filter changes"
 
         try std.testing.expectEqual(case.result_sector, result.sector);
         try std.testing.expectEqual(case.actor_sector, result.actor_sector);
-        try std.testing.expectEqualSlices(u32, &case.position_bits, &bits(desired));
-        try std.testing.expectEqualSlices(u32, &case.actor_position_bits, &bits(result.position));
-        try std.testing.expectEqualSlices(u32, &case.velocity_bits, &bits(velocity));
+        try std.testing.expectEqualSlices(u32, &case.position_bits, &vectorBits(desired));
+        try std.testing.expectEqualSlices(u32, &case.actor_position_bits, &vectorBits(result.position));
+        try std.testing.expectEqualSlices(u32, &case.velocity_bits, &vectorBits(velocity));
         try std.testing.expectEqual(case.floor_bits, @as(u32, @bitCast(floor_cache)));
         try std.testing.expectEqual(@as(usize, 0), effects.items.len);
 

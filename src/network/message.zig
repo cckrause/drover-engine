@@ -7,6 +7,9 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
+const GameType = @import("../game_type.zig").GameType;
+
 pub const Address = [16]u8;
 
 pub const no_address: Address = @splat(0xff);
@@ -20,6 +23,21 @@ pub const sender_offset = 4;
 pub const reply_offset = 8;
 
 pub const number_offset = 0xc;
+
+/// The number word a message is posted with. Only the low 24 bits travel.
+pub const Number = packed struct(u32) {
+    code: u15,
+    repeat: bool = false,
+    unused_16: u8 = 0,
+    unused_24: u6 = 0,
+    /// The original's per-client send buffers, which never run in 1.1.1.
+    buffered: bool = false,
+    must_arrive: bool = false,
+
+    pub fn of(code: MessageCode) Number {
+        return .{ .code = @intCast(@intFromEnum(code)) };
+    }
+};
 
 pub const words_size = 0x1c;
 
@@ -121,10 +139,22 @@ pub const WallIndex = struct { sector: u16, wall: u16 };
 
 pub const Score = struct { points: i16 = 0, seconds: i16 = 0 };
 
+pub const StartFlags = packed struct(u32) {
+    unused_0: u31 = 0,
+    friendly_fire: bool = false,
+};
+
+pub const ModeRules = packed struct(u32) {
+    teams: bool = false,
+    /// One player, team 1, plays against everyone else.
+    one_against_all: bool = false,
+    unused_2: u30 = 0,
+};
+
 pub const GameRecord = extern struct {
     checksum: u32 = 0,
-    flags: u32 = 0,
-    game_type: u32 = 0,
+    flags: StartFlags = .{},
+    game_type: GameType = @enumFromInt(0),
     mode: u32 = 0,
     parameter: u32 = 0,
     filename: [24]u8 = @splat(0),
@@ -169,11 +199,11 @@ pub const Maintenance = struct {
     pub fn run(
         self: *Maintenance,
         now: u32,
-        game_type: u32,
+        game_type: GameType,
         level_loaded: bool,
         tasks: Tasks,
     ) !void {
-        if (game_type != 4 and game_type != 5) return;
+        if (!game_type.isNetwork()) return;
         if (now < self.last +% 0x14d) return;
         if (try tasks.player(tasks.context, now)) {
             self.last = now;
@@ -187,7 +217,7 @@ pub const Maintenance = struct {
             return;
         }
 
-        if (game_type == 4 or !level_loaded) return;
+        if (game_type == .joined or !level_loaded) return;
 
         for ([_]struct { *u32, u32, *const fn (*anyopaque) anyerror!void }{
             .{ &self.critical, 0xdac, tasks.critical },
@@ -314,7 +344,7 @@ pub fn readHaveServerCreate(bytes: []const u8) !HaveServerCreate {
 
 pub fn damage(own_client: u32, value: Damage) [damage_size]u8 {
     var bytes: [damage_size]u8 = @splat(0);
-    @memcpy(bytes[0..header_size], &objectRequest(0x7d1, own_client));
+    @memcpy(bytes[0..header_size], &objectRequest(@intFromEnum(MessageCode.damage), own_client));
     std.mem.writeInt(u16, bytes[0x10..0x12], @truncate(value.kind), .little);
 
     for ([_]usize{
@@ -419,12 +449,12 @@ pub fn readCorpse(bytes: []const u8) !Corpse {
 
 pub fn impulse(own_client: u32, velocity: [3]f32) [words_size]u8 {
     var bytes = words(
-        0x7d2,
+        @intFromEnum(MessageCode.push),
         own_client,
         .{ @bitCast(velocity[0]), @bitCast(velocity[1]), @bitCast(velocity[2]) },
     );
 
-    @memcpy(bytes[0..header_size], &objectRequest(0x7d2, own_client));
+    @memcpy(bytes[0..header_size], &objectRequest(@intFromEnum(MessageCode.push), own_client));
 
     return bytes;
 }
@@ -578,9 +608,9 @@ pub fn gameInfo(
     @memset(buffer, 0);
     @memcpy(buffer[0..header_size], &request(number, own_client));
 
-    set(buffer, 0x10, record.flags);
+    set(buffer, 0x10, @bitCast(record.flags));
     set(buffer, 0x14, record.parameter);
-    std.mem.writeInt(u16, buffer[0x18..0x1a], @truncate(record.game_type), .little);
+    std.mem.writeInt(u16, buffer[0x18..0x1a], @truncate(@intFromEnum(record.game_type)), .little);
     std.mem.writeInt(u16, buffer[0x1a..0x1c], @truncate(record.mode), .little);
 
     @memcpy(buffer[0x1c..][0 .. text + 1], record.filename[0 .. text + 1]);
@@ -599,9 +629,9 @@ pub fn readGameInfo(bytes: []const u8, record: *GameRecord) !void {
 
     if (text >= record.filename.len) return error.MalformedNetworkMessage;
 
-    record.flags = get(bytes, 0x10);
+    record.flags = @bitCast(get(bytes, 0x10));
     record.parameter = get(bytes, 0x14);
-    record.game_type = std.mem.readInt(u16, bytes[0x18..0x1a], .little);
+    record.game_type = @enumFromInt(std.mem.readInt(u16, bytes[0x18..0x1a], .little));
     record.mode = std.mem.readInt(u16, bytes[0x1a..0x1c], .little);
 
     @memcpy(record.filename[0 .. text + 1], bytes[0x1c..][0 .. text + 1]);
@@ -1001,11 +1031,11 @@ test "maintenance runs one task per pass, 333 ms apart, in the documented order"
 
     var maintenance: Maintenance = .{};
 
-    try maintenance.run(1000, 1, true, tasks);
+    try maintenance.run(1000, .campaign, true, tasks);
     try std.testing.expectEqual(@as(usize, 0), log.count);
     var now: u32 = 1000;
 
-    while (now < 4000) : (now += 16) try maintenance.run(now, 5, true, tasks);
+    while (now < 4000) : (now += 16) try maintenance.run(now, .hosting, true, tasks);
 
     try std.testing.expectEqualStrings("pacorsg", log.calls[0..log.count]);
     var joiner: Maintenance = .{};
@@ -1013,7 +1043,7 @@ test "maintenance runs one task per pass, 333 ms apart, in the documented order"
     log = .{};
     now = 1000;
 
-    while (now < 4000) : (now += 16) try joiner.run(now, 4, true, tasks);
+    while (now < 4000) : (now += 16) try joiner.run(now, .joined, true, tasks);
 
     try std.testing.expectEqualStrings("pa", log.calls[0..log.count]);
 }

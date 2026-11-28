@@ -7,6 +7,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
 const title = @import("../game/title.zig");
 const input = @import("../player/input.zig");
@@ -100,7 +101,7 @@ pub const PlayerInput = struct {
     started: bool = false,
     motion_x: i32 = 0,
     motion_y: i32 = 0,
-    buttons: u3 = 0,
+    buttons: MouseButtons = .{},
 
     pub const Sample = struct { packet: input.Packet, map_input: automap.Input, elapsed_ms: u32 };
 
@@ -167,7 +168,7 @@ pub const PlayerInput = struct {
                     self.focused = false;
                     self.motion_x = 0;
                     self.motion_y = 0;
-                    self.buttons = 0;
+                    self.buttons = .{};
                     if (c.SDL_SetRelativeMouseMode(c.SDL_FALSE) != 0) return fail();
                 },
                 c.SDL_WINDOWEVENT_FOCUS_GAINED => {
@@ -200,14 +201,14 @@ pub const PlayerInput = struct {
                 self.motion_y +%= value.motion.yrel;
             },
             c.SDL_MOUSEBUTTONDOWN, c.SDL_MOUSEBUTTONUP => {
-                const mask: u3 = switch (value.button.button) {
-                    c.SDL_BUTTON_LEFT => 1,
-                    c.SDL_BUTTON_RIGHT => 2,
-                    c.SDL_BUTTON_MIDDLE => 4,
-                    else => 0,
-                };
+                const down = value.type == c.SDL_MOUSEBUTTONDOWN;
 
-                if (value.type == c.SDL_MOUSEBUTTONDOWN) self.buttons |= mask else self.buttons &= ~mask;
+                switch (value.button.button) {
+                    c.SDL_BUTTON_LEFT => self.buttons.left = down,
+                    c.SDL_BUTTON_RIGHT => self.buttons.right = down,
+                    c.SDL_BUTTON_MIDDLE => self.buttons.middle = down,
+                    else => {},
+                }
             },
             else => {},
         }
@@ -271,10 +272,7 @@ pub const PlayerInput = struct {
         self.motion_x = 0;
         self.motion_y = 0;
 
-        const buttons = c.SDL_GetMouseState(null, null);
-        self.buttons = @as(u3, @intFromBool(buttons & c.SDL_BUTTON_LMASK != 0)) |
-            (@as(u3, @intFromBool(buttons & c.SDL_BUTTON_RMASK != 0)) << 1) |
-            (@as(u3, @intFromBool(buttons & c.SDL_BUTTON_MMASK != 0)) << 2);
+        self.buttons = mouseButtons(c.SDL_GetMouseState(null, null));
     }
 };
 
@@ -413,7 +411,7 @@ test "mission popup propagates releases and shift while retaining gameplay input
     host.state.key(29, true, 901);
     host.state.key(72, true, 901);
 
-    _ = try host.state.sample(1000, .{ .buttons = 1 });
+    _ = try host.state.sample(1000, .{ .buttons = .{ .left = true } });
     const previous = host.state.previous;
     host.suspendMenu();
     var event = std.mem.zeroes(c.SDL_Event);
@@ -449,11 +447,11 @@ test "mission popup propagates releases and shift while retaining gameplay input
     try std.testing.expectEqual(@as(u32, 1000), host.last_sample);
 
     var packet = try host.state.sample(2000, .{});
-    try std.testing.expect(packet.get(.fire).flags & input.released != 0);
+    try std.testing.expect(packet.get(.fire).flags.released);
     packet = try host.state.sample(2016, .{});
 
-    try std.testing.expect(packet.get(.fire).flags & input.released != 0);
-    try std.testing.expect(packet.get(.forward).flags & input.released != 0);
+    try std.testing.expect(packet.get(.fire).flags.released);
+    try std.testing.expect(packet.get(.forward).flags.released);
 
     event.key.timestamp = 2020;
     event.key.keysym.scancode = c.SDL_SCANCODE_LCTRL;
@@ -475,4 +473,14 @@ test "mission popup propagates releases and shift while retaining gameplay input
     try std.testing.expectEqual(@as(u32, 2016), host.state.previous_time);
     try std.testing.expectEqualSlices(bool, &retained_actions, &host.state.previous);
     try std.testing.expectEqual(retained_mouse, host.state.mouse_previous);
+}
+
+pub fn mouseButtons(mask: u32) MouseButtons {
+    return .{
+        .left = mask & c.SDL_BUTTON_LMASK != 0,
+        .right = mask & c.SDL_BUTTON_RMASK != 0,
+        .middle = mask & c.SDL_BUTTON_MMASK != 0,
+        .back = mask & c.SDL_BUTTON_X1MASK != 0,
+        .forward = mask & c.SDL_BUTTON_X2MASK != 0,
+    };
 }

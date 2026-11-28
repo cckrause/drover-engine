@@ -19,6 +19,10 @@ const collision = @import("../player/collision.zig");
 const inventory = @import("../player/inventory.zig");
 const shooting = @import("../player/shooting.zig");
 const weapon = @import("../player/weapon.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
+
+const shot_targets = ActorKind{ .player = true, .takes_hits = true, .enemy = true, .bystander = true };
 
 fn Contact(comptime Session: type) type {
     return struct {
@@ -40,7 +44,13 @@ fn Contact(comptime Session: type) type {
                     self.session,
                 ) else actorBody(self.session.collisionActors().get(index));
 
-                if (body.flags & 0x100 != 0 or body.secondary_flags & 0x4190 == 0 or body.secondary_flags & 0x800c20 != 0) return;
+                const kind = body.secondary_flags;
+                if (body.flags.not_solid or !bits.any(kind, shot_targets) or bits.any(kind, .{
+                    .projectile = true,
+                    .item = true,
+                    .corpse = true,
+                    .effect = true,
+                })) return;
 
                 self.hit = if (index == shooting.local_player) index else self.session.collisionActors().get(index).source_index orelse return error.MissingProjectileContactActor;
                 self.damage = self.state.descriptor.damage;
@@ -65,7 +75,7 @@ fn Contact(comptime Session: type) type {
                     &self.session.level,
                     wall.sector,
                     wall.index,
-                    0x100,
+                    .{ .shot_front = true },
                     2,
                     y,
                 )) |maybe| if (maybe) |entry| {
@@ -150,7 +160,7 @@ pub fn create(
             .basename = name,
             .priority = 64,
             .volume = 64,
-            .flags = 1,
+            .flags = .{ .loop = true },
             .sector = actor.sector,
             .position = actor.position,
             .source = source,
@@ -284,7 +294,7 @@ pub fn tick(
     state.floor_cache = motion.floor_cache;
     state.wall_memory = motion.wall_memory;
 
-    const logic_due = actor.flags & 0x41 == 0x41 and actor.secondary_flags & 0x01000000 == 0 and @as(u32, @bitCast(session.actor_next_update[source])) <= session.animation_time;
+    const logic_due = actor.flags.logicReady() and !actor.secondary_flags.waiting_for_start and @as(u32, @bitCast(session.actor_next_update[source])) <= session.animation_time;
     var removed = false;
     var contact = Contact(@TypeOf(session)){ .session = session, .state = &state };
 
@@ -297,7 +307,7 @@ pub fn tick(
                 state,
             ) < 0.1) {
                 state.rotation = .{ .x = 0, .y = 0, .z = 0 };
-                actor.flags |= 0x80000400;
+                actor.flags = bits.with(actor.flags, .{ .physics = true, .changed = true });
             } else if (state.held and state.descriptor.owner != null and ownerOf(
                 session,
                 state.descriptor.owner.?,
@@ -314,7 +324,7 @@ pub fn tick(
                 };
 
                 if (state.descriptor.owner) |owner| if (owner != shooting.local_player and owner < session.actor_slots.len and session.actor_slots[owner] != null) {
-                    session.actor_slots[owner].?.flags |= 0x80000000;
+                    session.actor_slots[owner].?.flags.changed = true;
                     session.syncActor(owner);
                 };
 
@@ -362,9 +372,9 @@ pub fn tick(
                     if (@as(i32, @bitCast(contact.damage)) > 0x40000000) {
                         const body = if (contact.hit.? == shooting.local_player) enemy_session.playerBody(session) else actorBody(session.actor_slots[contact.hit.?].?);
 
-                        if (body.secondary_flags & 0x10 == 0) {
+                        if (!body.secondary_flags.player) {
                             for (session.pending_hits.items) |*pending| if (pending.target == contact.hit.? and pending.input.kind == 2) {
-                                if (body.secondary_flags & 0x4180 != 0) pending.blood.add(
+                                if (body.secondary_flags.bystander or body.secondary_flags.enemy or body.secondary_flags.takes_hits) pending.blood.add(
                                     &session.angles,
                                     state.descriptor.origin,
                                     point,
@@ -423,15 +433,15 @@ pub fn tick(
                 }
 
                 removed = removed or contact.removed;
-            } else if (session.scene.sectors[actor.sector].flags & 0x80 != 0 and state.fuse_handle != null) {
+            } else if (session.scene.sectors[actor.sector].flags.underwater and state.fuse_handle != null) {
                 if (session.active_audio) |sound| sound.engine.stop(state.fuse_handle.?);
                 state.fuse_handle = null;
             }
 
-            removed = removed or session.scene.sectors[actor.sector].flags & 0x01000000 != 0;
+            removed = removed or session.scene.sectors[actor.sector].flags.removes_objects;
         }
 
-        if (!removed) actor.flags |= 0x80000080;
+        if (!removed) actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
     }
 
     session.actor_slots[source] = actor;
@@ -470,7 +480,7 @@ pub fn flushExplosions(
 
         const actor = session.actor_slots[source].?;
         try enemy_session.playerNoise(session, allocator, effects, 200, 0x82);
-        session.actor_slots[source].?.flags |= 0x80000100;
+        session.actor_slots[source].?.flags = bits.with(session.actor_slots[source].?.flags, .{ .not_solid = true, .changed = true });
         session.syncActor(source);
 
         if (session.enemy_visibility.lists[actor.sector] == null and session.level.sectors.len > 1)
@@ -509,7 +519,7 @@ pub fn flushExplosions(
                     .{ .x = body.position.x, .z = body.position.z },
                 ) < state.config.radius)) continue;
 
-                if ((body.secondary_flags & 0x10 == 0 and state.descriptor.owner == target) or body.flags & 0x100 != 0) continue;
+                if ((!body.secondary_flags.player and state.descriptor.owner == target) or body.flags.not_solid) continue;
 
                 if (!try session.enemy_visibility.actorsVisible(
                     &session.level,
@@ -542,12 +552,12 @@ pub fn flushExplosions(
             }
         }
 
-        session.actor_slots[source].?.flags = actor.flags | 0x80000000;
+        session.actor_slots[source].?.flags = bits.with(actor.flags, .{ .changed = true });
         session.syncActor(source);
 
         if (state.held and state.descriptor.owner == shooting.local_player and session.weapon_state.held_projectile != null) {
             session.weapon_state.held_projectile = null;
-            if (gameFlags(session, effects) & 8 == 0) {
+            if (!gameFlags(session, effects).unlimited_ammo) {
                 if (session.inventory.slots[session.inventory.selected_weapon]) |*item| item.count -%= 1;
             }
         }
@@ -570,7 +580,7 @@ pub fn flushContacts(session: anytype, effects: *inventory.Effects) !void {
             session.enemy_selection_serial += 1;
         }
 
-        if (pending.blood.count != 0 and gameFlags(session, effects) & 2 == 0) {
+        if (pending.blood.count != 0 and !gameFlags(session, effects).no_blood) {
             const costume = try enemy_session.costume(session, blood.costume_name);
 
             for (0..@intCast(pending.blood.count)) |_| {
@@ -669,7 +679,7 @@ pub fn enemyThrow(
         };
 
         created = try create(session, descriptor, effects);
-        actor.flags |= 0x80000000;
+        actor.flags.changed = true;
 
         try launch(
             session,
@@ -703,10 +713,10 @@ pub fn enemyThrow(
         target.config.throw_velocity,
     );
 
-    if (session.actor_slots[index].?.secondary_flags & 0x40 != 0) {
+    if (session.actor_slots[index].?.secondary_flags.ai_controlled) {
         const thrown = if (session.targets[index]) |*value| value else return error.MissingThrownActorLogic;
         thrown.ai.physics.velocity = velocity;
-    } else if (session.actor_slots[index].?.secondary_flags & 0x20 != 0) {
+    } else if (session.actor_slots[index].?.secondary_flags.projectile) {
         const state = if (session.projectile_slots[index]) |*value| value else return error.MissingProjectileActor;
         state.velocity = velocity;
         const subject: ?Vec3 = if (target.ai.target) |id| switch (id) {
@@ -741,13 +751,13 @@ pub fn enemyThrow(
         }
     } else if (session.actor_slots[index].?.logic_name.len == 0) {
         session.actor_slots[index].?.logic_name = "Physics_Dispatch";
-        session.actor_slots[index].?.flags |= 0x80000040;
+        session.actor_slots[index].?.flags = bits.with(session.actor_slots[index].?.flags, .{ .has_logic = true, .changed = true });
         session.general_slots[index] = .{ .velocity = velocity };
     }
 
     session.syncActor(index);
     try session.drainSounds(effects);
-    try ctx.sound(session.actor_slots[index].?, target.config.shoot_sound, 0, 1, 0, false);
+    try ctx.sound(session.actor_slots[index].?, target.config.shoot_sound, .{}, 1, 0, false);
 }
 
 pub fn emitEnemyProjectile(
@@ -869,7 +879,7 @@ fn f(value: f64) f32 {
     return @floatCast(value);
 }
 
-fn gameFlags(session: anytype, effects: *inventory.Effects) u32 {
+fn gameFlags(session: anytype, effects: *inventory.Effects) weapon.GameOptions {
     var shots_buffer: weapon.ShotBuffer = undefined;
     var shots = weapon.Shots.init(&shots_buffer);
 

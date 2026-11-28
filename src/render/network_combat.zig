@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const messages_module = @import("../assets/messages.zig");
 const player_audio = @import("../audio/player.zig");
 const campaign = @import("../campaign.zig");
@@ -17,6 +18,7 @@ const shooting = @import("../player/shooting.zig");
 const shot_damage = @import("../player/shot_damage.zig");
 const network_level = @import("network_level.zig");
 const mode_words = @import("../ui/network_lobby.zig").mode_words;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const local_player = shooting.local_player;
 
 pub const Death = struct {
@@ -48,7 +50,7 @@ pub const Death = struct {
 };
 
 pub fn postDamage(session: anytype, pending: shooting.PendingHit) !bool {
-    if (session.game_type != 4 and session.game_type != 5) return false;
+    if (!session.game_type.isNetwork()) return false;
 
     const target = numberOf(session, pending.target);
     if (target != 0 and message.client(target) == session.router.own_client) return false;
@@ -74,15 +76,15 @@ pub fn postDamage(session: anytype, pending: shooting.PendingHit) !bool {
         if (pending.sender) |sender| numberOf(session, sender) else 0,
     );
 
-    _ = try session.router.post(target, 0x7d1, &bytes);
+    _ = try session.router.post(target, .of(.damage), &bytes);
 
     return true;
 }
 
 pub fn playerMessage(session: anytype, bytes: []const u8) !void {
-    switch (message.get(bytes, message.number_offset)) {
-        0x7d1 => try playerShot(session, bytes),
-        0x7d2 => {
+    switch (@as(MessageCode, @enumFromInt(message.get(bytes, message.number_offset)))) {
+        .damage => try playerShot(session, bytes),
+        .push => {
             if (bytes.len < message.words_size) return error.MalformedNetworkMessage;
 
             const push = [3]f32{
@@ -138,7 +140,7 @@ pub fn deathReport(
     router: anytype,
     messages: []const u8,
     mode: u32,
-    own_entity: u32,
+    own_entity: ActorKind,
     code: u32,
     killer: u8,
 ) !Death {
@@ -171,7 +173,7 @@ pub fn deathReport(
     }
 
     death.points = if (code != 0x2a and code != 0x37 and code != 0x3d) -1 else if (mode == 6) 1 else if (client.player) |player|
-        (if ((own_entity ^ player.flags) & 0xf != 0) 1 else -1)
+        (if (own_entity.team != player.flags.team) 1 else -1)
     else
         1;
 
@@ -205,8 +207,8 @@ pub fn postFragDelta(router: anytype, mode: u32, client: u8, points: i32) !void 
 
     var team: u32 = 0xffffffff;
 
-    if (mode_words[mode] & 1 != 0) if (router.clients[client].player) |player| {
-        team = player.flags & 0xf;
+    if (mode_words[mode].teams) if (router.clients[client].player) |player| {
+        team = player.flags.team;
     };
 
     var bytes = message.fragDelta(
@@ -217,7 +219,7 @@ pub fn postFragDelta(router: anytype, mode: u32, client: u8, points: i32) !void 
     message.set(&bytes, message.sender_offset, (router.own_client & 0xff) << 11);
     message.set(&bytes, message.reply_offset, 0);
 
-    _ = try router.post(0x800, 0x408 | 0xc0000000, &bytes);
+    _ = try router.post(0x800, .{ .code = 0x408, .buffered = true, .must_arrive = true }, &bytes);
 }
 
 fn numberOf(session: anytype, index: usize) u32 {
@@ -285,13 +287,13 @@ fn takeShot(session: anytype, input: shooting.DamageInput, sender: u32) !void {
 
     if (was_alive and session.inventory.health == 0) session.pending_player_death = null;
 
-    const answer: u32 = if (session.inventory.health <= 0) 0x7e3 else 0x7e4;
-    var reply = message.objectRequest(answer, session.router.own_client);
+    const answer: MessageCode = if (session.inventory.health <= 0) .hit_killed else .hit_survived;
+    var reply = message.objectRequest(@intFromEnum(answer), session.router.own_client);
 
     message.set(&reply, message.reply_offset, sender);
     message.set(&reply, message.sender_offset, session.player_number);
 
-    _ = try session.router.post(sender, answer | 0x40000000, &reply);
+    _ = try session.router.post(sender, .{ .code = message.Number.of(answer).code, .buffered = true }, &reply);
 }
 
 fn localText(messages: []const u8, id: u32, buffer: *[0x50]u8) ![]const u8 {

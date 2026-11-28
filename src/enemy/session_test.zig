@@ -8,6 +8,8 @@ const std = @import("std");
 const lab = @import("../assets/lab.zig");
 const Session = @import("../render/session.zig").Session;
 const enemy_session = @import("session.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 fn read(a: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(
@@ -172,7 +174,7 @@ test "live collision dispatch wakes every enemy wrapper and preserves Sanchez ga
         session.enemy_shared.sanchez_enabled = entry.sanchez_enabled;
         session.enemy_shared.entry_random = entry.last_random;
 
-        var context = enemy_session.scriptContext(session, &effects, 0x10);
+        var context = enemy_session.scriptContext(session, &effects, .{ .player = true });
         try context.touch(session.actor_slots[source].?);
         try std.testing.expectEqual(
             entry.next_tick,
@@ -240,7 +242,7 @@ test "player noise preserves radii recipient masks and synchronous order" {
 
     for (session.targets, session.actor_slots, 0..) |target, *slot, source| {
         if (slot.*) |*actor| {
-            actor.secondary_flags = 0;
+            actor.secondary_flags = .{};
             session.syncActor(source);
         }
 
@@ -297,7 +299,7 @@ test "player noise preserves radii recipient masks and synchronous order" {
                     .z = body.position[2],
                 };
 
-                actor.secondary_flags = body.flags;
+                bits.setWord(&actor.secondary_flags, body.flags);
                 actor.logic_name = if (body.logic) "BGY_New" else "";
 
                 session.syncActor(source);
@@ -444,7 +446,7 @@ test "live Hideout session schedules enemies and completes death playback" {
 
     for (session.corpse_sources) |slot| if (slot) |source| {
         const corpse = session.actor_slots[source].?;
-        if (corpse.costume == costume and corpse.secondary_flags == 0x800) corpse_found = true;
+        if (corpse.costume == costume and corpse.secondary_flags == ActorKind{ .corpse = true }) corpse_found = true;
     };
 
     try std.testing.expect(corpse_found);
@@ -530,10 +532,7 @@ test "left turn and strafe then walk toward Hideout road enemy keeps alerts live
     );
 
     try std.testing.expect(session.actor_slots[dynamite] != null);
-    try std.testing.expectEqual(
-        @as(u32, 0),
-        session.actor_slots[dynamite].?.secondary_flags & 0x40,
-    );
+    try std.testing.expect(!session.actor_slots[dynamite].?.secondary_flags.ai_controlled);
 }
 
 test "map scenery and pickups receive sector removal before appended actors" {
@@ -592,9 +591,9 @@ test "map scenery and pickups receive sector removal before appended actors" {
 
     for (fixture.value.cases) |case| {
         session.actor_slots[source] = original;
-        session.actor_slots[source].?.flags = case.actor_flags;
-        session.actor_slots[source].?.secondary_flags = case.secondary_flags;
-        session.scene.sectors[original.sector].flags = case.sector_flags;
+        bits.setWord(&session.actor_slots[source].?.flags, case.actor_flags);
+        bits.setWord(&session.actor_slots[source].?.secondary_flags, case.secondary_flags);
+        bits.setWord(&session.scene.sectors[original.sector].flags, case.sector_flags);
         session.removed_actors[source] = false;
 
         session.syncActor(source);
@@ -606,9 +605,9 @@ test "map scenery and pickups receive sector removal before appended actors" {
 
     var appended = original;
 
-    appended.flags = 0;
-    appended.secondary_flags = 0;
-    session.scene.sectors[original.sector].flags = 0x01000000;
+    appended.flags = .{};
+    appended.secondary_flags = .{};
+    session.scene.sectors[original.sector].flags = .{ .removes_objects = true };
 
     const dynamic_source = try enemy_session.appendActor(session, appended, null);
     try enemy_session.tick(session, a, null, &effects);
@@ -700,8 +699,8 @@ test "corpse construction follows independent outer resource after restore" {
                 corpse.costume == try enemy_session.costume(session, expected.outer),
             );
 
-            try std.testing.expectEqual(expected.flags, corpse.flags);
-            try std.testing.expectEqual(expected.secondary_flags, corpse.secondary_flags);
+            try std.testing.expectEqual(expected.flags, bits.word(corpse.flags));
+            try std.testing.expectEqual(expected.secondary_flags, bits.word(corpse.secondary_flags));
             try std.testing.expectEqualDeep(
                 expected.position_bits,
                 [3]u32{

@@ -7,12 +7,15 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const level = @import("../assets/level.zig");
 const nwx = @import("../assets/nwx.zig");
 const collision = @import("../player/collision.zig");
 const weapon = @import("../player/weapon.zig");
 const physics = @import("physics.zig");
 const Actor = @import("../render/objects.zig").Actor;
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 pub const Placement = struct { position: level.Vec3, sector: usize };
 
@@ -20,8 +23,8 @@ pub const CorpsePool = struct {
     actors: [30]?Actor = @splat(null),
     cursor: usize = 0,
 
-    pub fn slots(game_type: u32) usize {
-        return if (game_type == 4 or game_type == 5) 15 else 30;
+    pub fn slots(game_type: GameType) usize {
+        return if (game_type.isNetwork()) 15 else 30;
     }
 
     pub fn reserve(self: *CorpsePool, context: anytype, count: usize) !?usize {
@@ -86,8 +89,8 @@ pub fn corpse(actor: Actor, now: u32) !Actor {
         .sector = actor.sector,
         .position = actor.position,
         .yaw = 0,
-        .flags = 0x8000454f,
-        .secondary_flags = 0x800,
+        .flags = bits.with(ActorFlags.new_effect, .{ .physics = true, .dead = true }),
+        .secondary_flags = .{ .corpse = true },
         .scale_x = 1,
         .scale_y = 1,
         .height = 1,

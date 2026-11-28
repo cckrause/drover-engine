@@ -13,6 +13,8 @@ const occlusion = @import("../audio/occlusion.zig");
 const actor_links = @import("../render/actor_links.zig");
 const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Case = struct {
     layers: []f32,
@@ -58,8 +60,8 @@ fn compare(case: Case, unsupported: ?usize) !void {
             .sector = body.sector,
             .position = .{ .x = body.position[0], .y = body.position[1], .z = body.position[2] },
             .yaw = 0,
-            .flags = 0x8000004f,
-            .secondary_flags = body.flags,
+            .flags = .{ .active = true, .unused_1 = true, .visible = true, .shaded = true, .has_logic = true, .changed = true },
+            .secondary_flags = bits.from(ActorKind, body.flags),
             .scale_x = 1,
             .scale_y = 1,
             .height = 6,

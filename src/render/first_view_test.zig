@@ -4,10 +4,12 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
 const Session = @import("session.zig").Session;
+const bits = @import("../util/bits.zig");
 
 fn expectFrameHash(pixels: []const u8, hex: []const u8) !void {
     var actual: [32]u8 = undefined;
@@ -240,8 +242,9 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     session.view.bottom = 479;
 
     for (session.scene.sectors) |*sector| {
-        sector.flags &= 0x3fffffff;
-        for (sector.walls) |*wall| wall.runtime_flags &= ~@as(u32, 0x40000000);
+        sector.flags.sloped_floor = false;
+        sector.flags.sloped_ceiling = false;
+        for (sector.walls) |*wall| wall.runtime_flags.seen = false;
     }
 
     const pixels = try a.alloc(u8, 640 * 480);
@@ -271,7 +274,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     var seen: usize = 0;
 
     for (session.scene.sectors, 0..) |sector, i| for (sector.walls, 0..) |wall, j| {
-        if (wall.runtime_flags & 0x40000000 == 0) continue;
+        if (!wall.runtime_flags.seen) continue;
         try std.testing.expect(seen < reference.value.seen_walls.len);
         try std.testing.expectEqual([2]usize{ i, j }, reference.value.seen_walls[seen]);
         seen += 1;
@@ -281,7 +284,7 @@ test "cleared slope flags retain renderer pointers and prepared wall caches" {
     const state = &session.scene.sectors[session.player.sector];
 
     state.floor_slope = null;
-    state.flags |= 0x40000000;
+    state.flags.sloped_floor = true;
 
     try std.testing.expectError(error.MissingSceneSlope, frame.draw(session.player.sector));
 }
@@ -369,11 +372,11 @@ test "Hideout wall texture messages execute independent ATX instances" {
         if (sample.action.message) |code| try session.inf.pending.append(.{ .message = .{
             .value = .{
                 .target = .{ .sector = instance.target.sector, .wall = instance.target.wall },
-                .code = code,
-                .event_mask = 0x2000,
+                .code = @enumFromInt(code),
+                .event_mask = .{ .script = true },
                 .arg1 = sample.action.arg1,
             },
-            .entity_mask = 0xffffffff,
+            .entity_mask = @bitCast(@as(u32, 0xffffffff)),
         } });
 
         try session.advance(a, &.{}, sample.action.now - session.animation_time);
@@ -382,7 +385,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
         try std.testing.expectEqual(sample.pc, instance.state.pc);
         try std.testing.expectEqual(sample.displayed, instance.state.displayed);
         try std.testing.expectEqual(sample.last_tick, instance.state.last_tick);
-        try std.testing.expectEqual(sample.flags, instance.state.flags);
+        try std.testing.expectEqual(sample.flags, bits.word(instance.state.flags));
 
         const actual = session.textures[
             @intCast(
@@ -414,7 +417,7 @@ test "Hideout wall texture messages execute independent ATX instances" {
             shatters += 1;
             try std.testing.expectEqual(instance.target.sector, effect.sound.sector.?);
             try std.testing.expectEqual(@as(?i32, 64), effect.sound.priority);
-            try std.testing.expectEqual(@as(?u32, 4), effect.sound.flags);
+            try std.testing.expectEqual(@as(?RequestFlags, .default), effect.sound.flags);
         };
 
         try std.testing.expectEqual(sample.sounds.len, shatters);
@@ -520,8 +523,8 @@ test "walking past adjoining Hideout sectors keeps collision and rendering activ
     session.player.yaw = 6656;
     var packet: @import("../player/input.zig").Packet = .{};
 
-    packet.entries[0] = .{ .value = 5120, .flags = 2 };
-    packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+    packet.entries[0] = .{ .value = 5120, .flags = .{ .absolute = true } };
+    packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
     for (0..240) |tick| {
         try session.advance(a, &packet, 16);

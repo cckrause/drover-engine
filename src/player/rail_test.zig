@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 
 const level_asset = @import("../assets/level.zig");
 const player_audio = @import("../audio/player.zig");
@@ -13,6 +14,7 @@ const initial = @import("../render/initial_state.zig");
 const scene_module = @import("../render/scene.zig");
 const input = @import("input.zig");
 const movement = @import("movement.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     sector: usize,
@@ -50,7 +52,7 @@ const Snapshot = struct {
             .head_bob = @bitCast(player.head_bob),
             .weapon_offset = player.weapon_offset,
             .stride = @bitCast(player.stride),
-            .flags = player.flags,
+            .flags = bits.word(player.flags),
             .pitch_accumulator = look.pitch_accumulator,
         };
     }
@@ -143,18 +145,15 @@ test "rail mode angles slopes collision and sound timing" {
 
         startup.applyScene(&level, &scene);
         const sector = &scene.sectors[case.config.sector];
-        sector.flags |= 0x10000000;
+        sector.flags.rail = true;
 
-        for (sector.walls, 0..) |*wall, index| wall.runtime_flags = (wall.runtime_flags & ~@as(
-            u32,
-            0x20000000,
-        )) | (if (index == case.config.guide) @as(u32, 0x20000000) else 0);
+        for (sector.walls, 0..) |*wall, index| wall.runtime_flags.rail_guide = index == case.config.guide;
 
         const original_plane = level.sectors[case.config.sector].floor;
         defer level.sectors[case.config.sector].floor = original_plane;
 
         if (case.config.floor_slope) |plane| {
-            sector.flags |= 0x40000000;
+            sector.flags.sloped_floor = true;
             sector.floor_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = plane[0], .coeff_z = plane[1], .constant = plane[2] },
@@ -167,7 +166,7 @@ test "rail mode angles slopes collision and sound timing" {
             };
         }
 
-        if (case.config.pull) sector.flags |= 0x08000000;
+        if (case.config.pull) sector.flags.rail_slope = true;
 
         var player = try movement.Player.init(
             &item,
@@ -183,7 +182,7 @@ test "rail mode angles slopes collision and sound timing" {
             },
         );
 
-        player.flags = case.config.player_flags & ~@as(u32, 8);
+        player.flags = bits.without(bits.from(PlayerFlags, case.config.player_flags), .{ .on_rail = true });
         player.velocity = .{
             .x = case.config.velocity[0],
             .y = case.config.velocity[1],
@@ -216,16 +215,17 @@ test "rail mode angles slopes collision and sound timing" {
         for (case.frames, 0..) |frame, frame_index| {
             errdefer std.debug.print("rail case {s} frame {d}\n", .{ case.name, frame_index });
 
-            if (case.config.flag_change_at == frame_index) sector.flags &= ~case.config.clear_flags;
+            if (case.config.flag_change_at == frame_index)
+                sector.flags = bits.without(sector.flags, bits.from(scene_module.SectorFlags, case.config.clear_flags));
 
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (case.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             effects.clearRetainingCapacity();
             try runtime.engine.updateListener(.{
@@ -309,13 +309,10 @@ test "rail mode angles slopes collision and sound timing" {
     };
 
     for (reference.value.toggles) |toggle| {
-        scene.sectors[410].flags = (scene.sectors[410].flags & ~@as(
-            u32,
-            0x10000000,
-        )) | (if (toggle.allowed) @as(u32, 0x10000000) else 0);
+        scene.sectors[410].flags.rail = toggle.allowed;
 
         try std.testing.expectEqual(toggle.result != 0, try player.toggleRail(&scene, &audio));
-        try std.testing.expectEqual(toggle.flags, player.flags);
-        try std.testing.expectEqual(player.flags & 8 != 0, rail_state.rail_resource != null);
+        try std.testing.expectEqual(toggle.flags, bits.word(player.flags));
+        try std.testing.expectEqual(player.flags.on_rail, rail_state.rail_resource != null);
     }
 }

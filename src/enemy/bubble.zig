@@ -13,6 +13,7 @@ const audio_request = @import("../audio/request.zig");
 const weapon = @import("../player/weapon.zig");
 const blood = @import("blood.zig");
 const physics = @import("physics.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 pub const costume_name = "BUBBLE1.NWX";
 
@@ -29,7 +30,7 @@ pub fn sound(random: *u32, sector: usize, position: level.Vec3) audio_request.Re
         .basename = names[weapon.randomNext(random) % 5],
         .priority = 32,
         .volume = 127,
-        .flags = 4,
+        .flags = .default,
         .sector = sector,
         .position = position,
     };
@@ -51,8 +52,8 @@ pub fn spawn(
         .sector = sector,
         .position = position,
         .yaw = 0,
-        .flags = 0x8000014f,
-        .secondary_flags = 0x800000,
+        .flags = ActorFlags.new_effect,
+        .secondary_flags = .{ .effect = true },
         .scale_x = scale,
         .scale_y = scale,
         .height = 1,

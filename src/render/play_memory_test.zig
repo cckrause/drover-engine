@@ -14,8 +14,8 @@ const Session = @import("session.zig").Session;
 fn press(packet: *input.Packet, slot: input.Slot, frame: usize, period: usize, offset: usize) void {
     const phase = (frame + period - offset) % period;
     packet.entries[@intFromEnum(slot)] = if (phase == 0)
-        .{ .value = 1, .flags = input.absolute | input.pressed }
-    else if (phase == 1) .{ .flags = input.released } else .{};
+        .{ .value = 1, .flags = .{ .absolute = true, .pressed = true } }
+    else if (phase == 1) .{ .flags = .{ .released = true } } else .{};
 }
 
 test "memory budget: Hideout plays twelve thousand frames of walking, shooting and using without asking for memory" {
@@ -70,7 +70,7 @@ test "memory budget: Hideout plays twelve thousand frames of walking, shooting a
             @intFromEnum(
                 input.Slot.forward,
             )
-        ] = .{ .value = if (frame % 700 < 500) 2560 else -2560, .flags = input.absolute };
+        ] = .{ .value = if (frame % 700 < 500) 2560 else -2560, .flags = .{ .absolute = true } };
 
         packet.entries[
             @intFromEnum(
@@ -78,7 +78,7 @@ test "memory budget: Hideout plays twelve thousand frames of walking, shooting a
             )
         ] = .{ .value = if (frame % 300 < 40) 3000 else 0 };
 
-        packet.entries[@intFromEnum(input.Slot.speed)] = .{ .value = 100, .flags = input.unscaled };
+        packet.entries[@intFromEnum(input.Slot.speed)] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
         press(&packet, .fire, frame, 20, 0);
         press(&packet, .use, frame, 90, 0);
@@ -88,7 +88,7 @@ test "memory budget: Hideout plays twelve thousand frames of walking, shooting a
             @intFromEnum(
                 input.Slot.weapon,
             )
-        ] = .{ .value = @intCast(2 + (frame / 1500) % 5), .flags = input.absolute | input.pressed };
+        ] = .{ .value = @intCast(2 + (frame / 1500) % 5), .flags = .{ .absolute = true, .pressed = true } };
 
         session.advance(std.testing.failing_allocator, &packet, 16) catch |err| {
             std.debug.print("frame {d}\n", .{frame});

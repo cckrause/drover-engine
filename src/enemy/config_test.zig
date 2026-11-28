@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 const Config = @import("config.zig").Config;
 const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -58,7 +59,7 @@ test "enemy templates and weapon descriptors match the reference" {
         );
 
         defer item.deinit();
-        const actual = try Config.load(a, &.{ object, weapon }, &item, difficulty);
+        const actual = try Config.load(a, &.{ object, weapon }, &item, @as(Difficulty, @enumFromInt(difficulty)));
         const expected = row.object.get("template").?.object;
 
         inline for (std.meta.fields(Config)) |field| {

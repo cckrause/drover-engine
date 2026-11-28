@@ -6,14 +6,42 @@
 //! consume it.
 
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
-pub const absolute: u16 = 2;
+const bits = @import("../util/bits.zig");
 
-pub const pressed: u16 = 8;
+/// A slot's state bits. The packet travels as bytes, so the positions are
+/// fixed.
+pub const EntryFlags = packed struct(u16) {
+    unused_0: bool = false,
+    /// The value is a position, not a movement, like a key held down.
+    absolute: bool = false,
+    unused_2: bool = false,
+    pressed: bool = false,
+    released: bool = false,
+    /// From the mouse or a set value: not scaled by the speed setting.
+    unscaled: bool = false,
+    unused_6: u10 = 0,
+};
 
-pub const released: u16 = 0x10;
-
-pub const unscaled: u16 = 0x20;
+pub const ControlFlags = packed struct(u32) {
+    /// Walking speed (66 percent).
+    slow: bool = false,
+    /// Running speed (150 percent).
+    run: bool = false,
+    /// Three times speed or more.
+    sprint: bool = false,
+    jump: bool = false,
+    crouch: bool = false,
+    center_view: bool = false,
+    look_right: bool = false,
+    look_left: bool = false,
+    look_back: bool = false,
+    unused_9: u9 = 0,
+    /// Turning comes from the mouse: already a distance, not a rate.
+    mouse_turn: bool = false,
+    unused_19: u13 = 0,
+};
 
 const default_bindings = [_]Binding{
     .{ .action = 0, .keys = &.{72} },        .{ .action = 0, .keys = &.{17} },
@@ -91,7 +119,7 @@ pub const Slot = enum(u5) {
 
 pub const Entry = extern struct {
     value: i16 = 0,
-    flags: u16 = 0,
+    flags: EntryFlags = .{},
 };
 
 pub const Packet = extern struct {
@@ -108,7 +136,7 @@ pub const Packet = extern struct {
 pub const Mouse = struct {
     dx: i32 = 0,
     dy: i32 = 0,
-    buttons: u3 = 0,
+    buttons: MouseButtons = .{},
 };
 
 const KeyState = struct { down: bool = false, down_time: u32 = 0, up_time: u32 = 0 };
@@ -120,7 +148,7 @@ pub const State = struct {
     previous_time: u32 = 0,
     previous: [30]bool = @splat(false),
     current: [30]bool = @splat(false),
-    mouse_previous: u3 = 0,
+    mouse_previous: MouseButtons = .{},
     mouse_started: bool = false,
 
     pub fn key(self: *State, scan_code: u7, down: bool, now_ms: u32) void {
@@ -145,7 +173,7 @@ pub const State = struct {
 
         self.set(&packet, .speed, true, 100, 0x800);
 
-        packet.entries[@intFromEnum(Slot.speed)].flags |= unscaled;
+        packet.entries[@intFromEnum(Slot.speed)].flags.unscaled = true;
         self.current = @splat(false);
 
         var duration: [128]u32 = @splat(0);
@@ -197,7 +225,7 @@ pub const State = struct {
 
         for (self.previous, self.current, 0..) |was, is, i| {
             if (was) {
-                if (!is) packet.entries[i].flags |= released else packet.entries[i].flags &= ~released;
+                packet.entries[i].flags.released = !is;
             }
         }
 
@@ -225,11 +253,11 @@ pub const State = struct {
         self.current[i] = true;
         const entry = &packet.entries[i];
 
-        if (is_absolute) entry.flags |= absolute else entry.flags &= ~absolute;
+        entry.flags.absolute = is_absolute;
 
         entry.value = value;
 
-        if (!self.previous[i]) entry.flags |= pressed else entry.flags &= ~pressed;
+        entry.flags.pressed = !self.previous[i];
     }
 
     fn action(self: *State, packet: *Packet, id: u8, held: i32, elapsed: i32, age: u32) void {
@@ -316,22 +344,22 @@ pub const State = struct {
     fn mouse(self: *State, packet: *Packet, input: Mouse) void {
         const buttons = input.buttons;
 
-        for ([_]struct { mask: u3, slot: Slot, repeat: bool, value: i16 }{
-            .{ .mask = 1, .slot = .fire, .repeat = true, .value = 1 },
-            .{ .mask = 4, .slot = .forward, .repeat = true, .value = 0x1400 },
-            .{ .mask = 2, .slot = .reload, .repeat = false, .value = 1 },
+        for ([_]struct { mask: MouseButtons, slot: Slot, repeat: bool, value: i16 }{
+            .{ .mask = .{ .left = true }, .slot = .fire, .repeat = true, .value = 1 },
+            .{ .mask = .{ .middle = true }, .slot = .forward, .repeat = true, .value = 0x1400 },
+            .{ .mask = .{ .right = true }, .slot = .reload, .repeat = false, .value = 1 },
         }) |binding| {
             const entry = &packet.entries[@intFromEnum(binding.slot)];
-            const was = self.mouse_previous & binding.mask != 0;
+            const was = bits.any(self.mouse_previous, binding.mask);
 
-            if (buttons & binding.mask != 0) {
+            if (bits.any(buttons, binding.mask)) {
                 if (binding.repeat or !was) {
-                    entry.flags |= absolute;
+                    entry.flags.absolute = true;
                     entry.value = binding.value;
                 }
 
-                if (!was) entry.flags |= pressed;
-            } else if (was) entry.flags |= released;
+                if (!was) entry.flags.pressed = true;
+            } else if (was) entry.flags.released = true;
         }
 
         self.mouse_previous = buttons;
@@ -340,19 +368,21 @@ pub const State = struct {
         const yaw = input.dx *% 16 *% 10;
 
         if (yaw != 0) {
-            turn.flags = (turn.flags | unscaled) & ~absolute;
+            turn.flags.unscaled = true;
+            turn.flags.absolute = false;
             turn.value = @intCast(std.math.clamp(yaw, -0x8000, 0x7fff));
         }
 
-        if (!self.mouse_started) turn.flags |= pressed;
+        if (!self.mouse_started) turn.flags.pressed = true;
 
         const pitch = &packet.entries[@intFromEnum(Slot.mouse_pitch)];
         const delta = @divTrunc((-%input.dy) *% 16, 6);
 
-        pitch.flags = (pitch.flags | unscaled) & ~absolute;
+        pitch.flags.unscaled = true;
+        pitch.flags.absolute = false;
         pitch.value = @intCast(std.math.clamp(delta, -0x8000, 0x7fff));
 
-        if (!self.mouse_started) packet.entries[@intFromEnum(Slot.look_yaw)].flags |= pressed;
+        if (!self.mouse_started) packet.entries[@intFromEnum(Slot.look_yaw)].flags.pressed = true;
 
         self.mouse_started = true;
     }
@@ -365,7 +395,7 @@ pub const Control = struct {
     jump: f32 = 0,
     look_up: f32 = 0,
     look_down: f32 = 0,
-    flags: u32 = 0,
+    flags: ControlFlags = .{},
 };
 
 pub const LookState = struct {
@@ -382,10 +412,10 @@ pub const LookState = struct {
         var result: Control = .{};
         const percent: i16 = if (alive and packet.get(
             .speed,
-        ).flags & unscaled != 0) packet.get(.speed).value else 100;
+        ).flags.unscaled) packet.get(.speed).value else 100;
 
         if (alive) {
-            if (percent == 66) result.flags |= 1 else if (percent == 150) result.flags |= 2 else if (percent >= 300) result.flags |= 4;
+            if (percent == 66) result.flags.slow = true else if (percent == 150) result.flags.run = true else if (percent >= 300) result.flags.sprint = true;
 
             result.forward = axis(packet.get(.forward), percent);
 
@@ -400,10 +430,10 @@ pub const LookState = struct {
                     ) * @as(f64, @floatFromInt(percent)) * @as(f64, @as(f32, 0.01)),
                 );
 
-                result.flags |= 8;
+                result.flags.jump = true;
             }
 
-            if (packet.get(.crouch).value > 0) result.flags |= 0x10;
+            if (packet.get(.crouch).value > 0) result.flags.crouch = true;
 
             result.strafe = axis(packet.get(.strafe), percent);
         }
@@ -420,10 +450,10 @@ pub const LookState = struct {
             @floatFromInt(pitch.value),
         ) * @as(f32, -0.0001220703125);
 
-        if (pitch.flags & absolute != 0 and pitch.value == 0) result.flags |= 0x20;
+        if (pitch.flags.absolute and pitch.value == 0) result.flags.center_view = true;
 
         const mouse_pitch = packet.get(.mouse_pitch);
-        self.pitch_active = mouse_pitch.flags & unscaled != 0;
+        self.pitch_active = mouse_pitch.flags.unscaled;
 
         if (self.pitch_active) self.pitch_accumulator = std.math.clamp(
             self.pitch_accumulator +% mouse_pitch.value,
@@ -433,8 +463,8 @@ pub const LookState = struct {
 
         const turn = packet.get(.turn);
 
-        if (turn.flags & absolute == 0) {
-            if (turn.flags & unscaled == 0) {
+        if (!turn.flags.absolute) {
+            if (!turn.flags.unscaled) {
                 result.turn = axis(turn, percent);
             } else {
                 result.turn = @floatCast(
@@ -444,18 +474,18 @@ pub const LookState = struct {
                     ) * @as(f64, @as(f32, 0.0001953125)) * 0.03125,
                 );
 
-                result.flags |= 0x40000;
+                result.flags.mouse_turn = true;
             }
         }
 
         const yaw = packet.get(.look_yaw);
-        self.yaw_active = yaw.flags & unscaled != 0;
+        self.yaw_active = yaw.flags.unscaled;
 
         if (self.yaw_active) {
             self.yaw_accumulator = @as(i16, @truncate(self.yaw_accumulator +% yaw.value));
         } else self.yaw_accumulator = 0;
 
-        if (yaw.value == -0x8000) result.flags |= 0x100 else if (yaw.value < 0) result.flags |= 0x80 else if (yaw.value > 0) result.flags |= 0x40;
+        if (yaw.value == -0x8000) result.flags.look_back = true else if (yaw.value < 0) result.flags.look_left = true else if (yaw.value > 0) result.flags.look_right = true;
 
         return result;
     }
@@ -470,7 +500,7 @@ fn axis(entry: Entry, percent: i16) f32 {
         @as(f64, @floatFromInt(entry.value)) * @as(f64, @as(f32, 0.0001953125)),
     );
 
-    if (entry.flags & unscaled != 0) return value;
+    if (entry.flags.unscaled) return value;
 
     return @floatCast(
         @as(f64, @floatFromInt(percent)) * @as(f64, value) * @as(f64, @as(f32, 0.01)),
@@ -494,7 +524,7 @@ test "default keyboard and mouse packets match 168 reference input frames" {
         const packet = try state.sample(now, .{
             .dx = @as(i32, @intCast(i % 9)) - 4,
             .dy = @as(i32, @intCast(i % 7)) - 3,
-            .buttons = @intCast(i % 8),
+            .buttons = bits.from(MouseButtons, @intCast(i % 8)),
         });
 
         const control = look.control(&packet);
@@ -505,7 +535,7 @@ test "default keyboard and mouse packets match 168 reference input frames" {
             @bitCast(control.jump),
             @bitCast(control.look_up),
             @bitCast(control.look_down),
-            control.flags,
+            bits.word(control.flags),
         };
 
         const look_fields = [_]i32{

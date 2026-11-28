@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const level_module = @import("../assets/level.zig");
@@ -16,6 +17,7 @@ const damage = @import("damage.zig");
 const input = @import("input.zig");
 const inventory_module = @import("inventory.zig");
 const movement = @import("movement.zig");
+const bits = @import("../util/bits.zig");
 
 const MovementState = struct {
     sector: usize,
@@ -51,7 +53,7 @@ const MovementState = struct {
             .energy = @bitCast(player.energy),
             .head_bob = @bitCast(player.head_bob),
             .stride = @bitCast(player.stride),
-            .flags = player.flags & 0x10003004,
+            .flags = bits.word(bits.only(player.flags, .{ .on_ground = true, .dying = true, .jumped = true, .dead = true })),
             .pitch_accumulator = look.pitch_accumulator,
         };
     }
@@ -134,7 +136,7 @@ fn soundEvent(effect: inventory_module.Effect) ![4]u32 {
 
     try std.testing.expect(sound.position == null and sound.sector == null);
 
-    return .{ id, @bitCast(sound.priority.?), @bitCast(sound.volume.?), sound.flags.? };
+    return .{ id, @bitCast(sound.priority.?), @bitCast(sound.volume.?), bits.word(sound.flags.?) };
 }
 
 fn checkEnvironmentReference(fixture_path: []const u8) !void {
@@ -253,7 +255,7 @@ fn checkEnvironmentReference(fixture_path: []const u8) !void {
 
         var inventory: inventory_module.Inventory = .{
             .health = case.config.health,
-            .player_flags = case.config.flags,
+            .player_flags = bits.from(PlayerFlags, case.config.flags),
             .sheriff_active = case.config.sheriff != 0,
         };
 
@@ -429,12 +431,12 @@ test "fall damage threshold health feedback and dead movement" {
         var player = try movement.Player.init(&item, physics, spawn);
 
         player.velocity.y = case.velocity;
-        player.flags = case.flags;
+        player.flags = bits.from(PlayerFlags, case.flags);
 
         var inventory: inventory_module.Inventory = .{
             .health = case.health,
             .sheriff_active = case.sheriff,
-            .player_flags = case.flags,
+            .player_flags = bits.from(PlayerFlags, case.flags),
         };
 
         var look: input.LookState = .{};
@@ -450,7 +452,7 @@ test "fall damage threshold health feedback and dead movement" {
         var flash: damage_flash.State = .{};
         var packet: input.Packet = .{};
 
-        packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+        packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
         const control = look.controlForLife(&packet, true);
         try player.tickWithAudio(
             &level,
@@ -501,13 +503,13 @@ test "fall damage threshold health feedback and dead movement" {
                 if (std.mem.eql(u8, candidate.name, case.name)) break candidate;
             } else return error.MissingOriginalDamageCase;
 
-            std.testing.expectEqual(expected.movement.flags, player.flags) catch |err| {
+            std.testing.expectEqual(expected.movement.flags, bits.word(player.flags)) catch |err| {
                 std.debug.print("reference damage flags case {s}\n", .{case.name});
                 return err;
             };
 
             var expected_motion = expected.movement;
-            expected_motion.flags &= 0x10003004;
+            expected_motion.flags = bits.word(bits.only(bits.from(PlayerFlags, expected_motion.flags), .{ .on_ground = true, .dying = true, .jumped = true, .dead = true }));
             std.testing.expectEqualDeep(expected_motion, motion) catch |err| {
                 std.debug.print("reference damage movement case {s}\n", .{case.name});
                 return err;
@@ -543,7 +545,7 @@ test "fall damage threshold health feedback and dead movement" {
     player.stride = 7.5;
     player.stride_side = true;
     player.last_floor_sector = 0;
-    player.flags = 0x10000014;
+    player.flags = .{ .on_ground = true, .pose = .{ .stand = true }, .dead = true };
     player.dead = true;
 
     var look: input.LookState = .{};
@@ -551,9 +553,9 @@ test "fall damage threshold health feedback and dead movement" {
 
     for (1..45) |index| {
         var packet: input.Packet = .{};
-        packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+        packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
-        for ([_]usize{ 0, 2, 10, 11 }) |slot| packet.entries[slot] = .{ .value = 5120, .flags = 0 };
+        for ([_]usize{ 0, 2, 10, 11 }) |slot| packet.entries[slot] = .{ .value = 5120, .flags = .{} };
 
         const control = look.controlForLife(&packet, false);
         try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
@@ -565,12 +567,12 @@ test "fall damage threshold health feedback and dead movement" {
 
         if (fixture) |reference| {
             var expected = reference.value.dead_frames[index].state;
-            std.testing.expectEqual(expected.flags, player.flags) catch |err| {
+            std.testing.expectEqual(expected.flags, bits.word(player.flags)) catch |err| {
                 std.debug.print("reference dead player flags frame {d}\n", .{index});
                 return err;
             };
 
-            expected.flags &= 0x10003004;
+            expected.flags = bits.word(bits.only(bits.from(PlayerFlags, expected.flags), .{ .on_ground = true, .dying = true, .jumped = true, .dead = true }));
             std.testing.expectEqualDeep(expected, actual) catch |err| {
                 std.debug.print("reference dead player frame {d}\n", .{index});
                 return err;
@@ -669,7 +671,7 @@ test "solid ceiling crushing records and compressed player motion" {
 
     for (fixture.value.movement_cases) |case| {
         sectors[0].ceiling.height = case.config.ceiling;
-        scene_sectors[0].flags = case.config.sector_flags;
+        bits.setWord(&scene_sectors[0].flags, case.config.sector_flags);
 
         var player = try movement.Player.init(
             &item,
@@ -702,7 +704,7 @@ test "solid ceiling crushing records and compressed player motion" {
 
             var packet: input.Packet = .{};
 
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
             try player.tickWithAudio(
                 &level,
                 &scene,
@@ -727,7 +729,7 @@ test "solid ceiling crushing records and compressed player motion" {
             );
 
             var expected_motion = frame.movement;
-            expected_motion.flags &= 0x10003004;
+            expected_motion.flags = bits.word(bits.only(bits.from(PlayerFlags, expected_motion.flags), .{ .on_ground = true, .dying = true, .jumped = true, .dead = true }));
             try std.testing.expectEqualDeep(expected_motion, MovementState.read(&player, &look));
 
             if (frame.state.requests.len != 0) {

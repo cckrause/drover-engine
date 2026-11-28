@@ -61,7 +61,7 @@ pub fn write(
 }
 
 pub fn validate(saved: header.Header) !campaign.Difficulty {
-    if (saved.engine.game_type != 1 or saved.engine.scenario != 2 or saved.engine.game_state != 1) return error.UnsupportedSavedGameMode;
+    if (saved.engine.game_type != .campaign or saved.engine.scenario != 2 or saved.engine.game_state != 1) return error.UnsupportedSavedGameMode;
     if (saved.pushed_state != null) return error.UnsupportedPushedSaveState;
 
     const recipe = saved.recipe orelse return error.MissingSavedCampaign;
@@ -71,12 +71,7 @@ pub fn validate(saved: header.Header) !campaign.Difficulty {
         saved.level_name,
     )) return error.SavedLevelNameMismatch;
 
-    return switch (saved.engine.mode_mask) {
-        0x100000 => .good,
-        0x200000 => .bad,
-        0x800000 => .ugly,
-        else => error.InvalidDifficulty,
-    };
+    return @import("../difficulty.zig").Difficulty.fromWord(saved.engine.mode_mask);
 }
 
 pub fn readBody(

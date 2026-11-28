@@ -107,7 +107,7 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
             @intFromEnum(
                 input.Slot.crouch,
             )
-        ] = .{ .value = 5120, .flags = input.absolute };
+        ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
         for (0..64) |_| {
             try session.advance(a, &crouch, 16);
@@ -118,7 +118,7 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
         @memset(shown, 0);
         _ = try session.renderWorld(shown, 0);
         const flags = session.actor_slots[source].?.flags;
-        session.actor_slots[source].?.flags &= ~@as(u32, 4);
+        session.actor_slots[source].?.flags.visible = false;
         session.syncActor(source);
         @memset(hidden, 0);
         _ = try session.renderWorld(hidden, 0);
@@ -132,7 +132,7 @@ test "3DO real Hideout dynamite and Town knife render and collect through moveme
             @intFromEnum(
                 input.Slot.forward,
             )
-        ] = .{ .value = 5120, .flags = input.absolute };
+        ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
         session.player = saved_player;
         session.player.position = object.position;

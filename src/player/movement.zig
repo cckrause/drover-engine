@@ -7,6 +7,7 @@
 //! water - is decided by the surface the player is standing on.
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
 
 const item_asset = @import("../assets/item.zig");
 const level_asset = @import("../assets/level.zig");
@@ -18,6 +19,8 @@ const ceiling_contact = @import("ceiling_contact.zig");
 const choreography = @import("choreography.zig");
 const collision = @import("collision.zig");
 const input = @import("input.zig");
+const bits = @import("../util/bits.zig");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 const Vec3 = level_asset.Vec3;
 
 pub const Physics = struct {
@@ -146,7 +149,7 @@ pub const Player = struct {
     water_physics: ?Physics = null,
     underwater_elapsed: f32 = 0,
     drowning: f32 = 0,
-    flags: u32 = 4,
+    flags: PlayerFlags = PlayerFlags.new,
     floor_cache: f32 = -2147483648.0,
     jump_peak: f32 = 0,
     energy: f32 = 100,
@@ -231,13 +234,13 @@ pub const Player = struct {
         audio: *player_audio.Context,
     ) !bool {
         if (self.sector >= scene.sectors.len) return error.InvalidPlayerSector;
-        if (scene.sectors[self.sector].flags & 0x10000000 == 0) return false;
+        if (!scene.sectors[self.sector].flags.rail) return false;
 
         const rail = audio.rail orelse return error.MissingRailAudio;
 
-        self.flags ^= 8;
+        self.flags.on_rail = !self.flags.on_rail;
 
-        if (self.flags & 8 != 0) try rail.start(self.position) else try rail.stop();
+        if (self.flags.on_rail) try rail.start(self.position) else try rail.stop();
 
         return true;
     }
@@ -315,9 +318,9 @@ pub const Player = struct {
     ) !void {
         if (self.sector >= level.sectors.len) return error.InvalidPlayerSector;
 
-        if (scene.sectors[self.sector].flags & 0x10000000 == 0) self.flags &= ~@as(u32, 8);
+        if (!scene.sectors[self.sector].flags.rail) self.flags.on_rail = false;
 
-        const rail = self.flags & 8 != 0;
+        const rail = self.flags.on_rail;
         const rail_audio = if (rail) (if (audio) |context| context.rail else null) orelse return error.MissingRailAudio else null;
         const bounds = try verticalSectors(level, scene, self.sector, self.position);
         const swimming = if (bounds.surface) |surface| (level.sectors[self.sector].vadjoin < 0 or @as(f64, self.eye_height) * 0.75 + self.position.y < surface) else false;
@@ -340,7 +343,8 @@ pub const Player = struct {
         const view_basis = angles.sinCos(self.viewYaw());
 
         if (submerged) {
-            self.flags = (self.flags & ~@as(u32, 0x20000000)) | 0x8000;
+            self.flags.lamp_on = false;
+            self.flags.underwater = true;
 
             if (!self.dead) self.underwater_elapsed = store(@as(f64, self.underwater_elapsed) + dt);
 
@@ -360,7 +364,7 @@ pub const Player = struct {
                 .z = store(@as(f64, view_basis.cos) * 2 + old.z),
             }, count);
         } else {
-            self.flags &= ~@as(u32, 0x8000);
+            self.flags.underwater = false;
 
             if (paired) {
                 if (@as(
@@ -375,11 +379,11 @@ pub const Player = struct {
         const floor_slope_angle: i16 = if ((!paired or submerged) and floor_slope != null) slopeAngle(floor_slope.?, basis.sin, basis.cos) else 0;
         const target_pitch: i16 = if ((!paired or submerged) and floor_slope != null) std.math.clamp(slopeAngle(floor_slope.?, view_basis.sin, view_basis.cos), -0x8e3, 0x8e3) else 0;
         const slope_cos = angles.sinCos(floor_slope_angle).cos;
-        const slow = control.flags & 1 != 0;
-        const run = control.flags & 2 != 0;
-        const sprint = control.flags & 4 != 0;
-        const jump = !self.gatling_active and control.flags & 8 != 0 and !sprint;
-        const crouch = self.dead or (!self.gatling_active and control.flags & 0x10 != 0);
+        const slow = control.flags.slow;
+        const run = control.flags.run;
+        const sprint = control.flags.sprint;
+        const jump = !self.gatling_active and control.flags.jump and !sprint;
+        const crouch = self.dead or (!self.gatling_active and control.flags.crouch);
         const crouch_height: f32 = if (self.dead) 1 else self.crouch_height;
         var forward = control.forward;
         var strafe = control.strafe;
@@ -433,7 +437,7 @@ pub const Player = struct {
 
         var step_height = p.step_height;
 
-        if (self.flags & 0x2000 != 0 and self.velocity.y >= 0) step_height = @max(
+        if (self.flags.jumped and self.velocity.y >= 0) step_height = @max(
             store(@as(f64, self.jump_peak) - old.y),
             step_height,
         );
@@ -465,19 +469,19 @@ pub const Player = struct {
             store(@as(f64, clearance) - self.head_height),
         );
 
-        var grounded = self.flags & 4 != 0 or old.y <= floor;
+        var grounded = self.flags.on_ground or old.y <= floor;
 
-        if (grounded) self.flags = (self.flags | 4) & ~@as(u32, 0x2000);
+        if (grounded) self.flags.land();
 
         const floor_distance = store(@as(f64, old.y) - floor);
 
         if (step_height < floor_distance) {
             grounded = false;
-            self.flags &= ~@as(u32, 4);
+            self.flags.on_ground = false;
         }
 
         const walking_surface = grounded and @as(f64, floor) - actual_floor < step_height;
-        const was_wading = self.flags & 0x4000 != 0;
+        const was_wading = self.flags.wading;
         const wading = if (bounds.surface) |surface|
             (if (was_wading) old.y <= surface else old.y < surface)
         else
@@ -485,11 +489,11 @@ pub const Player = struct {
 
         if (was_wading != wading) {
             if (audio) |context| try context.voice(.splash);
-            if (wading) self.flags |= 0x4000 else self.flags &= ~@as(u32, 0x4000);
+            self.flags.wading = wading;
         }
 
         const has_sector_velocity = state.velocity_present;
-        const transport_active = has_sector_velocity and (state.flags & 0x40 == 0 or walking_surface);
+        const transport_active = has_sector_velocity and (!state.flags.velocity_on_floor_only or walking_surface);
         const local_transport: Vec3 = if (transport_active) .{
             .x = store(
                 @as(f64, basis.cos) * sector.velocity.x - @as(f64, sector.velocity.z) * basis.sin,
@@ -518,21 +522,21 @@ pub const Player = struct {
             ) == sign(local_velocity.x) and forward == 0) strafe = 0;
         }
 
-        self.sector_damage = if (state.flags & 0x1c0000 != 0)
-            (if (state.flags & 0x100000 != 0) @as(
+        self.sector_damage = if (state.flags.damage_low or state.flags.damage_medium or state.flags.damage_high)
+            (if (state.flags.damage_high) @as(
                 u32,
                 4,
-            ) else if (state.flags & 0x80000 != 0) @as(u32, 2) else @as(u32, 1))
-        else if (walking_surface and floor_state.flags & 0xe00000 != 0)
-            (if (floor_state.flags & 0x800000 != 0) @as(
+            ) else if (state.flags.damage_medium) @as(u32, 2) else @as(u32, 1))
+        else if (walking_surface and (floor_state.flags.floor_damage_low or floor_state.flags.floor_damage_medium or floor_state.flags.floor_damage_high))
+            (if (floor_state.flags.floor_damage_high) @as(
                 u32,
                 4,
-            ) else if (floor_state.flags & 0x400000 != 0) @as(u32, 2) else @as(u32, 1))
+            ) else if (floor_state.flags.floor_damage_medium) @as(u32, 2) else @as(u32, 1))
         else
             0;
 
         const rail_wall_angle: ?i16 = if (rail) for (state.walls) |wall| {
-            if (wall.runtime_flags & 0x20000000 != 0) break wall.angle;
+            if (wall.runtime_flags.rail_guide) break wall.angle;
         } else return error.MissingRailGuideWall else null;
 
         self.updateAngles(
@@ -562,20 +566,20 @@ pub const Player = struct {
             } else local_velocity.y = store(@as(f64, jump_velocity) * @as(f32, 0.33333334));
 
             target.y = store(@as(f64, local_velocity.y) * dt + target.y);
-            self.flags &= ~@as(u32, 4);
+            self.flags.on_ground = false;
         } else if (water_dive) {
             local_velocity.y = store(@as(f64, local_velocity.y) - p.jump_velocity);
             target.y = store(@as(f64, local_velocity.y) * dt + target.y);
-        } else if ((self.flags & 4 == 0 or local_velocity.y > 0 or sector.gravity > 0) and
+        } else if ((!self.flags.on_ground or local_velocity.y > 0 or sector.gravity > 0) and
             ((floor_distance >= 0 and local_velocity.y != 0) or step_height < floor_distance or sector.gravity > 0))
         {
             const falling_velocity = @as(f64, sector.gravity) * dt + local_velocity.y;
             local_velocity.y = store(falling_velocity);
             target.y = store(falling_velocity * dt + target.y);
-            self.flags &= ~@as(u32, 4);
+            self.flags.on_ground = false;
         } else if (old.y <= floor or local_velocity.y != 0 or jump) {
             if (grounded and local_velocity.y < 0) {
-                if (self.flags & 4 == 0) if (audio) |context| {
+                if (!self.flags.on_ground) if (audio) |context| {
                     try context.footstep(floor_source.floor_sound);
 
                     if (!paired or @abs(
@@ -584,7 +588,7 @@ pub const Player = struct {
                         try context.landing(local_velocity.y, local_velocity.y, p.jump_velocity);
                 };
 
-                self.flags = (self.flags | 4) & ~@as(u32, 0x2000);
+                self.flags.land();
                 local_velocity.y = @min(store(@as(f64, decel.y) * dt + local_velocity.y), 0);
                 eye = @max(store(@as(f64, local_velocity.y) * dt + eye), crouch_height);
 
@@ -594,7 +598,7 @@ pub const Player = struct {
 
                 local_velocity.y = store(inherited_jump);
                 target.y = store(inherited_jump * dt + target.y);
-                self.flags = (self.flags & ~@as(u32, 4)) | 0x2000;
+                self.flags.jump();
                 if (sector.gravity >= 0) return error.UnsupportedPlayerJumpGravity;
 
                 self.jump_peak = store(
@@ -610,7 +614,7 @@ pub const Player = struct {
             }
         } else {
             target.y = floor;
-            self.flags = (self.flags | 4) & ~@as(u32, 0x2000);
+            self.flags.land();
             if (!rail) eye = store(@as(f64, floor_distance) + eye);
         }
 
@@ -634,7 +638,7 @@ pub const Player = struct {
         var acceleration_z: f32 = if (forward_active) store(@as(f64, forward) * accel.z) else 0;
 
         if (grounded and !submerged and !rail) {
-            if (!forward_active) self.auto_pitch_elapsed = 0 else if (control.flags & 0x20 == 0 and !self.scope_active and self.move_pitch_return) {
+            if (!forward_active) self.auto_pitch_elapsed = 0 else if (!control.flags.center_view and !self.scope_active and self.move_pitch_return) {
                 self.auto_pitch_elapsed = store(@as(f64, self.auto_pitch_elapsed) + dt);
 
                 if (@as(i32, @bitCast(self.auto_pitch_elapsed)) > 0x3f000000) {
@@ -645,7 +649,7 @@ pub const Player = struct {
         }
 
         if (grounded and !submerged and rail) {
-            if (state.flags & 0x08000000 != 0) {
+            if (state.flags.rail_slope) {
                 const slope = floor_slope orelse return error.MissingRailSlope;
                 const angle = slopeAngle(slope, basis.sin, basis.cos);
                 const cosine = angles.sinCos(angle).cos;
@@ -677,7 +681,7 @@ pub const Player = struct {
 
                 if (grounded) {
                     target.y = store(@as(f64, local_velocity.y) * dt + target.y);
-                    self.flags &= ~@as(u32, 4);
+                    self.flags.on_ground = false;
                 }
             } else acceleration_z = store(@as(f64, acceleration_z) * p.off_ground_ability);
         }
@@ -703,7 +707,7 @@ pub const Player = struct {
         if (swimming) dampWater(
             &local_velocity,
             dt,
-        ) else if (grounded or (has_sector_velocity and state.flags & 0x40 == 0)) damp(
+        ) else if (grounded or (has_sector_velocity and !state.flags.velocity_on_floor_only)) damp(
             &local_velocity,
             decel,
             dt,
@@ -750,7 +754,7 @@ pub const Player = struct {
             self.body_height = store(@as(f64, self.head_height) + eye);
         }
 
-        if (ceiling_state.flags & 1 == 0 and ceiling < @as(
+        if (!ceiling_state.flags.sky_ceiling and ceiling < @as(
             f64,
             self.head_height,
         ) + eye + target.y) {
@@ -769,9 +773,9 @@ pub const Player = struct {
         if (target.y < floor or @as(f64, eye) + target.y < floor) {
             const compression: f32 = if (rail) 0 else store(@as(f64, floor) - target.y);
 
-            if (self.flags & 4 == 0) {
+            if (!self.flags.on_ground) {
                 vertical_impact = store(@as(f64, @abs(velocity.y)) + vertical_impact);
-                self.flags = (self.flags | 4) & ~@as(u32, 0x2000);
+                self.flags.land();
 
                 if (audio) |context| {
                     if (!paired or @abs(
@@ -795,12 +799,12 @@ pub const Player = struct {
 
         const crush_minimum = store(@as(f64, self.head_height) + crouch_height);
 
-        if (ceiling_state.flags & 1 == 0 and @max(self.body_height, clearance) < crush_minimum) {
+        if (!ceiling_state.flags.sky_ceiling and @max(self.body_height, clearance) < crush_minimum) {
             self.crush_required = crush_minimum;
             self.crush_body = self.body_height;
         }
 
-        if (grounded and floor_slope != null and floor_state.flags & 0x20 == 0)
+        if (grounded and floor_slope != null and !floor_state.flags.no_slope_slide)
             slopeSlide(
                 &velocity,
                 floor_slope.?,
@@ -855,7 +859,7 @@ pub const Player = struct {
         self.move_sector = resolved.sector;
 
         if (resolved.sector) |entered| if (level.sectors[entered].vadjoin >= 0) {
-            self.water_surface = if (scene.sectors[entered].flags & 0x80 == 0) level.sectors[entered].floor.texture else level.sectors[entered].ceiling.texture;
+            self.water_surface = if (!scene.sectors[entered].flags.underwater) level.sectors[entered].floor.texture else level.sectors[entered].ceiling.texture;
         };
 
         const vertical = if (resolved.sector) |entered|
@@ -969,10 +973,10 @@ pub const Player = struct {
     ) void {
         _ = angles;
 
-        const yaw_rate = if (self.scope_active and !(control.flags & 0x40000 != 0 and look.pitch_active)) store(@as(f64, p.body_yaw_rate) * @as(f32, 0.1)) else p.body_yaw_rate;
+        const yaw_rate = if (self.scope_active and !(control.flags.mouse_turn and look.pitch_active)) store(@as(f64, p.body_yaw_rate) * @as(f32, 0.1)) else p.body_yaw_rate;
         var yaw_delta = @as(f64, control.turn) * yaw_rate;
 
-        if (control.flags & 0x40000 == 0) yaw_delta *= dt;
+        if (!control.flags.mouse_turn) yaw_delta *= dt;
 
         if (rail_wall_angle) |wall_angle| {
             var target = wall_angle;
@@ -1002,16 +1006,16 @@ pub const Player = struct {
 
         const direction: f64 = @as(
             f64,
-            @floatFromInt(@intFromBool(control.flags & 0x40 != 0)),
+            @floatFromInt(@intFromBool(control.flags.look_right)),
         ) - @as(
             f64,
-            @floatFromInt(@intFromBool(control.flags & 0x80 != 0)),
-        ) + @as(f64, @floatFromInt(@intFromBool(control.flags & 0x100 != 0)));
+            @floatFromInt(@intFromBool(control.flags.look_left)),
+        ) + @as(f64, @floatFromInt(@intFromBool(control.flags.look_back)));
 
         if (rail_wall_angle != null) {
             const step = shortTrunc(@as(f64, yaw_rate) * 2 * control.turn * dt * 45.5112);
             self.head_yaw = @bitCast(@as(u16, @bitCast(self.head_yaw +% step)) & 0x3fff);
-        } else if (control.flags & 0x40 != 0) {
+        } else if (control.flags.look_right) {
             if (self.head_yaw < 0x1000) self.head_yaw = @intCast(
                 @min(
                     @as(
@@ -1023,7 +1027,7 @@ pub const Player = struct {
                     0x1000,
                 ),
             );
-        } else if (control.flags & 0x80 != 0) {
+        } else if (control.flags.look_left) {
             if (self.head_yaw > -0x1000) self.head_yaw = @intCast(
                 @max(
                     @as(
@@ -1035,7 +1039,7 @@ pub const Player = struct {
                     -0x1000,
                 ),
             );
-        } else if (control.flags & 0x100 != 0) {
+        } else if (control.flags.look_back) {
             if (self.head_yaw < 0x2000) self.head_yaw = @intCast(
                 @min(
                     @as(
@@ -1066,14 +1070,14 @@ pub const Player = struct {
 
         if (look_delta != 0 or (look.pitch_active and look.pitch_accumulator != encoded_pitch)) self.auto_pitch = false;
 
-        if (control.flags & 0x20 != 0) self.auto_pitch = true;
+        if (control.flags.center_view) self.auto_pitch = true;
 
         const pitch_rate = rate(p.pitch_rate, slow, run);
         const manual_pitch_rate = if (self.scope_active and rail_wall_angle == null) store(
             @as(f64, pitch_rate) * @as(f32, 0.1),
         ) else pitch_rate;
 
-        if ((grounded and self.auto_pitch) or control.flags & 0x20 != 0) {
+        if ((grounded and self.auto_pitch) or control.flags.center_view) {
             const delta: i32 = shortTrunc(
                 (if (rail_wall_angle != null) 140 else @as(f64, pitch_rate) * 0.5) * dt * 45.5112,
             );
@@ -1104,7 +1108,7 @@ pub const Player = struct {
             );
         }
 
-        if (!((grounded and self.auto_pitch) or control.flags & 0x20 != 0) and look_delta == 0 and !look.pitch_active and rail_wall_angle != null and !self.scope_active and self.flags & 0x8000 == 0 and self.move_pitch_return) {
+        if (!((grounded and self.auto_pitch) or control.flags.center_view) and look_delta == 0 and !look.pitch_active and rail_wall_angle != null and !self.scope_active and !self.flags.underwater and self.move_pitch_return) {
             self.auto_pitch_elapsed = store(@as(f64, self.auto_pitch_elapsed) + dt);
 
             if (@as(i32, @bitCast(self.auto_pitch_elapsed)) > 0x3f000000) {
@@ -1193,7 +1197,7 @@ fn verticalSectors(
         return .{
             .lower = index,
             .upper = index,
-            .surface = if (state.flags & 0x80 != 0) runtimeHeight(
+            .surface = if (state.flags.underwater) runtimeHeight(
                 try activeSlope(state, true),
                 sector.ceiling.height,
                 position,
@@ -1204,7 +1208,7 @@ fn verticalSectors(
     const partner: usize = @intCast(sector.vadjoin);
     if (partner >= level.sectors.len) return error.InvalidPlayerSector;
 
-    const underwater = state.flags & 0x80 != 0;
+    const underwater = state.flags.underwater;
     const surface = runtimeHeight(
         try activeSlope(state, underwater),
         if (underwater) sector.ceiling.height else sector.floor.height,
@@ -1219,7 +1223,7 @@ fn verticalSectors(
 }
 
 fn activeSlope(state: scene_module.SectorState, ceiling: bool) !?scene_module.Slope {
-    if (state.flags & (if (ceiling) @as(u32, 0x80000000) else 0x40000000) == 0) return null;
+    if (!state.flags.sloped(ceiling)) return null;
 
     return (if (ceiling) state.ceiling_slope else state.floor_slope) orelse error.MissingPlayerSlope;
 }
@@ -1488,7 +1492,7 @@ fn checkWaterReference(fixture_path: []const u8) !void {
         );
 
         player.floor_cache = case.config.floor_cache;
-        player.flags = case.config.player_flags;
+        player.flags = bits.from(PlayerFlags, case.config.player_flags);
         player.velocity = .{
             .x = case.config.velocity[0],
             .y = case.config.velocity[1],
@@ -1525,13 +1529,13 @@ fn checkWaterReference(fixture_path: []const u8) !void {
 
         for (case.frames, 0..) |frame, frame_index| {
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (case.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             effects.clearRetainingCapacity();
             player.tickWithAudio(
@@ -1572,13 +1576,13 @@ fn checkWaterReference(fixture_path: []const u8) !void {
                 .head_bob = @bitCast(player.head_bob),
                 .weapon_offset = player.weapon_offset,
                 .stride = @bitCast(player.stride),
-                .flags = player.flags,
+                .flags = bits.word(player.flags),
                 .pitch_accumulator = look.pitch_accumulator,
             };
 
             var expected = frame.state;
 
-            expected.flags &= 0xe004;
+            expected.flags = referenceFlags(expected.flags, .{ .on_ground = true, .jumped = true, .wading = true, .underwater = true });
             std.testing.expectEqualDeep(expected, actual) catch |err| {
                 std.debug.print("wading case {s} frame {d}\n", .{ case.name, frame_index });
                 return err;
@@ -1600,19 +1604,19 @@ fn checkWaterReference(fixture_path: []const u8) !void {
                 try std.testing.expect(std.ascii.eqlIgnoreCase(sound.name, effect.sound.basename));
                 try std.testing.expectEqual(@as(?i32, sound.priority), effect.sound.priority);
                 try std.testing.expectEqual(@as(?i32, sound.volume), effect.sound.volume);
-                try std.testing.expectEqual(@as(?u32, sound.flags), effect.sound.flags);
+                try std.testing.expectEqual(@as(?u32, sound.flags), if (effect.sound.flags) |value| bits.word(value) else null);
             }
         }
 
         if (case.bubble) |expected| {
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (case.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             try std.testing.expectError(
                 error.CapturedOriginalBubbleBoundary,
@@ -1707,7 +1711,7 @@ test "player audio matches 539 frames and rolls back failed movement" {
     const Case = struct {
         y: f32 = 0,
         vy: f32 = 0,
-        flags: u32 = 4,
+        flags: PlayerFlags = .new,
         energy: f32 = 100,
         ceiling: f32 = 30,
         gravity: f32 = -50,
@@ -1723,13 +1727,13 @@ test "player audio matches 539 frames and rolls back failed movement" {
             .energy = 20,
             .chunks = &.{.{ .slots = &.{ .{ 0, 5120, 0 }, .{ 23, 150, 0x20 } }, .count = 220 }},
         },
-        .{ .y = 1, .vy = -10, .flags = 0, .chunks = &.{.{ .count = 20 }} },
-        .{ .y = 1, .vy = -38, .flags = 0, .chunks = &.{.{ .count = 20 }} },
-        .{ .y = 1, .vy = 40, .flags = 0, .ceiling = 7, .chunks = &.{.{ .count = 20 }} },
-        .{ .y = 0.01, .vy = -4, .flags = 0, .gravity = 0 },
-        .{ .y = 0.01, .vy = -4.000000476837158, .flags = 0, .gravity = 0 },
-        .{ .y = 0.01, .vy = -36, .flags = 0, .gravity = 0 },
-        .{ .y = 0.01, .vy = -35.999996185302734, .flags = 0, .gravity = 0 },
+        .{ .y = 1, .vy = -10, .flags = .{}, .chunks = &.{.{ .count = 20 }} },
+        .{ .y = 1, .vy = -38, .flags = .{}, .chunks = &.{.{ .count = 20 }} },
+        .{ .y = 1, .vy = 40, .flags = .{}, .ceiling = 7, .chunks = &.{.{ .count = 20 }} },
+        .{ .y = 0.01, .vy = -4, .flags = .{}, .gravity = 0 },
+        .{ .y = 0.01, .vy = -4.000000476837158, .flags = .{}, .gravity = 0 },
+        .{ .y = 0.01, .vy = -36, .flags = .{}, .gravity = 0 },
+        .{ .y = 0.01, .vy = -35.999996185302734, .flags = .{}, .gravity = 0 },
         .{ .energy = 0, .elapsed = 1.49, .seconds = 0.01 },
         .{ .energy = 0, .elapsed = 1, .seconds = 0.5, .chunks = &.{.{ .count = 2 }} },
         .{ .energy = 50, .elapsed = 1.49, .seconds = 0.01 },
@@ -1760,13 +1764,13 @@ test "player audio matches 539 frames and rolls back failed movement" {
         for (case.chunks) |chunk| for (0..chunk.count) |_| {
             effects.clearRetainingCapacity();
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (chunk.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             const control = look.control(&packet);
             try player.tickWithAudio(
@@ -1805,7 +1809,7 @@ test "player audio matches 539 frames and rolls back failed movement" {
                     id,
                     @bitCast(sound.priority.?),
                     @bitCast(sound.volume.?),
-                    sound.flags.?,
+                    bits.word(sound.flags.?),
                 }) |word| {
                     var encoded: [4]u8 = undefined;
                     std.mem.writeInt(u32, &encoded, word, .little);
@@ -1830,7 +1834,7 @@ test "player audio matches 539 frames and rolls back failed movement" {
 
     player.position.y = 0.01;
     player.velocity.y = -38;
-    player.flags = 0;
+    player.flags = .{};
 
     var look: input.LookState = .{};
     const control: input.Control = .{ .forward = 1 };
@@ -2031,13 +2035,13 @@ test "player integrator agrees across archived physics control sequences" {
 
         for (sequence) |chunk| for (0..chunk.count) |_| {
             var packet = input.Packet{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (chunk.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             const control = look.control(&packet);
             try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
@@ -2057,7 +2061,7 @@ test "player integrator agrees across archived physics control sequences" {
                 @bitCast(player.energy),
                 @bitCast(player.head_bob),
                 @bitCast(player.stride),
-                player.flags,
+                bits.word(player.flags),
                 @bitCast(look.pitch_accumulator),
             };
 
@@ -2139,7 +2143,7 @@ test "player integrator agrees across archived physics control sequences" {
         };
 
         scene_sectors[0].velocity_present = config.conveyor[0] != 0 or config.conveyor[1] != 0 or config.conveyor[2] != 0;
-        scene_sectors[0].flags = config.sector_flags;
+        bits.setWord(&scene_sectors[0].flags, config.sector_flags);
 
         var player = try Player.init(
             &item,
@@ -2162,12 +2166,12 @@ test "player integrator agrees across archived physics control sequences" {
         };
 
         player.floor_cache = config.floor_cache;
-        player.flags = config.player_flags;
+        player.flags = bits.from(PlayerFlags, config.player_flags);
 
         var look: input.LookState = .{};
         var packet: input.Packet = .{};
 
-        packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+        packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
         const control = look.control(&packet);
         try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
 
@@ -2254,14 +2258,14 @@ test "player integrator agrees across archived physics control sequences" {
         scene_sectors[0].velocity_present = case.config.conveyor[0] != 0 or case.config.conveyor[1] != 0 or case.config.conveyor[2] != 0;
         sectors[0].floor.slope = null;
         sectors[0].ceiling.slope = null;
-        scene_sectors[0].flags = case.config.sector_flags;
+        bits.setWord(&scene_sectors[0].flags, case.config.sector_flags);
         scene_sectors[0].floor_slope = null;
         scene_sectors[0].ceiling_slope = null;
 
         inline for (.{
             "floor",
             "ceiling",
-        }, .{ @as(u32, 0x40000000), @as(u32, 0x80000000) }) |kind, flag| {
+        }) |kind| {
             if (@field(case.config, kind ++ "_slope")) |definition| {
                 @field(
                     sectors[0],
@@ -2274,11 +2278,11 @@ test "player integrator agrees across archived physics control sequences" {
                 slope.coeff_z = definition[1];
                 slope.constant = definition[2];
                 @field(scene_sectors[0], kind ++ "_slope") = slope;
-                scene_sectors[0].flags |= flag;
+                @field(scene_sectors[0].flags, "sloped_" ++ kind) = true;
             }
         }
 
-        scene_sectors[0].flags &= ~case.config.cleared_slope_flags;
+        scene_sectors[0].flags = bits.without(scene_sectors[0].flags, bits.from(scene_module.SectorFlags, case.config.cleared_slope_flags));
         var player = try Player.init(
             &item,
             physics,
@@ -2307,20 +2311,20 @@ test "player integrator agrees across archived physics control sequences" {
         };
 
         player.floor_cache = case.config.floor_cache;
-        player.flags = case.config.player_flags;
+        player.flags = bits.from(PlayerFlags, case.config.player_flags);
         player.sector = case.config.sector;
 
         var look = input.LookState{};
 
         for (case.frames, 0..) |frame, frame_index| {
             var packet = input.Packet{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (frame.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
+            ] = .{ .value = @intCast(slot[1]), .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             const control = look.control(&packet);
             try player.tick(
@@ -2353,13 +2357,13 @@ test "player integrator agrees across archived physics control sequences" {
                 .head_bob = @bitCast(player.head_bob),
                 .weapon_offset = if (frame.state.weapon_offset != null) player.weapon_offset else null,
                 .stride = @bitCast(player.stride),
-                .flags = player.flags,
+                .flags = bits.word(player.flags),
                 .pitch_accumulator = look.pitch_accumulator,
             };
 
             var expected = frame.state;
 
-            expected.flags &= 0x2004;
+            expected.flags = referenceFlags(expected.flags, .{ .on_ground = true, .jumped = true });
             std.testing.expectEqualDeep(expected, actual) catch |err| {
                 std.debug.print("player case {s}, frame {d}\n", .{ case.name, frame_index });
                 std.debug.print("expected {any}\nactual {any}\n", .{ expected, actual });
@@ -2477,13 +2481,13 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
 
         for (case.chunks) |chunk| for (0..chunk.count) |_| {
             var packet: input.Packet = .{};
-            packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+            packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
             for (chunk.slots) |slot| packet.entries[
                 @intCast(
                     slot[0],
                 )
-            ] = .{ .value = slot[1], .flags = @intCast(slot[2]) };
+            ] = .{ .value = slot[1], .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
             const control = look.control(&packet);
             try player.tick(&level, &scene, .{ .entries = &.{} }, &angles, control, &look, 0.016);
@@ -2503,7 +2507,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
                 @bitCast(player.energy),
                 @bitCast(player.head_bob),
                 @bitCast(player.stride),
-                player.flags & 0x2004,
+                bits.word(bits.only(player.flags, .{ .on_ground = true, .jumped = true })),
                 @bitCast(look.pitch_accumulator),
                 @intCast(player.sector),
                 @bitCast(player.weapon_offset[0]),
@@ -2548,7 +2552,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
 
         player.velocity.y = velocity;
         player.floor_cache = 1.5;
-        player.flags = 0;
+        player.flags = .{};
 
         var look: input.LookState = .{};
         var sound_state: player_audio.State = .{};
@@ -2585,7 +2589,7 @@ test "outhouse movement preserves 442 dry vertical-adjoin states" {
 
             try std.testing.expectEqual(@as(?i32, 64), sound.priority);
             try std.testing.expectEqual(@as(?i32, 127), sound.volume);
-            try std.testing.expectEqual(@as(?u32, 0), sound.flags);
+            try std.testing.expectEqual(@as(?RequestFlags, .{}), sound.flags);
         }
     };
 }
@@ -2600,4 +2604,9 @@ test "Hideout swimming matches WATER.PHY integration" {
 
 test "forced water and both movement bubble branches" {
     try checkWaterReference("testdata/player-water-edges-reference.json");
+}
+
+/// The reference records only the flags in `kept`.
+fn referenceFlags(word: u32, kept: PlayerFlags) u32 {
+    return bits.word(bits.only(bits.from(PlayerFlags, word), kept));
 }

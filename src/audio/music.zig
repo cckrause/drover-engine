@@ -12,8 +12,15 @@ pub const Track = struct { disc: []const u8, number: u8 };
 
 pub const Command = union(enum) { track: Track, goto: u8 };
 
+pub const ScriptFlags = packed struct(u32) {
+    unused_0: u18 = 0,
+    /// Starting again carries on from the current cue, not the start cue.
+    keeps_cue: bool = false,
+    unused_19: u13 = 0,
+};
+
 pub const Script = struct {
-    flags: u32,
+    flags: ScriptFlags,
     start_cue: usize,
     cues: [][]Command,
 
@@ -28,7 +35,7 @@ pub const Script = struct {
         const minor = try header.integer();
         if (major != 1 or minor != 0) return error.UnsupportedMusicVersion;
 
-        const flags: u32 = @bitCast(try directiveInteger(try lines.required(), "FLAGS:"));
+        const flags: ScriptFlags = @bitCast(try directiveInteger(try lines.required(), "FLAGS:"));
         const first = try directiveInteger(try lines.required(), "START_CUE:");
         const count = try directiveInteger(try lines.required(), "CUES:");
         if (count <= 0 or count > bytes.len or first < 1 or first > count) return error.InvalidMusicCue;
@@ -102,7 +109,7 @@ pub const Player = struct {
     restored: bool = false,
 
     pub fn start(self: *Player) !?Track {
-        if (!self.restored and self.script.flags & 0x40000 == 0) {
+        if (!self.restored and !self.script.flags.keeps_cue) {
             self.cue = self.script.start_cue;
             self.command = 0;
         }
@@ -441,7 +448,7 @@ test "all six CD1 MSC loaders and playback sequences match the reference" {
         var script = try Script.parse(a, data);
         defer script.deinit(a);
 
-        try std.testing.expectEqual(expected.flags, script.flags);
+        try std.testing.expectEqual(expected.flags, @as(u32, @bitCast(script.flags)));
         try std.testing.expectEqual(expected.start_cue, script.start_cue);
         try std.testing.expectEqual(expected.cues.len, script.cues.len);
 

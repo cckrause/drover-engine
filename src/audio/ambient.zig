@@ -5,6 +5,7 @@
 //! occlusion-tested, unlike sounds that come from actors.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const level = @import("../assets/level.zig");
 const engine = @import("engine.zig");
@@ -18,7 +19,7 @@ pub const Source = struct {
 
     pub fn params(self: Source) engine.Params {
         return .{
-            .flags = engine.Flags.effects | engine.Flags.spatial | engine.Flags.loop | engine.Flags.ambient,
+            .flags = .{ .effects = true, .spatial = true, .loop = true, .ambient = true },
             .position = .{ self.position.x, self.position.y, self.position.z },
         };
     }
@@ -35,21 +36,13 @@ pub const Scheduler = struct {
         a: std.mem.Allocator,
         geometry: *const level.Level,
         objects: *const level.Objects,
-        difficulty: u32,
+        difficulty: level.Difficulty,
     ) !Scheduler {
-        const mask: u32 = switch (difficulty) {
-            0x100000 => 0x10000000,
-            0x200000 => 0x20000000,
-            0x400000 => 0x40000000,
-            0x800000 => 0x80000000,
-            else => return error.InvalidDifficulty,
-        };
-
         var sources: std.ArrayList(Source) = .empty;
         defer sources.deinit(a);
 
         for (objects.entries) |object| {
-            if (object.flags[0] & 1 == 0 or object.flags[1] & mask == 0) continue;
+            if (!object.flags.sound_only or !bits.any(object.availability.difficulties, difficulty.set())) continue;
 
             const sector = geometry.sectorIndex(
                 object.sector_id,
@@ -157,7 +150,7 @@ test "Hideout object list contains no enabled point-sound records" {
     var objects = try level.Objects.parse(a, try archive.find("HIDEOUT.OBB", 0));
     defer objects.deinit();
 
-    for ([_]u32{ 0x100000, 0x200000, 0x800000 }) |difficulty| {
+    for ([_]level.Difficulty{ .good, .bad, .ugly }) |difficulty| {
         var scheduler = try Scheduler.init(a, &geometry, &objects, difficulty);
         defer scheduler.deinit(a);
         try std.testing.expectEqual(@as(usize, 0), scheduler.sources.len);
@@ -236,7 +229,7 @@ test "ambient polling matches the reference handles and failed-start retention" 
         for (step.driver_starts) |start| {
             const params = scheduler.sources[start.source].params();
 
-            try std.testing.expectEqual(start.flags, params.flags);
+            try std.testing.expectEqual(start.flags, bits.word(params.flags));
             try std.testing.expectEqual(start.volume, params.volume);
             try std.testing.expectEqual(start.pan, params.pan);
             try std.testing.expectEqual(start.priority, params.priority);

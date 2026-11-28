@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const stream = @import("stream.zig");
 
 pub const EngineState = struct {
@@ -15,7 +16,7 @@ pub const EngineState = struct {
     badge: u32,
     game_860: u32,
     game_864: u32,
-    game_type: u32,
+    game_type: GameType,
     game_state: u32,
     previous_game_state: u32,
     scenario: u32,
@@ -24,7 +25,10 @@ pub const EngineState = struct {
     pub fn write(self: EngineState, writer: *stream.Writer) !void {
         inline for (std.meta.fields(
             EngineState,
-        )) |field| try writer.integer(u32, @field(self, field.name));
+        )) |field| {
+            const value = @field(self, field.name);
+            try writer.integer(u32, if (field.type == GameType) @intFromEnum(value) else value);
+        }
     }
 
     pub fn read(reader: *stream.Reader) !EngineState {
@@ -32,7 +36,10 @@ pub const EngineState = struct {
 
         inline for (std.meta.fields(
             EngineState,
-        )) |field| @field(state, field.name) = try reader.integer(u32);
+        )) |field| {
+            const value = try reader.integer(u32);
+            @field(state, field.name) = if (field.type == GameType) @enumFromInt(value) else value;
+        }
 
         return state;
     }
@@ -192,7 +199,9 @@ test "save header, story reference and statistics match the reference" {
     const a = std.testing.allocator;
     var engine: EngineState = undefined;
 
-    inline for (std.meta.fields(EngineState), 0..) |field, i| @field(engine, field.name) = 11 + i;
+    inline for (std.meta.fields(EngineState), 0..) |field, i| {
+        @field(engine, field.name) = if (field.type == GameType) @enumFromInt(11 + i) else 11 + i;
+    }
 
     const header: Header = .{
         .description = "ORACLE".* ++ [_]u8{0} ** 9,

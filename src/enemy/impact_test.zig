@@ -14,6 +14,7 @@ const inventory = @import("../player/inventory.zig");
 const weapon = @import("../player/weapon.zig");
 const scene = @import("../render/scene.zig");
 const inf = @import("../script/inf.zig");
+const bits = @import("../util/bits.zig");
 
 const Config = struct {
     pitch: i16 = 0,
@@ -105,11 +106,11 @@ fn check(session: *Session, a: std.mem.Allocator, expected: Case) !void {
     source.ceiling.height = 10;
     source.vadjoin = if (config.vadjoin) 0 else -1;
     source.velocity = point(config.velocity);
-    state.flags = config.flags;
+    bits.setWord(&state.flags, config.flags);
     state.floor_slope = slope(config.floor_slope);
     state.ceiling_slope = slope(config.ceiling_slope);
-    state.walls[expected.hit.index].flags = config.wall_flags;
-    state.walls[expected.hit.index].runtime_flags = config.wall_runtime;
+    bits.setWord(&state.walls[expected.hit.index].flags, config.wall_flags);
+    bits.setWord(&state.walls[expected.hit.index].runtime_flags, config.wall_runtime);
     state.walls[expected.hit.index].angle = expected.hit.angle;
 
     var elevator = [_]inf.Elevator{
@@ -118,7 +119,7 @@ fn check(session: *Session, a: std.mem.Allocator, expected: Case) !void {
             .kind = if (config.moving) |kind| @enumFromInt(kind) else .floor,
             .value = 0,
             .speed = 2,
-            .runtime_flags = 1,
+            .runtime_flags = .{ .moving = true },
         },
     };
 
@@ -169,9 +170,9 @@ fn check(session: *Session, a: std.mem.Allocator, expected: Case) !void {
         const actor = optional.?;
 
         try std.testing.expect(actor.costume == session.costumes.get(native.name).?);
-        try std.testing.expectEqualDeep(native.position_bits, bits(actor.position));
-        try std.testing.expectEqual(native.flags, actor.flags);
-        try std.testing.expectEqual(native.secondary_flags, actor.secondary_flags);
+        try std.testing.expectEqualDeep(native.position_bits, vectorBits(actor.position));
+        try std.testing.expectEqual(native.flags, bits.word(actor.flags));
+        try std.testing.expectEqual(native.secondary_flags, bits.word(actor.secondary_flags));
         try std.testing.expectEqual(native.height_bits, @as(u32, @bitCast(actor.height)));
         try std.testing.expectEqual(native.radius_bits, @as(u32, @bitCast(actor.collision_radius)));
         try std.testing.expectEqualDeep(native.playback, playbackWords(actor.playback.?));
@@ -183,10 +184,10 @@ fn check(session: *Session, a: std.mem.Allocator, expected: Case) !void {
         const sound = effect.sound;
 
         try std.testing.expectEqualStrings(native.name, sound.basename);
-        try std.testing.expectEqualDeep(native.position_bits, bits(sound.position.?));
+        try std.testing.expectEqualDeep(native.position_bits, vectorBits(sound.position.?));
         try std.testing.expectEqualDeep(
             native.options,
-            [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), sound.flags.? },
+            [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), bits.word(sound.flags.?) },
         );
     }
 }
@@ -199,7 +200,7 @@ fn playbackWords(p: @import("../assets/nwx.zig").Playback) [8]u32 {
         p.choreography,
         p.next_frame,
         p.frame,
-        p.flags,
+        bits.word(p.flags),
         @intFromBool(p.terminated),
     };
 }
@@ -225,7 +226,7 @@ fn fromBits(v: [3]u32) level.Vec3 {
     return .{ .x = @bitCast(v[0]), .y = @bitCast(v[1]), .z = @bitCast(v[2]) };
 }
 
-fn bits(v: level.Vec3) [3]u32 {
+fn vectorBits(v: level.Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -523,7 +524,7 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
                 @intFromEnum(
                     input.Slot.reload,
                 )
-            ] = .{ .flags = input.absolute | input.pressed, .value = 1 };
+            ] = .{ .flags = .{ .absolute = true, .pressed = true }, .value = 1 };
 
             try session.weapon_state.inputPacket(&session.inventory, &packet, config.now);
             try context.tick(&playback, &costume);
@@ -574,7 +575,7 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
 
         for (case.actors, session.actor_slots[first..]) |expected, actor| {
             try std.testing.expect(actor.?.costume == session.costumes.get(expected.name).?);
-            try std.testing.expectEqualDeep(expected.position_bits, bits(actor.?.position));
+            try std.testing.expectEqualDeep(expected.position_bits, vectorBits(actor.?.position));
         }
 
         var sound_index: usize = 0;
@@ -588,7 +589,7 @@ test "weapon pellets interleave actual impact RNG and actor creation" {
 
             try std.testing.expectEqualDeep(
                 case.sounds[sound_index].position_bits,
-                bits(effect.sound.position.?),
+                vectorBits(effect.sound.position.?),
             );
 
             sound_index += 1;

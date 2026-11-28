@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const lab = @import("../assets/lab.zig");
 const inventory_module = @import("../player/inventory.zig");
@@ -17,6 +18,7 @@ const camera = @import("../render/backends/software/camera.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const Vec3 = @import("../assets/level.zig").Vec3;
 const script = @import("../script/runtime.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 const Bubble = struct { sector: usize, position: [3]u32, count: i32 };
 
@@ -47,8 +49,8 @@ const Capture = struct {
             .position = descriptor.origin,
             .sector = descriptor.sector,
             .yaw = 0,
-            .flags = 0x8000000f,
-            .secondary_flags = 0x420,
+            .flags = ActorFlags.new,
+            .secondary_flags = .{ .projectile = true, .item = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = 0,
@@ -294,7 +296,7 @@ test "projectile charged weapon callbacks and release match 400 reference frames
                 @intFromEnum(
                     if (message == 0x69 or message == 0x6a) input.Slot.fire else input.Slot.fire_big,
                 )
-            ].flags = if (message & 1 != 0) input.pressed else input.released;
+            ].flags = if (message & 1 != 0) .{ .pressed = true } else .{ .released = true };
 
             try context.inputPacket(&playback, &costume, &packet);
             try context.tick(&playback, &costume);
@@ -321,7 +323,7 @@ test "projectile charged weapon callbacks and release match 400 reference frames
                     playback.choreography,
                     playback.next_frame,
                     playback.frame,
-                    playback.flags,
+                    bits.word(playback.flags),
                 },
             );
 

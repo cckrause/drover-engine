@@ -9,6 +9,8 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
+const GameType = @import("../game_type.zig").GameType;
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
@@ -70,46 +72,63 @@ pub const Server = struct {
     }
 };
 
+/// The game's option word. Only `keeps_own` changes what the engine does;
+/// the rest is carried between machines.
+pub const OptionFlags = packed struct(u32) {
+    shared_0: u3 = 0,
+    unused_3: bool = false,
+    shared_4: u4 = 0,
+    /// Options from other machines leave `shared_0` and `shared_4` alone.
+    keeps_own: bool = false,
+    shared_9: bool = false,
+    unused_10: u22 = 0,
+};
+
+/// The configuration as SetGameConfiguration carries it.
+pub const ConfigurationWord = packed struct(u32) {
+    options: u7 = 0,
+    shared_0: u3 = 0,
+    unused_10: bool = false,
+    shared_4: u4 = 0,
+    unused_15: u2 = 0,
+    shared_9: bool = false,
+    unused_18: u14 = 0,
+};
+
 pub const Configuration = struct {
     options: [7]bool = @splat(false),
-    flags: u32 = 0,
+    flags: OptionFlags = .{},
 
     pub fn bits(self: *const Configuration) u32 {
-        var result: u32 = 0;
+        var word: ConfigurationWord = .{
+            .shared_0 = self.flags.shared_0,
+            .shared_4 = self.flags.shared_4,
+            .shared_9 = self.flags.shared_9,
+        };
 
         for (self.options, 0..) |option, index| {
-            if (option) result |= @as(u32, 1) << @intCast(index);
+            if (option) word.options |= @as(u7, 1) << @intCast(index);
         }
 
-        for ([_]u32{
-            1,
-            2,
-            4,
-            0x10,
-            0x20,
-            0x40,
-            0x80,
-            0x200,
-        }, [_]u32{ 0x80, 0x100, 0x200, 0x800, 0x1000, 0x2000, 0x4000, 0x20000 }) |flag, bit| {
-            if (self.flags & flag != 0) result |= bit;
-        }
-
-        return result;
+        return @bitCast(word);
     }
 
     pub fn fromDatabase(self: *Configuration, value: u32) void {
-        for (&self.options, 0..) |*option, index| option.* = value & (@as(
-            u32,
-            1,
-        ) << @intCast(index)) != 0;
+        const word: ConfigurationWord = @bitCast(value);
+        self.takeOptions(word);
+        self.flags.shared_9 = word.shared_9;
+    }
 
-        if (value & 0x20000 == 0) self.flags &= ~@as(u32, 0x200) else self.flags |= 0x200;
+    fn takeOptions(self: *Configuration, word: ConfigurationWord) void {
+        for (&self.options, 0..) |*option, index| {
+            option.* = word.options & (@as(u7, 1) << @intCast(index)) != 0;
+        }
     }
 };
 
 pub const Context = struct {
     now: ?u32,
-    game_type: u32,
+    game_type: GameType,
     mode: u32 = 0,
     level_loaded: bool,
     allocator: std.mem.Allocator,
@@ -245,7 +264,7 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
                     context.now orelse return error.ServerClockNotSampled,
                 )) continue;
 
-                const text = if (context.game_type == 5 and !router.dropped) "~5122" else "";
+                const text = if (context.game_type == .hosting and !router.dropped) "~5122" else "";
                 var buffer: [message.end_level_capacity]u8 = undefined;
                 const everyone = message.endLevel(&buffer, router.own_client, text);
 
@@ -263,7 +282,7 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
                 const sender = message.client(message.get(bytes, message.sender_offset));
                 if (router.clients[sender].player != null and (context.mode == 1 or context.mode == 3)) return error.HolderDropNotPorted;
 
-                const start = if (context.game_type >= 1 and context.game_type <= 3)
+                const start = if (context.game_type.isSinglePlayer())
                     server.starts[0]
                 else blk: {
                     if (context.mode == 1 or context.mode == 4) return error.ServerTeamStartNotPorted;
@@ -289,7 +308,7 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
                 server.starts[server.start_count] = try message.readStart(bytes);
                 server.start_count += 1;
             },
-            0x7e5 => {
+            @intFromEnum(MessageCode.user) => {
                 if (bytes.len < message.words_size) return error.MalformedNetworkMessage;
                 try context.user_messages.append(
                     @bitCast(message.get(bytes, message.word_offsets[1])),
@@ -318,7 +337,7 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
                 const created = try message.corpse(&buffer, 0x413, router.own_client, value);
 
                 message.set(created, message.sender_offset, ownServer(router));
-                try router.postHereAndEveryone(0, 0x413, created);
+                try router.postHereAndEveryone(0, .{ .code = 0x413 }, created);
             },
             0x415 => {
                 if (!context.level_loaded) continue;
@@ -332,32 +351,16 @@ pub fn processRequests(server: *Server, router: *Router, context: Context) !void
             0x41f => {
                 if (bytes.len < 0x14) return error.MalformedNetworkMessage;
 
-                const bits = message.get(bytes, 0x10);
+                const word: ConfigurationWord = @bitCast(message.get(bytes, 0x10));
                 const config = &server.configuration;
+                config.takeOptions(word);
 
-                for (&config.options, 0..) |*option, index| option.* = bits & (@as(
-                    u32,
-                    1,
-                ) << @intCast(index)) != 0;
-
-                if (config.flags & 0x100 == 0) {
-                    for ([_]u32{
-                        0x80,
-                        0x100,
-                        0x200,
-                        0x800,
-                        0x1000,
-                        0x2000,
-                        0x4000,
-                    }, [_]u32{ 1, 2, 4, 0x10, 0x20, 0x40, 0x80 }) |from, to| {
-                        if (bits & from != 0) config.flags |= to else config.flags &= ~to;
-                    }
+                if (!config.flags.keeps_own) {
+                    config.flags.shared_0 = word.shared_0;
+                    config.flags.shared_4 = word.shared_4;
                 }
 
-                if (bits & 0x20000 != 0) config.flags |= 0x200 else config.flags &= ~@as(
-                    u32,
-                    0x200,
-                );
+                config.flags.shared_9 = word.shared_9;
             },
             else => {
                 var name: [16]u8 = undefined;
@@ -385,7 +388,7 @@ pub fn dropRequests(router: *Router) !void {
 }
 
 fn post(router: *Router, destination: u32, bytes: []u8) !void {
-    _ = try router.post(destination, message.get(bytes, message.number_offset), bytes);
+    _ = try router.post(destination, @bitCast(message.get(bytes, message.number_offset)), bytes);
 }
 
 fn ownServer(router: *const Router) u32 {
@@ -414,8 +417,8 @@ test "server queue is emptied while the switch is off" {
     router.reset();
     var request: [message.header_size]u8 = @splat(0);
 
-    _ = try router.post(message.addressWord(message.Queue.server, 1), 0x3ef, &request);
-    _ = try router.post(message.addressWord(message.Queue.database, 1), 0x404, &request);
+    _ = try router.post(message.addressWord(message.Queue.server, 1), .{ .code = 0x3ef }, &request);
+    _ = try router.post(message.addressWord(message.Queue.database, 1), .{ .code = 0x404 }, &request);
 
     try dropRequests(&router);
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(message.Queue.server));
@@ -449,13 +452,13 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
 
     var buffer: [message.corpse_capacity]u8 = undefined;
 
-    _ = try router.post(0x100800, 0x3f6, try message.corpse(&buffer, 0x3f6, 1, sent));
+    _ = try router.post(0x100800, .{ .code = 0x3f6 }, try message.corpse(&buffer, 0x3f6, 1, sent));
     try processRequests(
         &server,
         &router,
         .{
             .now = 1,
-            .game_type = 5,
+            .game_type = .hosting,
             .mode = 6,
             .level_loaded = false,
             .allocator = std.testing.allocator,
@@ -465,13 +468,13 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
     );
 
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(message.Queue.database));
-    _ = try router.post(0x100800, 0x3f6, try message.corpse(&buffer, 0x3f6, 1, sent));
+    _ = try router.post(0x100800, .{ .code = 0x3f6 }, try message.corpse(&buffer, 0x3f6, 1, sent));
     try processRequests(
         &server,
         &router,
         .{
             .now = 1,
-            .game_type = 5,
+            .game_type = .hosting,
             .mode = 6,
             .level_loaded = true,
             .allocator = std.testing.allocator,
@@ -499,7 +502,7 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
     var past = sent;
 
     past.sector = 8;
-    _ = try router.post(0x100800, 0x3f6, try message.corpse(&buffer, 0x3f6, 1, past));
+    _ = try router.post(0x100800, .{ .code = 0x3f6 }, try message.corpse(&buffer, 0x3f6, 1, past));
 
     try std.testing.expectError(
         error.MalformedNetworkMessage,
@@ -508,7 +511,7 @@ test "MakeMeACorpse comes back as CreateCorpse here and for everyone" {
             &router,
             .{
                 .now = 1,
-                .game_type = 5,
+                .game_type = .hosting,
                 .mode = 6,
                 .level_loaded = true,
                 .allocator = std.testing.allocator,
@@ -537,7 +540,7 @@ test "v1.1.1 Death Match start matches the reference server reply" {
         &router,
         .{
             .now = 12345,
-            .game_type = 5,
+            .game_type = .hosting,
             .mode = 6,
             .level_loaded = true,
             .allocator = std.testing.allocator,

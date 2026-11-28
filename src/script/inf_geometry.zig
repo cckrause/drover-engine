@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const level_module = @import("../assets/level.zig");
 const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
@@ -14,6 +15,7 @@ const Actor = @import("../render/objects.zig").Actor;
 const Player = @import("../player/movement.zig").Player;
 const collision = @import("../player/collision.zig");
 const actor_links = @import("../render/actor_links.zig");
+const bits = @import("../util/bits.zig");
 const Vec2 = level_module.Vec2;
 
 pub const World = struct {
@@ -33,7 +35,7 @@ pub const World = struct {
     marks: ?Marks = null,
     actor_messages: ?struct {
         context: *anyopaque,
-        send: *const fn (*anyopaque, usize, u32) anyerror!void,
+        send: *const fn (*anyopaque, usize, MessageCode) anyerror!void,
     } = null,
     reshaped: ?Reshaped = null,
 
@@ -52,8 +54,8 @@ pub const World = struct {
                 .sector = player.sector,
                 .height = player.body_height,
                 .radius = player.radius,
-                .flags = 0,
-                .secondary_flags = 0x10,
+                .flags = .{},
+                .secondary_flags = .{ .player = true },
             } else null,
         };
     }
@@ -137,7 +139,7 @@ pub fn moveVertical(
 
         const actor = actors.get(index);
 
-        if (actor.flags & 0x400 == 0) continue;
+        if (!actor.flags.physics) continue;
 
         if (!std.math.isFinite(
             f(@as(f64, actor.position.y) + floor_delta),
@@ -185,7 +187,7 @@ pub fn moveVertical(
 
         const actor = actors.get(index);
 
-        if (actor.flags & 0x400 == 0) continue;
+        if (!actor.flags.physics) continue;
 
         const y = f(@as(f64, actor.position.y) + floor_delta);
         world.live_entries.?.*[index].position.y = y;
@@ -223,7 +225,7 @@ pub fn move(world: *World, sector_index: usize, delta: f32, sin: f32, cos: f32) 
     var contact: ?Contact = null;
 
     for (world.level.sectors[sector_index].walls, 0..) |wall, i| {
-        if (world.scene.sectors[sector_index].walls[i].flags & 0x40 == 0) continue;
+        if (!world.scene.sectors[sector_index].walls[i].flags.moves_with_sector) continue;
 
         try moveWall(world, .{ .sector = sector_index, .index = i }, displacement, &contact);
 
@@ -233,7 +235,7 @@ pub fn move(world: *World, sector_index: usize, delta: f32, sin: f32, cos: f32) 
                 .index = @intCast(wall.mirror),
             };
 
-            if (world.scene.sectors[mirror.sector].walls[mirror.index].flags & 0x40 != 0)
+            if (world.scene.sectors[mirror.sector].walls[mirror.index].flags.moves_with_sector)
                 try moveWall(world, mirror, displacement, &contact);
         }
 
@@ -243,7 +245,7 @@ pub fn move(world: *World, sector_index: usize, delta: f32, sin: f32, cos: f32) 
                 .index = @intCast(wall.dmirror),
             };
 
-            if (world.scene.sectors[mirror.sector].walls[mirror.index].flags & 0x40 != 0)
+            if (world.scene.sectors[mirror.sector].walls[mirror.index].flags.moves_with_sector)
                 try moveWall(world, mirror, displacement, &contact);
         }
     }
@@ -273,7 +275,7 @@ pub fn spin(
     var contact: ?Contact = null;
 
     for (world.level.sectors[sector_index].walls, 0..) |wall, i| {
-        if (world.scene.sectors[sector_index].walls[i].flags & 0x40 == 0) continue;
+        if (!world.scene.sectors[sector_index].walls[i].flags.moves_with_sector) continue;
 
         try spinWall(
             world,
@@ -345,7 +347,7 @@ pub fn wallVectors(
     const raw_angle: i32 = @intFromFloat(@as(f64, radians) * 0.15915494309644432 * 16384);
 
     state.angle = @intCast(raw_angle & 0x3fff);
-    state.runtime_flags |= 1;
+    state.runtime_flags.changed = true;
 }
 
 fn validateFloorWall(world: *const World, ref: WallRef) !void {
@@ -371,20 +373,20 @@ fn shiftFloorWall(world: *World, ref: WallRef, pixels: f32) !void {
     const wall = &world.level.sectors[ref.sector].walls[ref.index];
     const state = &world.scene.sectors[ref.sector].walls[ref.index];
 
-    if (state.flags & 8 != 0) {
+    if (state.flags.texture_follows_floor) {
         const surface = if (wall.adjoin < 0) &wall.mid else &wall.bottom;
         const offset = f(@as(f64, surface.offset.z) + pixels);
         if (!std.math.isFinite(offset)) return error.InvalidInfTransform;
 
         surface.offset.z = offset;
-        state.runtime_flags |= 1;
+        state.runtime_flags.changed = true;
     }
 
-    if (state.flags & 0x10 != 0) {
+    if (state.flags.overlay_follows_floor) {
         const offset = f(@as(f64, wall.overlay.offset.z) + pixels);
         if (!std.math.isFinite(offset)) return error.InvalidInfTransform;
         wall.overlay.offset.z = offset;
-        state.runtime_flags |= 1;
+        state.runtime_flags.changed = true;
     }
 }
 
@@ -399,7 +401,7 @@ fn preflight(world: *World, sector_index: usize, rotating: bool) !void {
     const actors = world.actorView();
 
     for (world.level.sectors[sector_index].walls, 0..) |wall, i| {
-        if (world.scene.sectors[sector_index].walls[i].flags & 0x40 == 0) continue;
+        if (!world.scene.sectors[sector_index].walls[i].flags.moves_with_sector) continue;
 
         try actors.requireSector(sector_index);
 
@@ -415,7 +417,7 @@ fn preflight(world: *World, sector_index: usize, rotating: bool) !void {
             const other_wall: usize = @intCast(mirror);
             if (other >= count or other_wall >= world.scene.sectors[other].walls.len) return error.InvalidInfMirror;
 
-            if (rotating or world.scene.sectors[other].walls[other_wall].flags & 0x40 != 0) {
+            if (rotating or world.scene.sectors[other].walls[other_wall].flags.moves_with_sector) {
                 try actors.requireSector(other);
             }
         }
@@ -436,7 +438,7 @@ fn moveWall(world: *World, ref: WallRef, displacement: Vec2, contact: *?Contact)
     ) or !std.math.isFinite(moved.z)) return error.InvalidInfTransform;
 
     vertex.* = moved;
-    world.scene.sectors[ref.sector].runtime_flags |= 1;
+    world.scene.sectors[ref.sector].runtime_flags.changed = true;
 
     try updateWall(world, ref, contact);
 
@@ -479,7 +481,7 @@ fn spinWall(
     ) or !std.math.isFinite(rotated.z)) return error.InvalidInfTransform;
 
     sector.vertices[wall.v1] = rotated;
-    world.scene.sectors[ref.sector].runtime_flags |= 1;
+    world.scene.sectors[ref.sector].runtime_flags.changed = true;
 
     try updateWall(world, ref, contact);
     try updateWall(
@@ -527,13 +529,13 @@ fn checkActors(world: *const World, ref: WallRef) !?Contact {
 
         if (actor.sector != ref.sector) continue;
 
-        if (actor.flags & 0x100 != 0) continue;
+        if (actor.flags.not_solid) continue;
 
-        if (actor.secondary_flags & 0x20 != 0) continue;
+        if (actor.secondary_flags.projectile) continue;
 
-        if (actor.secondary_flags & 0x400 != 0) continue;
+        if (actor.secondary_flags.item) continue;
 
-        if (actor.secondary_flags & 0x800 != 0) continue;
+        if (actor.secondary_flags.corpse) continue;
 
         if (!circleTouchesWall(
             first,
@@ -544,12 +546,12 @@ fn checkActors(world: *const World, ref: WallRef) !?Contact {
             world.collision_diameter,
         )) continue;
 
-        if (actor.secondary_flags & 0x4000 != 0) {
+        if (actor.secondary_flags.bystander) {
             const sink = world.actor_messages orelse return error.MissingInfActorMessageRuntime;
             try sink.send(
                 sink.context,
                 actor.source_index orelse return error.MissingInfActorIdentity,
-                0x66,
+                .remove,
             );
         }
 
@@ -666,7 +668,7 @@ test "INF morph geometry and actor filters match Hideout execution" {
     var scene = try scene_module.Scene.init(a, &level, &angles);
     const originals = try a.alloc([]const Vec2, level.sectors.len);
     const saved_walls = try a.alloc([]scene_module.WallState, level.sectors.len);
-    const saved_flags = try a.alloc(u32, level.sectors.len);
+    const saved_flags = try a.alloc(scene_module.SectorRuntimeFlags, level.sectors.len);
 
     for (level.sectors, scene.sectors, originals, saved_walls, saved_flags) |sector, state, *vertices, *walls, *flags| {
         vertices.* = try a.dupe(Vec2, sector.vertices);
@@ -710,7 +712,7 @@ test "INF morph geometry and actor filters match Hideout execution" {
 
         for (sample.changes) |change| {
             try std.testing.expectEqual(
-                saved_flags[change.sector] | change.runtime_flags,
+                bits.with(saved_flags[change.sector], bits.from(scene_module.SectorRuntimeFlags, change.runtime_flags)),
                 scene.sectors[change.sector].runtime_flags,
             );
 
@@ -739,7 +741,7 @@ test "INF morph geometry and actor filters match Hideout execution" {
                     @as(u32, @bitCast(actual.length)),
                 );
 
-                try std.testing.expectEqual(expected.runtime_flags, actual.runtime_flags);
+                try std.testing.expectEqual(expected.runtime_flags, bits.word(actual.runtime_flags));
             }
         }
     }
@@ -760,8 +762,8 @@ test "INF morph geometry and actor filters match Hideout execution" {
             .z = @bitCast(sample.position_bits[2]),
         };
 
-        actor.flags = sample.flags;
-        actor.secondary_flags = sample.secondary;
+        bits.setWord(&actor.flags, sample.flags);
+        bits.setWord(&actor.secondary_flags, sample.secondary);
         actor.collision_radius = @bitCast(sample.radius_bits);
         world.actors = (&actor)[0..1];
         world.collision_diameter = @bitCast(sample.diameter_bits);
@@ -770,10 +772,10 @@ test "INF morph geometry and actor filters match Hideout execution" {
         const Capture = struct {
             count: usize = 0,
 
-            fn send(raw: *anyopaque, source: usize, code: u32) !void {
+            fn send(raw: *anyopaque, source: usize, code: MessageCode) !void {
                 const self: *@This() = @ptrCast(@alignCast(raw));
                 try std.testing.expectEqual(@as(usize, 7), source);
-                try std.testing.expectEqual(@as(u32, 0x66), code);
+                try std.testing.expectEqual(MessageCode.remove, code);
                 self.count += 1;
             }
         };

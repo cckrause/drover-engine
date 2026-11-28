@@ -108,7 +108,7 @@ pub fn run(
 
         var mouse = mouseState();
 
-        if (left_pressed) mouse.buttons |= 1;
+        if (left_pressed) mouse.buttons.left = true;
 
         left_pressed = false;
         mouse.shift = c.SDL_GetModState() & c.KMOD_SHIFT != 0;
@@ -124,7 +124,7 @@ pub fn run(
 
         for (played..screen.shared.sounds) |_|
             _ = try audio.play(
-                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = 4 },
+                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = .default },
                 null,
                 now,
             );
@@ -206,7 +206,7 @@ fn playEffects(session: *Session, audio: *Runtime) !void {
 
 fn mouseState() dialog.Input {
     var input = dialog.Input{};
-    input.buttons = c.SDL_GetMouseState(&input.x, &input.y);
+    input.buttons = sdl.mouseButtons(c.SDL_GetMouseState(&input.x, &input.y));
 
     return input;
 }

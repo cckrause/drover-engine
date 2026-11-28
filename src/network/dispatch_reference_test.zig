@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
 const database = @import("database.zig");
 const message = @import("message.zig");
 const Router = @import("router.zig").Router;
@@ -105,7 +106,7 @@ test "object messages are dispatched as the reference database does" {
 
             const posted = try router.post(
                 int(op, "destination"),
-                int(op, "number"),
+                bits.from(message.Number, int(op, "number")),
                 buffer[0..int(op, "size")],
             );
 

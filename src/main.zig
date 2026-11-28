@@ -292,6 +292,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                 .good => 0,
                 .bad => 1,
                 .ugly => 2,
+                .unpicked => return error.InvalidDifficulty,
             };
 
             shell.screen.select(index, 0);
@@ -522,7 +523,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
                 continue :main_loop;
             }
 
-            if (loaded.death_restart_requested and (loaded.game_type == 4 or loaded.game_type == 5)) {
+            if (loaded.death_restart_requested and loaded.game_type.isNetwork()) {
                 loaded.death_restart_requested = false;
 
                 try loaded.revive(loaded.animation_time);
@@ -790,7 +791,7 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
         };
 
         if (session) |loaded| {
-            const network_game = loaded.game_type == 4 or loaded.game_type == 5;
+            const network_game = loaded.game_type.isNetwork();
             const sampled = (try player_input.sample(c.SDL_GetTicks())) orelse
                 if (network_game) player_input.sampleIdle(c.SDL_GetTicks()) else null;
 
@@ -864,13 +865,13 @@ fn run(init: std.process.Init, memory: *MemoryBudget) !void {
 
         var mouse_x: c_int = 0;
         var mouse_y: c_int = 0;
-        const buttons = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+        const buttons = platform.mouseButtons(c.SDL_GetMouseState(&mouse_x, &mouse_y));
 
         shell.screen.mouseState(mouse_x, mouse_y, buttons, c.SDL_GetTicks());
 
         if (shell.screen.takeSelectionSound()) {
             _ = try audio.play(
-                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = 4 },
+                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = .default },
                 null,
                 c.SDL_GetTicks(),
             );

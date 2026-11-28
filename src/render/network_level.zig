@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const campaign = @import("../campaign.zig");
 const dead_reckoning = @import("../network/dead_reckoning.zig");
 const message = @import("../network/message.zig");
@@ -16,10 +17,12 @@ const inf_geometry = @import("../script/inf_geometry.zig");
 const camera = @import("backends/software/camera.zig");
 const scene_module = @import("scene.zig");
 const local_player = @import("../player/shooting.zig").local_player;
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
+const PlayerFlags = @import("../player/flags.zig").PlayerFlags;
 
-const spawn_actor_flags: u32 = 0x8000006f;
-
-const player_entity: u32 = 0x90;
+const player_entity: ActorKind = .{ .player = true, .takes_hits = true };
 
 const architecture_batch = 0x19;
 
@@ -32,8 +35,6 @@ pub const character_costumes = [_][]const u8{
     "bobgrahm.nwx",
     "mary.nwx",
 };
-
-const stand_in_entity: u32 = 0x1000000;
 
 fn Hooks(comptime Session: type) type {
     return struct {
@@ -69,10 +70,10 @@ pub const Architecture = struct {
     angles: *const camera.Angles,
     router: *Router,
     queue: *dead_reckoning.ArchitectureQueue,
-    game_type: u32,
+    game_type: GameType,
 
     fn sending(self: Architecture) bool {
-        return self.game_type == 5 and self.router.clientCount() > 1;
+        return self.game_type == .hosting and self.router.clientCount() > 1;
     }
 
     fn put(self: Architecture, change: dead_reckoning.Change) !void {
@@ -114,7 +115,7 @@ pub const Architecture = struct {
         const value: u32 = switch (kind) {
             3 => @bitCast(source.ceiling.height),
             4 => @bitCast(source.floor.height),
-            7 => self.scene.sectors[sector].flags,
+            7 => bits.word(self.scene.sectors[sector].flags),
             9 => @bitCast(source.ambient),
             else => unreachable,
         };
@@ -143,7 +144,7 @@ pub const Architecture = struct {
             .kind = 8,
             .sector = @intCast(sector),
             .wall = @intCast(wall),
-            .words = .{ self.scene.sectors[sector].walls[wall].flags, 0, 0, 0 },
+            .words = .{ bits.word(self.scene.sectors[sector].walls[wall].flags), 0, 0, 0 },
         };
     }
 
@@ -196,43 +197,62 @@ pub fn level(session: anytype) campaign.Startup.NetworkLevel {
     };
 }
 
-pub fn playerEntity(mode: u32, team: u8) !u32 {
-    return switch (mode) {
-        1, 4, 5 => player_entity | @as(u32, if (team == 1) 1 else if (team == 2) 2 else 0),
-        2 => error.TagPlayerNotPorted,
-        3 => player_entity | 2,
-        else => player_entity,
-    };
+pub fn playerEntity(mode: u32, team: u8) !ActorKind {
+    var entity = player_entity;
+
+    switch (mode) {
+        1, 4, 5 => entity.team = if (team == 1) 1 else if (team == 2) 2 else 0,
+        2 => return error.TagPlayerNotPorted,
+        3 => entity.team = 2,
+        else => {},
+    }
+
+    return entity;
 }
 
-pub fn actorEntity(session: anytype) !u32 {
+pub fn actorEntity(session: anytype) !ActorKind {
     if (!session.stand_in) return playerEntity(session.mode, session.startup.team);
     if (session.mode == 2) return error.TagPlayerNotPorted;
 
-    return player_entity | stand_in_entity;
+    var entity = player_entity;
+    entity.waiting_for_start = true;
+
+    return entity;
 }
 
-pub fn actorFlags(session: anytype) u32 {
-    const flags = playerActorFlags(session.player.flags);
+pub fn actorFlags(session: anytype) ActorFlags {
+    var flags = playerActorFlags(session.player.flags);
+    if (session.stand_in) flags.visible = false;
 
-    return if (session.stand_in) flags & ~@as(u32, 4) else flags;
+    return flags;
 }
 
-pub fn playerActorFlags(player_flags: u32) u32 {
-    var flags = spawn_actor_flags;
-    if (player_flags & 0x20000000 != 0) flags = flags & ~@as(u32, 8) | 0x10;
-    if (player_flags & 0x10000000 != 0) flags = (flags | 0x4100) & ~@as(u32, 0x10) | 8;
+/// A lit lamp makes the player glow; death puts the light back to normal.
+pub fn playerActorFlags(player_flags: PlayerFlags) ActorFlags {
+    var flags = ActorFlags.new_player;
+
+    if (player_flags.lamp_on) {
+        flags.shaded = false;
+        flags.glowing = true;
+    }
+
+    if (player_flags.dead) {
+        flags.dead = true;
+        flags.not_solid = true;
+        flags.glowing = false;
+        flags.shaded = true;
+    }
 
     return flags;
 }
 
 pub fn sendChangedPlayer(session: anytype, now: u32) !void {
-    if (session.game_type != 4 and session.game_type != 5) return;
+    if (!session.game_type.isNetwork()) return;
     if (message.client(session.player_number) != session.router.own_client) return;
 
     const flags = actorFlags(session);
     const entity = try actorEntity(session);
-    if (!(flags & 0x20 != 0 and entity & 0x1000000 == 0) and entity & 0x20 == 0) return;
+    if (!(flags.has_player_record and !entity.waiting_for_start) and !entity.projectile) return;
 
     const record = if (session.player_dead_reckoning) |*value| value else return;
 
@@ -242,8 +262,8 @@ pub fn sendChangedPlayer(session: anytype, now: u32) !void {
     const actor = try playerActor(session);
     var changed = false;
 
-    if (record.flags & 1 != 0) {
-        record.flags &= ~@as(u32, 1);
+    if (record.send_soon) {
+        record.send_soon = false;
         changed = true;
     }
 
@@ -280,7 +300,8 @@ pub fn sendChangedPlayer(session: anytype, now: u32) !void {
 }
 
 pub fn markRecord(session: anytype, now: u32) !void {
-    if (try actorEntity(session) & 0x30 != 0) playerRecord(session, now).flags |= 1;
+    const entity = try actorEntity(session);
+    if (entity.player or entity.projectile) playerRecord(session, now).send_soon = true;
 }
 
 pub fn architectureOf(session: anytype) Architecture {
@@ -299,17 +320,19 @@ pub fn marks(session: anytype) inf_geometry.Marks {
 }
 
 pub fn markChange(a: Architecture, value: inf_geometry.Mark) !void {
-    if (a.game_type != 5) return;
+    if (a.game_type != .hosting) return;
 
     const sending = a.sending();
 
     switch (value) {
         .light, .floor, .ceiling, .sector_flags => |sector| {
-            const bit: u32 = switch (value) {
-                .light => 0x20,
-                .floor, .ceiling => 4,
-                else => 8,
-            };
+            const changes = &a.scene.sectors[sector].runtime_flags;
+
+            switch (value) {
+                .light => changes.light_changed = true,
+                .floor, .ceiling => changes.heights_changed = true,
+                else => changes.flags_changed = true,
+            }
 
             const kind: u32 = switch (value) {
                 .light => 9,
@@ -318,16 +341,14 @@ pub fn markChange(a: Architecture, value: inf_geometry.Mark) !void {
                 else => 7,
             };
 
-            a.scene.sectors[sector].runtime_flags |= bit;
-
             if (sending) try a.put(a.sectorWord(kind, sector));
         },
         .wall_flags => |at| {
-            a.scene.sectors[at.sector].walls[at.index].runtime_flags |= 4;
+            a.scene.sectors[at.sector].walls[at.index].runtime_flags.flags_changed = true;
             if (sending) try a.put(a.wallFlags(at.sector, at.index));
         },
         .corners => |at| {
-            a.scene.sectors[at.sector].walls[at.index].runtime_flags |= 2;
+            a.scene.sectors[at.sector].walls[at.index].runtime_flags.corners_changed = true;
             if (sending) try a.put(a.corners(at.sector, at.index));
         },
     }
@@ -391,16 +412,16 @@ pub fn applyChange(
         },
         3 => {
             sector.ceiling.height = try height(bytes, 3);
-            state.runtime_flags |= 1;
+            state.runtime_flags.changed = true;
         },
         4 => {
             sector.floor.height = try height(bytes, 3);
-            state.runtime_flags |= 1;
+            state.runtime_flags.changed = true;
         },
         5 => {
             const floor = try height(bytes, 3);
             sector.ceiling.height = try height(bytes, 7);
-            state.runtime_flags |= 1;
+            state.runtime_flags.changed = true;
             sector.floor.height = floor;
         },
         6 => {
@@ -418,14 +439,19 @@ pub fn applyChange(
             try effects.forget(index);
         },
         7 => {
-            state.flags = (word(u32, bytes, 3) ^ state.flags) & 0x3fffffff ^ state.flags;
+            // Whether a plane is sloped never changes over the network.
+            var flags = bits.from(level_asset.SectorFlags, word(u32, bytes, 3));
+            flags.sloped_floor = state.flags.sloped_floor;
+            flags.sloped_ceiling = state.flags.sloped_ceiling;
+
+            state.flags = flags;
             sector.flags = state.flags;
-            state.runtime_flags |= 8;
+            state.runtime_flags.flags_changed = true;
         },
         8 => return applyWallFlags(map, scene, index, bytes, effects),
         9 => {
             sector.ambient = @as(i8, @bitCast(bytes[3]));
-            state.runtime_flags |= 1;
+            state.runtime_flags.changed = true;
             return size;
         },
         else => unreachable,
@@ -448,11 +474,11 @@ pub fn scan(a: Architecture, skip: *u32) !void {
     const sending = a.sending();
 
     for (a.scene.sectors, 0..) |*sector, sector_index| {
-        const slopes = if (sector.runtime_flags & 2 != 0) a.slopes(sector_index) else null;
+        const changes = sector.runtime_flags;
         const parts = [_]?dead_reckoning.Change{
-            slopes,
-            if (sector.runtime_flags & 4 != 0) a.heights(sector_index) else null,
-            if (sector.runtime_flags & 8 != 0) a.sectorWord(7, sector_index) else null,
+            if (changes.slopes_changed) a.slopes(sector_index) else null,
+            if (changes.heights_changed) a.heights(sector_index) else null,
+            if (changes.flags_changed) a.sectorWord(7, sector_index) else null,
         };
 
         for (parts) |part| if (part) |change| {
@@ -464,23 +490,21 @@ pub fn scan(a: Architecture, skip: *u32) !void {
             seen += 1;
         };
 
-        for (sector.walls, 0..) |*wall, wall_index| for ([_]u32{
-            4,
-            2,
-        }) |bit| if (wall.runtime_flags & bit != 0) {
-            if (first <= seen and budget != 0) {
-                if (sending) try a.put(
-                    if (bit == 4) a.wallFlags(
-                        sector_index,
-                        wall_index,
-                    ) else a.corners(sector_index, wall_index),
-                );
+        for (sector.walls, 0..) |*wall, wall_index| {
+            const wall_parts = [_]?dead_reckoning.Change{
+                if (wall.runtime_flags.flags_changed) a.wallFlags(sector_index, wall_index) else null,
+                if (wall.runtime_flags.corners_changed) a.corners(sector_index, wall_index) else null,
+            };
 
-                budget -= 1;
-            }
+            for (wall_parts) |part| if (part) |change| {
+                if (first <= seen and budget != 0) {
+                    if (sending) try a.put(change);
+                    budget -= 1;
+                }
 
-            seen += 1;
-        };
+                seen += 1;
+            };
+        }
     }
 
     if (a.queue.count > 0) try a.queue.send(a.router, 0x200000);
@@ -499,15 +523,15 @@ pub fn sendTo(a: Architecture, client: u16) !void {
     a.queue.count = 0;
 
     if (a.sending()) for (a.scene.sectors, 0..) |*sector, sector_index| {
-        if (sector.runtime_flags & 2 != 0) if (a.slopes(sector_index)) |change| try a.put(change);
+        if (sector.runtime_flags.slopes_changed) if (a.slopes(sector_index)) |change| try a.put(change);
 
-        if (sector.runtime_flags & 4 != 0) try a.put(a.heights(sector_index));
+        if (sector.runtime_flags.heights_changed) try a.put(a.heights(sector_index));
 
-        if (sector.runtime_flags & 8 != 0) try a.put(a.sectorWord(7, sector_index));
+        if (sector.runtime_flags.flags_changed) try a.put(a.sectorWord(7, sector_index));
 
         for (sector.walls, 0..) |*wall, wall_index| {
-            if (wall.runtime_flags & 4 != 0) try a.put(a.wallFlags(sector_index, wall_index));
-            if (wall.runtime_flags & 2 != 0) try a.put(a.corners(sector_index, wall_index));
+            if (wall.runtime_flags.flags_changed) try a.put(a.wallFlags(sector_index, wall_index));
+            if (wall.runtime_flags.corners_changed) try a.put(a.corners(sector_index, wall_index));
         }
     };
 
@@ -526,7 +550,7 @@ pub fn requestObjects(router: anytype) !void {
     message.set(&request, message.sender_offset, own);
     message.set(&request, message.reply_offset, own);
 
-    _ = try router.post(0x800, 0x402 | 0x80000000, &request);
+    _ = try router.post(0x800, .{ .code = 0x402, .must_arrive = true }, &request);
 }
 
 pub fn bindPlayer(session: anytype, now: u32) !void {
@@ -543,9 +567,9 @@ pub fn bindPlayer(session: anytype, now: u32) !void {
     router.clients[router.own_client].in_level = true;
     session.network_player_bound = true;
 
-    if (entity & 0x30 != 0) playerRecord(session, now).flags |= 1;
+    if (entity.player or entity.projectile) playerRecord(session, now).send_soon = true;
 
-    const joined = session.game_type == 4 and session.stand_in and session.joined_text_pending;
+    const joined = session.game_type == .joined and session.stand_in and session.joined_text_pending;
 
     if (joined) session.joined_text_pending = false;
 
@@ -566,7 +590,7 @@ pub fn bindPlayer(session: anytype, now: u32) !void {
         try @import("../network/database.zig").comment(router, shown, 0);
     }
 
-    playerRecord(session, now).flags |= 1;
+    playerRecord(session, now).send_soon = true;
 
     try session.database.rebuildPlayers(router, session.mode, session.game_type, now);
     router.setQueueClosed(message.Queue.dead_reckoning, false);
@@ -582,7 +606,7 @@ pub fn announcePlayer(session: anytype, destination: u32) !void {
         .sector = @intCast(player.sector),
         .animation = @truncate(session.player_animation),
         .number = session.player_number,
-        .flags = actorFlags(session),
+        .flags = bits.word(actorFlags(session)),
         .position = .{
             @bitCast(player.position.x),
             @bitCast(player.position.y),
@@ -604,13 +628,13 @@ pub fn announcePlayer(session: anytype, destination: u32) !void {
         .word_3c = @bitCast(player.body_height),
         .word_94 = @bitCast(player.radius),
         .words_40 = @splat(0),
-        .entity = try actorEntity(session),
+        .entity = bits.word(try actorEntity(session)),
         .costume = character_costumes[startup.costume],
         .logic = "DRECK_PEX",
         .item = "",
     });
 
-    _ = try session.router.post(destination, 0x3fd | 0x40000000, bytes);
+    _ = try session.router.post(destination, .{ .code = 0x3fd, .buffered = true }, bytes);
 }
 
 fn playerActor(session: anytype) !dead_reckoning.Actor {
@@ -630,7 +654,7 @@ fn playerActor(session: anytype) !dead_reckoning.Actor {
             @bitCast(player.velocity.z),
         },
         .animation = @truncate(session.player_animation),
-        .airborne = player.flags & 0x2000 != 0,
+        .airborne = player.flags.jumped,
         .gravity = session.level.sectors[player.sector].gravity,
         .frame_seconds = session.frame_seconds,
     };
@@ -752,19 +776,18 @@ fn applyWallFlags(
     effects: anytype,
 ) !usize {
     const wall = word(u16, bytes, 3);
-    const flags = word(u32, bytes, 5);
+    var flags = bits.from(level_asset.WallFlags, word(u32, bytes, 5));
     if (wall >= map.sectors[sector].walls.len) return error.MalformedNetworkMessage;
 
     const state = &scene.sectors[sector].walls[wall];
 
-    if ((state.flags ^ flags) & 0x4000 != 0 and flags & 0x4000 == 0) try effects.shatter(
-        sector,
-        wall,
-    );
+    // Glass only breaks through the shatter itself, never by a flag change.
+    if (state.flags.shatters and !flags.shatters) try effects.shatter(sector, wall);
 
-    state.flags = (state.flags ^ flags) & 0x4000 ^ flags;
+    flags.shatters = state.flags.shatters;
+    state.flags = flags;
     map.sectors[sector].walls[wall].flags = state.flags;
-    state.runtime_flags |= 4;
+    state.runtime_flags.flags_changed = true;
 
     try effects.refresh(sector);
 
@@ -805,7 +828,7 @@ fn update(session: anytype, bytes: []const u8, now: u32) !void {
     ) != session.router.own_client) return error.RemoteActorUpdateNotPorted;
 
     const entity = try actorEntity(session);
-    if (entity & 0x30 == 0) return;
+    if (!entity.player and !entity.projectile) return;
 
     const value = try dead_reckoning.readUpdate(bytes);
 

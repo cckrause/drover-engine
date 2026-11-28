@@ -12,6 +12,8 @@ const Actor = @import("../render/objects.zig").Actor;
 const collision = @import("../player/collision.zig");
 const weapon = @import("../player/weapon.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 const Vec3 = level.Vec3;
 
 pub const costume_name = "BLOOD.NWX";
@@ -72,8 +74,8 @@ pub fn spawn(
             .sector = sector,
             .position = position,
             .yaw = 0,
-            .flags = 0x8000014f,
-            .secondary_flags = 0x800000,
+            .flags = ActorFlags.new_effect,
+            .secondary_flags = .{ .effect = true },
             .scale_x = scale,
             .scale_y = scale,
             .height = 1,
@@ -111,12 +113,12 @@ pub fn tick(actor: *Actor, state: *State, world: physics.World, dt: f32) !bool {
 
 pub fn scheduledPhysics(actor: *Actor, state: *State, world: physics.World, dt: f32) !bool {
     state.splash = null;
-    if (actor.flags & 0x401 != 0x401) return false;
+    if (!actor.flags.active or !actor.flags.physics) return false;
 
     const floor = try physics.height(world, actor.sector, actor.position, false, false);
     const source = world.level.sectors[actor.sector];
 
-    if (world.scene.sectors[actor.sector].velocity_present and (world.scene.sectors[actor.sector].flags & 0x40 == 0 or actor.position.y <= floor)) {
+    if (world.scene.sectors[actor.sector].velocity_present and (!world.scene.sectors[actor.sector].flags.velocity_on_floor_only or actor.position.y <= floor)) {
         state.velocity = source.velocity;
     } else if (actor.position.y <= floor) return false;
 
@@ -179,8 +181,8 @@ pub fn spawnSplash(costume: *const nwx.Costume, request: Splash, now: u32) !Acto
         .sector = request.sector,
         .position = request.position,
         .yaw = 0,
-        .flags = 0x8000010f,
-        .secondary_flags = 0x800000,
+        .flags = bits.with(ActorFlags.new, .{ .not_solid = true }),
+        .secondary_flags = .{ .effect = true },
         .scale_x = 1,
         .scale_y = 1,
         .height = first.height,
@@ -197,7 +199,7 @@ pub fn splashSound(request: Splash) @import("../audio/request.zig").Request {
         .basename = "smsplash.wav",
         .priority = 64,
         .volume = 127,
-        .flags = 4,
+        .flags = .default,
         .sector = request.sector,
         .position = request.position,
     };
@@ -237,7 +239,7 @@ fn integrate(
     const flags = world.scene.sectors[actor.sector].flags;
     var lower = actor.sector;
     var upper = actor.sector;
-    const submerged = flags & 0x80 != 0;
+    const submerged = flags.underwater;
     const has_surface = submerged or source.vadjoin >= 0;
     var surface: f32 = 0;
 
@@ -286,7 +288,7 @@ fn integrate(
         next.y = f(full * dt + old.y);
     }
 
-    if (next.y <= floor_limit or (world.scene.sectors[actor.sector].velocity_present and flags & 0x40 == 0)) {
+    if (next.y <= floor_limit or (world.scene.sectors[actor.sector].velocity_present and !flags.velocity_on_floor_only)) {
         damp(
             &velocity,
             source.velocity,
@@ -296,7 +298,7 @@ fn integrate(
         );
     }
 
-    if (world.scene.sectors[upper].flags & 1 == 0 and ceiling < @as(f64, actor.height) + next.y) {
+    if (!world.scene.sectors[upper].flags.sky_ceiling and ceiling < @as(f64, actor.height) + next.y) {
         _ = ceiling_contact.bounce(
             &velocity,
             world.scene.sectors[upper].ceiling_slope,
@@ -312,7 +314,7 @@ fn integrate(
         next.y = floor_limit;
     }
 
-    if (next.y <= floor_limit and world.scene.sectors[lower].flags & 0x20 == 0) {
+    if (next.y <= floor_limit and !world.scene.sectors[lower].flags.no_slope_slide) {
         if (world.scene.sectors[lower].floor_slope) |slope| {
             const ground = world.level.sectors[lower];
 
@@ -381,7 +383,7 @@ fn integrate(
     actor.position.z = solved.position.z;
     actor.sector = solved.actor_sector;
 
-    if (solved.actor_flags_dirty) actor.flags |= 0x80000000;
+    if (solved.actor_flags_dirty) actor.flags.changed = true;
 
     if (has_surface and solved.sector != null) {
         if (surface == next.y) next.y = f(@as(f64, next.y) - 0.001);

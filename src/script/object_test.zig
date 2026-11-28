@@ -12,6 +12,8 @@ const Item = @import("../assets/item.zig").Item;
 const enemy_session = @import("../enemy/session.zig");
 const inventory = @import("../player/inventory.zig");
 const object_logic = @import("object.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Snapshot = struct {
     flags: u32,
@@ -65,8 +67,8 @@ fn queueHit(session: *Session, source: usize, serial: ?u64) !void {
 fn expectState(expected: Snapshot, session: *Session, source: usize) !void {
     const actor = session.actor_slots[source].?;
 
-    try std.testing.expectEqual(expected.flags, actor.flags);
-    try std.testing.expectEqual(expected.secondary_flags, actor.secondary_flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
+    try std.testing.expectEqual(expected.secondary_flags, bits.word(actor.secondary_flags));
     try std.testing.expectEqual(expected.height_bits, @as(u32, @bitCast(actor.height)));
     try std.testing.expectEqual(expected.radius_bits, @as(u32, @bitCast(actor.collision_radius)));
     try std.testing.expectEqual(
@@ -87,7 +89,7 @@ fn expectState(expected: Snapshot, session: *Session, source: usize) !void {
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
             @intFromBool(playback.terminated),
         },
     );
@@ -119,7 +121,7 @@ fn expectState(expected: Snapshot, session: *Session, source: usize) !void {
     }
 }
 
-fn bits(v: @import("../assets/level.zig").Vec3) [3]u32 {
+fn vectorBits(v: @import("../assets/level.zig").Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -197,7 +199,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
     for (town_bottles.items) |source| {
         const actor = session.actor_slots[source].?;
         try std.testing.expectEqualStrings("Inv_Object", actor.logic_name);
-        try std.testing.expectEqual(@as(u32, 0x2000), actor.secondary_flags);
+        try std.testing.expectEqual(ActorKind{ .used_when_shot = true }, actor.secondary_flags);
         try std.testing.expect(actor.playback != null);
     }
 
@@ -256,7 +258,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
         session.syncActor(source);
         try std.testing.expectEqualDeep(
             case.position_bits,
-            bits(session.actor_slots[source].?.position),
+            vectorBits(session.actor_slots[source].?.position),
         );
 
         try expectState(case.initial, session, source);
@@ -286,7 +288,7 @@ test "Town bottle hits retain queued selections sound frames and removal" {
 
                 try session.deliverHits(a, null, &effects);
             } else if (std.mem.eql(u8, step.operation, "activate")) {
-                try object_logic.receive(session, source, 0x7d3);
+                try object_logic.receive(session, source, .activate);
             } else if (std.mem.eql(u8, step.operation, "drain")) {
                 try enemy_session.deliverSelections(session, a, null);
             } else if (std.mem.eql(u8, step.operation, "tick")) {
@@ -307,10 +309,10 @@ test "Town bottle hits retain queued selections sound frames and removal" {
                 try std.testing.expectEqualStrings(event.name, sound.basename);
                 try std.testing.expectEqualDeep(
                     event.options,
-                    [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), sound.flags.? },
+                    [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), bits.word(sound.flags.?) },
                 );
 
-                try std.testing.expectEqualDeep(event.position_bits, bits(sound.position.?));
+                try std.testing.expectEqualDeep(event.position_bits, vectorBits(sound.position.?));
                 try std.testing.expectEqual(session.actor_slots[source].?.sector, sound.sector.?);
 
                 sound_index += 1;
@@ -363,8 +365,8 @@ test "Town bottle hits retain queued selections sound frames and removal" {
         for (order, effects.items) |source, effect| {
             try std.testing.expectEqualStrings("BOTTLE.WAV", effect.sound.basename);
             try std.testing.expectEqualDeep(
-                bits(original_slots[source].?.position),
-                bits(effect.sound.position.?),
+                vectorBits(original_slots[source].?.position),
+                vectorBits(effect.sound.position.?),
             );
 
             try std.testing.expectEqual(@as(u32, 1), session.actor_slots[source].?.choreography);

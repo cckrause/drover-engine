@@ -5,6 +5,8 @@
 //! creation.
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
+const bits = @import("../util/bits.zig");
 
 const lab = @import("../assets/lab.zig");
 const level = @import("../assets/level.zig");
@@ -20,13 +22,13 @@ pub fn placements(
     geometry: *const level.Level,
     objects: *const level.Objects,
     archives: []const lab.Archive,
-    difficulty_mask: u32,
+    difficulty: Difficulty,
 ) ![]Site {
     var result: std.ArrayList(Site) = .empty;
     errdefer result.deinit(a);
 
     for (objects.entries, 0..) |object, source| {
-        if (object.flags[1] & difficulty_mask == 0 or object.flags[0] & 1 != 0) continue;
+        if (!bits.any(object.availability.difficulties, difficulty.set()) or object.flags.sound_only) continue;
 
         const sector = geometry.sectorIndex(object.sector_id) orelse continue;
         const path = try std.fmt.allocPrint(a, "{s}.ITM", .{std.fs.path.stem(object.name)});
@@ -58,7 +60,7 @@ pub fn placements(
 }
 
 pub fn tick(target: anytype, actor: *Actor, ctx: *controller.Context) !bool {
-    ctx.shared.sanchez_enabled = actor.flags & 4 != 0;
+    ctx.shared.sanchez_enabled = actor.flags.visible;
     if (ctx.shared.sanchez_enabled) return true;
     if (@as(f64, ctx.shared.killed_enemies) <= @as(f64, ctx.shared.total_enemies) * 0.8) {
         if (@as(
@@ -166,7 +168,9 @@ pub fn tick(target: anytype, actor: *Actor, ctx: *controller.Context) !bool {
     const site = ctx.sanchez_sites[selected];
     try relocate(actor, site.position, site.sector, ctx);
 
-    actor.flags = (actor.flags & ~@as(u32, 0x100)) | 0x80000004;
+    actor.flags.not_solid = false;
+    actor.flags.visible = true;
+    actor.flags.changed = true;
     ctx.shared.sanchez_enabled = true;
 
     try controller.retarget(target, actor, .player, ctx);

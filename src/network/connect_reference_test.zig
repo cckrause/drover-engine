@@ -117,7 +117,7 @@ fn replay(a: std.mem.Allocator, root: std.json.ObjectMap, sender_check: bool) !u
             router.dropped = op.get("dropped").?.bool;
             router.leave_game = op.get("leave").?.bool;
             router.lost = null;
-            router.game_type = int(op, "game_type");
+            router.game_type = @enumFromInt(int(op, "game_type"));
             router.player_name = @splat(0);
 
             const player = op.get("player").?.string;

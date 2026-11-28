@@ -9,6 +9,7 @@ const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
 const Session = @import("session.zig").Session;
 const shooting = @import("../player/shooting.zig");
+const bits = @import("../util/bits.zig");
 
 fn actors_source(session: *Session, number: u32) usize {
     return std.mem.indexOfScalar(u32, session.actor_numbers, number).?;
@@ -19,8 +20,7 @@ fn check(
     sector: usize,
     wall: ?usize,
     number: u32,
-    runtime: u32,
-    bit: u32,
+    number_changed: bool,
     geometry_max: *u32,
     inf_min: *u32,
     geometry_count: *usize,
@@ -43,13 +43,13 @@ fn check(
         .trigger => |index| {
             const trigger = session.inf.triggers[index];
             if (trigger.target.sector == sector and trigger.target.wall == wall) {
-                if (trigger.flags & 0xff000000 == 0x80000000 and trigger.event_mask == 0x8100) geometry = true else inf = true;
+                if (trigger.flags.kind == .glass and bits.word(trigger.event_mask) == 0x8100) geometry = true else inf = true;
             }
         },
     };
 
     try std.testing.expectEqual(geometry or inf, number != 0);
-    try std.testing.expectEqual(number != 0, runtime & bit != 0);
+    try std.testing.expectEqual(number != 0, number_changed);
     if (number == 0) return;
 
     try std.testing.expect(
@@ -115,8 +115,7 @@ test "Hideout's object numbers follow the reference load order" {
             index,
             null,
             sector.number,
-            sector.runtime_flags,
-            0x10,
+            sector.runtime_flags.number_changed,
             &geometry_max,
             &inf_min,
             &geometry_count,
@@ -128,8 +127,7 @@ test "Hideout's object numbers follow the reference load order" {
                 index,
                 wall_index,
                 wall.number,
-                wall.runtime_flags,
-                8,
+                wall.runtime_flags.number_changed,
                 &geometry_max,
                 &inf_min,
                 &geometry_count,

@@ -66,10 +66,10 @@ pub const Cache = struct {
         source: Vec3,
         listener_eye: Vec3,
         value: i32,
-        flags: u32,
+        flags: @import("engine.zig").RequestFlags,
         now_ms: u32,
     ) !i32 {
-        if (flags & 0x10 != 0) return value;
+        if (flags.ignores_walls) return value;
         if (!try self.connected(
             level,
             scene,
@@ -425,7 +425,7 @@ fn ceiling(
     sector: usize,
     point: Vec3,
 ) !f32 {
-    if (scene.sectors[sector].flags & 0x80000000 == 0) return level.sectors[sector].ceiling.height;
+    if (!scene.sectors[sector].flags.sloped_ceiling) return level.sectors[sector].ceiling.height;
 
     return height(scene.sectors[sector].ceiling_slope orelse return error.MissingAudioSlope, point);
 }
@@ -436,7 +436,7 @@ fn floor(
     sector: usize,
     point: Vec3,
 ) !f32 {
-    if (scene.sectors[sector].flags & 0x40000000 == 0) return level.sectors[sector].floor.height;
+    if (!scene.sectors[sector].flags.sloped_floor) return level.sectors[sector].floor.height;
 
     return height(scene.sectors[sector].floor_slope orelse return error.MissingAudioSlope, point);
 }

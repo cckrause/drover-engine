@@ -16,6 +16,7 @@ const math = @import("math.zig");
 const kernels = @import("plane_raster.zig");
 const raster = @import("raster.zig");
 const walls = @import("walls.zig");
+const bits = @import("../../../util/bits.zig");
 
 pub const Side = enum { ceiling, floor };
 
@@ -264,10 +265,10 @@ pub fn draw(
     slope: ?scene.Slope,
     override_texels: ?[]const u8,
 ) !void {
-    const sky_bit: u32 = if (side == .ceiling) 1 else 2;
-    const slope_bit: u32 = if (side == .ceiling) 0x80000000 else 0x40000000;
-    if (sector.flags & sky_bit != 0) return drawSky(ctx, sector, side);
-    if (sector.flags & slope_bit != 0) return drawSlope(
+    const sky = if (side == .ceiling) sector.flags.sky_ceiling else sector.flags.sky_floor;
+    const sloped = if (side == .ceiling) sector.flags.sloped_ceiling else sector.flags.sloped_floor;
+    if (sky) return drawSky(ctx, sector, side);
+    if (sloped) return drawSlope(
         ctx,
         sector,
         side,
@@ -341,7 +342,7 @@ fn drawFlat(
 
             const pixels = try destination(ctx, span, y);
             const x: f32 = @floatFromInt(span.right - ctx.view.center_x);
-            const translation = if (side == .floor and sector.flags & 0x4000000 != 0) null else try kernels.lightTable(ctx.lighting, math.fixed(math.mul(reciprocal, height_focal)));
+            const translation = if (side == .floor and sector.flags.full_bright_floor) null else try kernels.lightTable(ctx.lighting, math.fixed(math.mul(reciprocal, height_focal)));
 
             try raster.span64(
                 pixels,
@@ -437,7 +438,7 @@ fn drawSlope(
     );
 
     const derivative = -math.mul(numerator, denominator_step);
-    const lighting: ?walls.Lighting = if (ctx.lighting.color_map == null or (side == .floor and sector.flags & 0x4000000 != 0)) null else ctx.lighting;
+    const lighting: ?walls.Lighting = if (ctx.lighting.color_map == null or (side == .floor and sector.flags.full_bright_floor)) null else ctx.lighting;
     var y = if (side == .ceiling) ctx.window.top else ctx.bottom_limit;
     const last_y = if (side == .ceiling) ctx.top_limit else ctx.window.bottom;
 
@@ -489,7 +490,7 @@ fn drawSky(ctx: Context, sector: *const level.Sector, side: Side) !void {
     const view = ctx.view;
     const plane = if (side == .ceiling) sector.ceiling else sector.floor;
     const tex = try getTexture(ctx, plane.texture);
-    const horizon_clip = sector.flags & 0x10 != 0;
+    const horizon_clip = sector.flags.sky_to_horizon;
 
     if (!horizon_clip) {
         if (side == .ceiling and ctx.window.top > ctx.top_limit) return;
@@ -561,7 +562,7 @@ test "flat, sloped and sky planes match isolated reference frames" {
     for (&texels, 0..) |*value, i| value.* = @intCast((i % 64) * 3 + i / 64);
 
     const textures = [_]texture.Texture{
-        .{ .width = 64, .height = 64, .pixels = &texels, .height_shift = 6, .flags = 6 },
+        .{ .width = 64, .height = 64, .pixels = &texels, .height_shift = 6, .flags = .{ .width_power_of_two = true, .height_power_of_two = true } },
     };
 
     var sector: level.Sector = undefined;
@@ -608,7 +609,7 @@ test "flat, sloped and sky planes match isolated reference frames" {
         bottom_clip[x] = @intCast(47 - x % 5);
     }
 
-    const edges = [_]walls.Edge{walls.Edge.init(16, 23.875, 0.125, 32, 24.125, -0.125, 0, 64, 0)};
+    const edges = [_]walls.Edge{walls.Edge.init(16, 23.875, 0.125, 32, 24.125, -0.125, 0, 64, false)};
     var pixels: [64 * 48]u8 = undefined;
     const ctx = Context{
         .pixels = &pixels,
@@ -688,7 +689,7 @@ test "flat, sloped and sky planes match isolated reference frames" {
 
     inline for (cases) |case| {
         @memset(&pixels, 99);
-        sector.flags = case[1];
+        sector.flags = @import("../../../util/bits.zig").from(level.SectorFlags, case[1]);
 
         var sectors = [_]level.Sector{sector};
         var geometry: level.Level = undefined;

@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -11,6 +12,9 @@ const nwx = @import("../assets/nwx.zig");
 const target_module = @import("target.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const Angles = @import("../render/backends/software/camera.zig").Angles;
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Snapshot = struct {
     health_bits: u32,
@@ -87,7 +91,7 @@ fn expectSnapshot(
         if (target.saved) |saved| @as(u32, @bitCast(saved.damage.health)) else null,
     );
 
-    try std.testing.expectEqual(expected.flags, actor.flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
     try std.testing.expectEqual(expected.height_bits, @as(u32, @bitCast(actor.height)));
     try std.testing.expectEqual(expected.random, random);
 
@@ -102,7 +106,7 @@ fn expectSnapshot(
                 playback.choreography,
                 playback.next_frame,
                 playback.frame,
-                playback.flags,
+                bits.word(playback.flags),
             },
         );
     }
@@ -159,7 +163,7 @@ test "enemy damage messages and queued death selection match the reference" {
             a,
             &.{archive},
             &definition,
-            case.difficulty,
+            @as(Difficulty, @enumFromInt(case.difficulty)),
         )).?;
 
         try std.testing.expectEqual(case.aggressiveness, target.aggressiveness);
@@ -171,8 +175,8 @@ test "enemy damage messages and queued death selection match the reference" {
             .sector = 0,
             .position = .{ .x = 0, .y = 0, .z = 0 },
             .yaw = 0,
-            .flags = case.initial.flags,
-            .secondary_flags = case.initial.secondary_flags,
+            .flags = bits.from(ActorFlags, case.initial.flags),
+            .secondary_flags = bits.from(ActorKind, case.initial.secondary_flags),
             .scale_x = case.initial.scale_x,
             .scale_y = case.initial.scale_y,
             .height = case.initial.height,

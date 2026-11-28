@@ -103,7 +103,7 @@ pub const Context = struct {
         if (name.len == 0) return;
 
         try self.effects.append(.{
-            .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = 0 },
+            .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = .{} },
         });
     }
 
@@ -128,7 +128,7 @@ pub const Context = struct {
                 .basename = floor_sound,
                 .priority = 32,
                 .volume = self.config.foot_volume,
-                .flags = 4,
+                .flags = .default,
             },
         });
     }

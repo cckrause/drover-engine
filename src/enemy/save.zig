@@ -5,6 +5,8 @@
 //! database, and keeps their ids.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const stream = @import("../save/stream.zig");
 const controller = @import("controller.zig");
@@ -116,7 +118,7 @@ pub fn writeGenWithAudio(
         try writer.integer(u32, record.frequency);
         try writer.integer(u32, record.variation);
         try writer.integer(u32, record.delay);
-        try writer.integer(u32, record.generatee_flags);
+        try writer.integer(u32, bits.word(record.generatee_flags));
         try writer.integer(u32, record.deadline);
         try writer.integer(i32, record.maximum);
         try writer.float(record.minimum_distance);
@@ -190,7 +192,7 @@ pub fn readGen(
         record.frequency = try reader.integer(u32);
         record.variation = try reader.integer(u32);
         record.delay = try reader.integer(u32);
-        record.generatee_flags = try reader.integer(u32);
+        record.generatee_flags = @bitCast(try reader.integer(u32));
         record.deadline = try reader.integer(u32);
         record.maximum = try reader.integer(i32);
         record.minimum_distance = try reader.float();
@@ -227,7 +229,7 @@ pub fn readGen(
             record.sound_resource = .{
                 .name = sound_name,
                 .priority = try reader.integer(i8),
-                .flags = try reader.integer(u32),
+                .flags = bits.from(@import("../audio/engine.zig").Flags, try reader.integer(u32)),
                 .created_at = try reader.integer(u32),
             };
 
@@ -280,7 +282,7 @@ pub fn readEnemy(
     reader: *stream.Reader,
     allocator: std.mem.Allocator,
     archives: []const lab.Archive,
-    difficulty: u32,
+    difficulty: Difficulty,
     shared: *controller.Shared,
     refs: References,
 ) !RestoredEnemy {
@@ -311,12 +313,12 @@ pub fn applyEnemy(
     switch (target.native) {
         .slim, .bob => {
             target.ai.special = true;
-            actor.secondary_flags |= 0x200000;
+            actor.secondary_flags.boss = true;
         },
-        .farmer, .dynamite => actor.secondary_flags |= 0x200000,
+        .farmer, .dynamite => actor.secondary_flags.boss = true,
         .sanchez => {
-            actor.secondary_flags |= 0x200000;
-            shared.sanchez_enabled = actor.flags & 4 != 0;
+            actor.secondary_flags.boss = true;
+            shared.sanchez_enabled = actor.flags.visible;
         },
         else => {},
     }
@@ -464,7 +466,7 @@ fn readFrame(
     r: *stream.Reader,
     a: std.mem.Allocator,
     archives: []const lab.Archive,
-    difficulty: u32,
+    difficulty: Difficulty,
     shared: *controller.Shared,
     refs: References,
     outer: bool,
@@ -825,7 +827,7 @@ test "generator logic and enemy save bytes match the reference" {
                 .choreography = p[3],
                 .next_frame = p[4],
                 .frame = p[5],
-                .flags = p[6],
+                .flags = bits.from(@import("../assets/nwx.zig").PlaybackFlags, p[6]),
                 .terminated = p[7] != 0,
             },
         };
@@ -892,7 +894,7 @@ test "generator logic and enemy save bytes match the reference" {
             a,
             &.{ object_archive, weapon_archive },
             &definition,
-            0x200000,
+            .bad,
         )).?;
 
         var shared: controller.Shared = .{ .now = 1000 };
@@ -908,8 +910,8 @@ test "generator logic and enemy save bytes match the reference" {
                 .height = 6,
                 .radius = 1.5,
                 .yaw = 0,
-                .flags = 1,
-                .secondary_flags = 0x10,
+                .flags = .{ .active = true },
+                .secondary_flags = .{ .player = true },
             };
 
             var context = controller.Context{
@@ -977,7 +979,7 @@ test "generator logic and enemy save bytes match the reference" {
             &reader,
             a,
             &.{ object_archive, weapon_archive },
-            0x200000,
+            .bad,
             &shared,
             refs,
         );
@@ -1138,7 +1140,7 @@ test "enemy restore registers cached templates before callback sounds" {
             const begin = ledger.records.items.len;
             var reader: stream.Reader = .{ .bytes = bytes };
 
-            _ = try readEnemy(&reader, a, &.{ objects, weapons }, 0x100000, &shared, refs);
+            _ = try readEnemy(&reader, a, &.{ objects, weapons }, .good, &shared, refs);
             try reader.end();
             const actual = ledger.records.items[begin..];
             try std.testing.expectEqual(batch.len, actual.len);

@@ -222,7 +222,9 @@ pub fn move(
 
     if (@as(f64, state.position.y) - 2.0 < lower) {
         if (state.position.y < lower) {
-            if (world.scene.sectors[state.sector].flags & 0x900000 == 0) {
+            const flags = world.scene.sectors[state.sector].flags;
+
+            if (!flags.damage_high and !flags.floor_damage_high) {
                 if (@as(
                     u32,
                     @bitCast(state.velocity.y),
@@ -260,8 +262,7 @@ pub fn height(world: World, sector: usize, point: Vec3, ceiling: bool, x_first: 
     if (sector >= world.level.sectors.len) return error.InvalidEnemySector;
 
     const state = world.scene.sectors[sector];
-    const mask: u32 = if (ceiling) 0x80000000 else 0x40000000;
-    if (state.flags & mask == 0) return if (ceiling) world.level.sectors[sector].ceiling.height else world.level.sectors[sector].floor.height;
+    if (!state.flags.sloped(ceiling)) return if (ceiling) world.level.sectors[sector].ceiling.height else world.level.sectors[sector].floor.height;
 
     const slope = (if (ceiling) state.ceiling_slope else state.floor_slope) orelse return error.MissingCollisionSlope;
 
@@ -319,7 +320,7 @@ fn resolve(actor: *Actor, state: *State, config: Config, world: World, desired: 
         .drop_height = if (@abs(
             state.velocity.x,
         ) == 0 and @abs(state.velocity.z) == 0) config.drop_height else 0x1p31,
-        .wall_block_mask = 0x2000,
+        .wall_block_mask = .{ .blocks_enemies = true },
         .impassable_walls = true,
         .slide_walls = false,
     });
@@ -328,7 +329,7 @@ fn resolve(actor: *Actor, state: *State, config: Config, world: World, desired: 
     actor.position.z = solved.position.z;
     actor.sector = solved.actor_sector;
 
-    if (solved.actor_flags_dirty) actor.flags |= 0x80000000;
+    if (solved.actor_flags_dirty) actor.flags.changed = true;
 
     var sector = solved.sector;
     var result: u32 = 0;

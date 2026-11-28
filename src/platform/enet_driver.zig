@@ -1275,7 +1275,7 @@ test "a joiner connects to a host's game through the driver and both send each o
             &hosting,
             .{
                 .now = 0,
-                .game_type = 1,
+                .game_type = .campaign,
                 .level_loaded = true,
                 .allocator = a,
                 .user_messages = &user_messages,
@@ -1303,7 +1303,7 @@ test "a joiner connects to a host's game through the driver and both send each o
 
     try testing.expectEqual(
         .sent,
-        try joined.post(message.addressWord(message.Queue.server, 1), 0x800003ef, &request),
+        try joined.post(message.addressWord(message.Queue.server, 1), .{ .code = 0x3ef, .must_arrive = true }, &request),
     );
 
     const asked = try readSoon(&all, &hosting, message.Queue.server);
@@ -1315,7 +1315,7 @@ test "a joiner connects to a host's game through the driver and both send each o
     var ended = message.request(0x404, 1);
     try testing.expectEqual(
         .sent,
-        try hosting.post(message.addressWord(message.Queue.database, 0), 0x80000404, &ended),
+        try hosting.post(message.addressWord(message.Queue.database, 0), .{ .code = 0x404, .must_arrive = true }, &ended),
     );
 
     const told = try readSoon(&all, &joined, message.Queue.database);
@@ -1390,7 +1390,7 @@ test "a joiner's router is told to leave when the host closes" {
     var waiting = message.request(0x3ef, 3);
     try testing.expectEqual(
         .queued,
-        try joined.post(message.addressWord(message.Queue.server, 3), 0x3ef, &waiting),
+        try joined.post(message.addressWord(message.Queue.server, 3), .{ .code = 0x3ef }, &waiting),
     );
 
     const closer = try std.Thread.spawn(.{}, Session.close, .{&server});
@@ -1407,7 +1407,7 @@ test "a joiner's router is told to leave when the host closes" {
     try testing.expectEqual(null, try joined.read(message.Queue.server));
     try testing.expectEqual(
         .sent,
-        try joined.post(message.addressWord(message.Queue.server, 1), 0x3ef, &waiting),
+        try joined.post(message.addressWord(message.Queue.server, 1), .{ .code = 0x3ef }, &waiting),
     );
 
     try testing.expectError(error.SessionEnded, joiner.send("G", null, 0));

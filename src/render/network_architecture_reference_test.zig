@@ -5,9 +5,11 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const dead_reckoning = @import("../network/dead_reckoning.zig");
 const message = @import("../network/message.zig");
 const router_module = @import("../network/router.zig");
+const bits = @import("../util/bits.zig");
 const Router = router_module.Router;
 const level_asset = @import("../assets/level.zig");
 const inf_geometry = @import("../script/inf_geometry.zig");
@@ -58,14 +60,14 @@ const Fixture = struct {
         short: u32,
     },
     scans: []const struct {
-        game_type: u32,
+        game_type: GameType,
         clients: u32,
         posts: []const Post,
         skip: u32,
         waiting: u32,
     },
     marks: []const struct {
-        game_type: u32,
+        game_type: GameType,
         clients: u32,
         steps: []const struct { kind: []const u8, sector: usize, wall: ?usize },
         queue: []const [7]u32,
@@ -172,9 +174,9 @@ fn expectState(
         try testing.expectEqual(want.light, sector.ambient);
         try testing.expectEqual(want.ceiling, @as(u32, @bitCast(sector.ceiling.height)));
         try testing.expectEqual(want.floor, @as(u32, @bitCast(sector.floor.height)));
-        try testing.expectEqual(want.flags, state.flags);
-        try testing.expectEqual(want.flags, sector.flags);
-        try testing.expectEqual(want.runtime, state.runtime_flags);
+        try testing.expectEqual(want.flags, bits.word(state.flags));
+        try testing.expectEqual(want.flags, bits.word(sector.flags));
+        try testing.expectEqual(want.runtime, bits.word(state.runtime_flags));
 
         for (want.vertices, sector.vertices) |v, got| try testing.expectEqual(
             v,
@@ -189,9 +191,9 @@ fn expectState(
 
             try testing.expectEqual(w.angle, @as(u16, @bitCast(got.angle)));
             try testing.expectEqual(w.length, @as(u32, @bitCast(got.length)));
-            try testing.expectEqual(w.flags, got.flags);
-            try testing.expectEqual(w.flags, source.flags);
-            try testing.expectEqual(w.runtime, got.runtime_flags);
+            try testing.expectEqual(w.flags, bits.word(got.flags));
+            try testing.expectEqual(w.flags, bits.word(source.flags));
+            try testing.expectEqual(w.runtime, bits.word(got.runtime_flags));
         }
 
         try expectSlope(want.floor_slope, state.floor_slope);
@@ -270,18 +272,18 @@ test "architecture changes match the reference's packers, scan, marks, sends and
             wall.mirror = -1;
             wall.dadjoin = -1;
             wall.dmirror = -1;
-            wall.flags = w.flags;
+            bits.setWord(&wall.flags, w.flags);
             wall_state.* = std.mem.zeroes(scene_module.WallState);
-            wall_state.flags = w.flags;
-            wall_state.runtime_flags = w.runtime;
+            bits.setWord(&wall_state.flags, w.flags);
+            bits.setWord(&wall_state.runtime_flags, w.runtime);
         }
 
         sector.floor.height = @bitCast(source.floor);
         sector.ceiling.height = @bitCast(source.ceiling);
         sector.ambient = source.light;
-        sector.flags = source.flags;
-        state.flags = source.flags;
-        state.runtime_flags = source.runtime;
+        bits.setWord(&sector.flags, source.flags);
+        bits.setWord(&state.flags, source.flags);
+        bits.setWord(&state.runtime_flags, source.runtime);
 
         if (source.floor_slope) |s| sector.floor.slope = .{
             .sector = @intCast(s[0]),
@@ -357,7 +359,7 @@ test "architecture changes match the reference's packers, scan, marks, sends and
         .angles = &angles,
         .router = &router,
         .queue = &queue,
-        .game_type = 5,
+        .game_type = .hosting,
     };
 
     var skip: u32 = 0;
@@ -378,17 +380,22 @@ test "architecture changes match the reference's packers, scan, marks, sends and
         queue.count = 0;
 
         for (fixture.level, states) |source, *state| {
-            state.runtime_flags = source.runtime & ~@as(u32, 0x2e);
+            state.runtime_flags = bits.without(bits.from(scene_module.SectorRuntimeFlags, source.runtime), .{
+                .slopes_changed = true,
+                .heights_changed = true,
+                .flags_changed = true,
+                .light_changed = true,
+            });
 
-            for (source.walls, state.walls) |w, *wall| wall.runtime_flags = w.runtime & ~@as(
-                u32,
-                6,
+            for (source.walls, state.walls) |w, *wall| wall.runtime_flags = bits.without(
+                bits.from(scene_module.WallRuntimeFlags, w.runtime),
+                .{ .corners_changed = true, .flags_changed = true },
             );
         }
 
         for (case.steps, 0..) |step, index| {
             sectors[1].ambient = if (index == 8) -3 else 40;
-            states[5].walls[2].flags = if (index < 6) 0x1111 else 0x2222;
+            bits.setWord(&states[5].walls[2].flags, if (index < 6) 0x1111 else 0x2222);
 
             const at: inf_geometry.WallRef = .{
                 .sector = step.sector,
@@ -450,24 +457,24 @@ test "architecture changes match the reference's packers, scan, marks, sends and
         }
 
         for (case.bits, states) |expected, state| {
-            try testing.expectEqual(expected.runtime, state.runtime_flags);
+            try testing.expectEqual(expected.runtime, bits.word(state.runtime_flags));
 
-            for (expected.walls, state.walls) |bits, wall| try testing.expectEqual(
-                bits,
-                wall.runtime_flags,
+            for (expected.walls, state.walls) |runtime, wall| try testing.expectEqual(
+                runtime,
+                bits.word(wall.runtime_flags),
             );
         }
     }
 
     sectors[1].ambient = fixture.level[1].light;
-    states[5].walls[2].flags = fixture.level[5].walls[2].flags;
+    bits.setWord(&states[5].walls[2].flags, fixture.level[5].walls[2].flags);
 
     for (fixture.level, states) |source, *state| {
-        state.runtime_flags = source.runtime;
-        for (source.walls, state.walls) |w, *wall| wall.runtime_flags = w.runtime;
+        bits.setWord(&state.runtime_flags, source.runtime);
+        for (source.walls, state.walls) |w, *wall| bits.setWord(&wall.runtime_flags, w.runtime);
     }
 
-    arch.game_type = 5;
+    arch.game_type = .hosting;
     router.client_count = 2;
     queue.count = 0;
 

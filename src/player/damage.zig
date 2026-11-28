@@ -151,7 +151,7 @@ pub fn applyMovementWithEnvironment(
 }
 
 pub fn subtractHealth(inventory: *Inventory, amount: f32) f32 {
-    if (inventory.player_flags & 0x10000000 != 0) return 0;
+    if (inventory.player_flags.dead) return 0;
 
     const remaining = @max(0, @as(f64, inventory.health) - amount);
     const lost: f32 = @floatCast(@as(f64, inventory.health) - remaining);

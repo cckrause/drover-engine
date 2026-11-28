@@ -10,8 +10,60 @@ const std = @import("std");
 
 const level_asset = @import("../assets/level.zig");
 const camera = @import("backends/software/camera.zig");
+const bits = @import("../util/bits.zig");
 pub const Vec2 = level_asset.Vec2;
 pub const Vec3 = level_asset.Vec3;
+pub const SectorFlags = level_asset.SectorFlags;
+pub const WallFlags = level_asset.WallFlags;
+
+/// What changed in a sector while the level ran, plus a few facts worked out
+/// at load. The "changed" bits tell saves what to write and the network what
+/// to send. The word starts as the level file's second sector word.
+pub const SectorRuntimeFlags = packed struct(u32) {
+    changed: bool = false,
+    slopes_changed: bool = false,
+    heights_changed: bool = false,
+    flags_changed: bool = false,
+    number_changed: bool = false,
+    light_changed: bool = false,
+    unused_6: u18 = 0,
+    /// Saves write the sector below or above.
+    has_vertical_adjoin: bool = false,
+    /// Saves write the velocity the sector started with.
+    has_base_velocity: bool = false,
+    /// Saves write the sector's current velocity.
+    has_velocity: bool = false,
+    unused_27: bool = false,
+    /// A secret sector the player hasn't found yet.
+    secret_unfound: bool = false,
+    unused_29: bool = false,
+    /// The walls form one closed outline that always turns the same way.
+    convex: bool = false,
+    /// The sector doesn't hand its finished depth window back to the sector
+    /// it was seen through.
+    keeps_depth: bool = false,
+};
+
+/// What changed in a wall while the level ran, plus facts worked out at
+/// load. Same idea as `SectorRuntimeFlags`.
+pub const WallRuntimeFlags = packed struct(u32) {
+    changed: bool = false,
+    corners_changed: bool = false,
+    flags_changed: bool = false,
+    number_changed: bool = false,
+    unused_4: u22 = 0,
+    /// An elevator moves this wall.
+    moved_by_elevator: bool = false,
+    /// Breakable glass that has been made impassable and shootable.
+    glass_ready: bool = false,
+    /// A sloped plane in some sector hinges on this wall.
+    slope_hinge: bool = false,
+    /// A side wall of a rail; the cart turns to follow it.
+    rail_guide: bool = false,
+    /// The player has seen the wall, so the map shows it.
+    seen: bool = false,
+    unused_31: bool = false,
+};
 
 pub const Slope = struct {
     angle: i16 = 0,
@@ -127,14 +179,29 @@ pub const Slope = struct {
     }
 };
 
+/// Which parts of a wall around an opening get drawn, worked out from the
+/// heights on both sides. The renderer also uses it to say which half of a
+/// double opening it's drawing.
+pub const WallParts = packed struct(u32) {
+    /// The neighbour's ceiling is lower, so there's wall above the opening.
+    top: bool = false,
+    /// The neighbour's floor is higher, so there's wall below the opening.
+    bottom: bool = false,
+    /// Two openings, one above the other.
+    double_adjoin: bool = false,
+    /// Drawing the lower of the two openings.
+    lower_opening: bool = false,
+    unused_4: u28 = 0,
+};
+
 pub const WallState = struct {
     original_start: Vec2 = .{ .x = 0, .z = 0 },
     base_vertices: [2]u32 = .{ 0, 0 },
     light: i32 = 0,
-    flags: u32,
-    runtime_flags: u32,
+    flags: WallFlags,
+    runtime_flags: WallRuntimeFlags,
     number: u32 = 0,
-    render_flags: u32,
+    render_flags: WallParts,
     top_height: f32,
     mid_height: f32,
     bottom_height: f32,
@@ -148,8 +215,8 @@ pub const SectorState = struct {
     bounds: [4]f32 = @splat(0),
     original_velocity: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
     velocity_present: bool = false,
-    flags: u32,
-    runtime_flags: u32,
+    flags: SectorFlags,
+    runtime_flags: SectorRuntimeFlags,
     number: u32 = 0,
     outline_in_order: bool = false,
     floor_slope: ?Slope,
@@ -158,8 +225,8 @@ pub const SectorState = struct {
     last_collision_check: u32 = 0,
 
     pub fn validateSlopes(self: SectorState) !void {
-        if ((self.flags & 0x40000000 != 0 and self.floor_slope == null) or
-            (self.flags & 0x80000000 != 0 and self.ceiling_slope == null)) return error.MissingSceneSlope;
+        if ((self.flags.sloped_floor and self.floor_slope == null) or
+            (self.flags.sloped_ceiling and self.ceiling_slope == null)) return error.MissingSceneSlope;
     }
 };
 
@@ -185,7 +252,7 @@ pub const Scene = struct {
                 .original_velocity = source.velocity,
                 .velocity_present = source.velocity.x != 0 or source.velocity.y != 0 or source.velocity.z != 0,
                 .flags = source.flags,
-                .runtime_flags = source.flags2 | 1,
+                .runtime_flags = bits.with(bits.from(SectorRuntimeFlags, source.flags2), .{ .changed = true }),
                 .floor_slope = null,
                 .ceiling_slope = null,
                 .walls = try a.alloc(WallState, source.walls.len),
@@ -220,8 +287,8 @@ pub const Scene = struct {
                     .original_start = first,
                     .base_vertices = .{ wall.v1, wall.v2 },
                     .flags = wall.flags,
-                    .runtime_flags = 0,
-                    .render_flags = 0,
+                    .runtime_flags = .{},
+                    .render_flags = .{},
                     .top_height = 0,
                     .mid_height = 0,
                     .bottom_height = 0,
@@ -234,7 +301,7 @@ pub const Scene = struct {
                 };
             }
 
-            if (source.flags & 0x2000000 != 0) sector.runtime_flags |= 0x10000000;
+            if (source.flags.secret) sector.runtime_flags.secret_unfound = true;
         }
 
         const collision_check = try a.create(u32);
@@ -249,74 +316,65 @@ pub const Scene = struct {
             const sector = &sectors[sector_index];
 
             for (source.walls, sector.walls) |wall, *state| {
-                if (state.flags & 0x10000 == 0 and sector.flags & 0x10000000 != 0) {
-                    state.runtime_flags |= 0x20000000;
+                if (!state.flags.not_rail_guide and sector.flags.rail) {
+                    state.runtime_flags.rail_guide = true;
 
-                    if (wall.adjoin >= 0 and sectors[@intCast(wall.adjoin)].flags & 0x10000000 != 0)
-                        state.runtime_flags &= ~@as(u32, 0x20000000);
+                    if (wall.adjoin >= 0 and sectors[@intCast(wall.adjoin)].flags.rail)
+                        state.runtime_flags.rail_guide = false;
 
-                    if (wall.dadjoin >= 0 and sectors[
-                        @intCast(
-                            wall.dadjoin,
-                        )
-                    ].flags & 0x10000000 != 0)
-                        state.runtime_flags &= ~@as(u32, 0x20000000);
+                    if (wall.dadjoin >= 0 and sectors[@intCast(wall.dadjoin)].flags.rail)
+                        state.runtime_flags.rail_guide = false;
                 }
 
-                if ((state.flags & 0x10000 != 0 or sector.flags & 0x10000000 != 0) and sector.flags & 0x50000000 == 0x50000000) {
-                    sector.flags |= 0x08000000;
-                    sector.runtime_flags |= 8;
+                if (sector.flags.rail and sector.flags.sloped_floor) {
+                    sector.flags.rail_slope = true;
+                    sector.runtime_flags.flags_changed = true;
                 }
 
-                if (state.flags & 0x4000 != 0) {
-                    if (state.runtime_flags & 0x08000000 == 0) {
-                        state.flags |= 0x8800;
-                        state.runtime_flags |= 0x08000004;
-                    }
+                if (state.flags.shatters) {
+                    if (!state.runtime_flags.glass_ready) makeGlass(state);
 
                     if (wall.adjoin < 0) return error.DoorWallMissingMirror;
 
                     const mirror = &sectors[@intCast(wall.adjoin)].walls[@intCast(wall.mirror)];
 
-                    if (mirror.runtime_flags & 0x08000000 == 0) {
-                        mirror.flags |= 0x8800;
-                        mirror.runtime_flags |= 0x08000004;
-                    }
+                    if (!mirror.runtime_flags.glass_ready) makeGlass(mirror);
                 }
 
                 if (wall.adjoin >= 0) {
                     const mirror = &sectors[@intCast(wall.adjoin)].walls[@intCast(wall.mirror)];
 
-                    if (state.flags & 0x40 != 0) {
-                        mirror.flags |= 0x40;
-                        mirror.runtime_flags |= 4;
+                    if (state.flags.moves_with_sector) {
+                        mirror.flags.moves_with_sector = true;
+                        mirror.runtime_flags.flags_changed = true;
                     }
 
-                    if (state.runtime_flags & 0x04000000 != 0) mirror.runtime_flags |= 0x04000000;
+                    if (state.runtime_flags.moved_by_elevator) mirror.runtime_flags.moved_by_elevator = true;
                 }
             }
 
             for ([_]level_asset.Plane{
                 source.floor,
                 source.ceiling,
-            }, [_]u32{
-                0x40000000,
-                0x80000000,
+            }, [_]SectorFlags{
+                .{ .sloped_floor = true },
+                .{ .sloped_ceiling = true },
             }, [_]*?Slope{
                 &sector.floor_slope,
                 &sector.ceiling_slope,
             }) |plane, flag, destination| {
-                if (sector.flags & flag == 0) continue;
+                if (!bits.any(sector.flags, flag)) continue;
 
                 if (plane.slope) |slope| {
                     if (slope.sector >= sectors.len or slope.wall >= sectors[slope.sector].walls.len) {
-                        sector.flags &= ~flag;
-                        sector.runtime_flags |= 9;
+                        sector.flags = bits.without(sector.flags, flag);
+                        sector.runtime_flags.changed = true;
+                        sector.runtime_flags.flags_changed = true;
                         continue;
                     }
 
                     destination.* = try Slope.init(level, sector_index, plane, angles);
-                    sectors[slope.sector].walls[slope.wall].runtime_flags |= 0x10000000;
+                    sectors[slope.sector].walls[slope.wall].runtime_flags.slope_hinge = true;
                 }
             }
         }
@@ -329,7 +387,7 @@ pub const Scene = struct {
             );
 
             switch (chain(source, sectors[sector_index])) {
-                2 => sectors[sector_index].runtime_flags |= 0x40000000,
+                2 => sectors[sector_index].runtime_flags.convex = true,
                 1 => sectors[sector_index].outline_in_order = true,
                 else => {},
             }
@@ -353,7 +411,7 @@ pub const Scene = struct {
         sector_index: usize,
         point: Vec2,
     ) !f32 {
-        if (self.sectors[sector_index].flags & 0x40000000 != 0) {
+        if (self.sectors[sector_index].flags.sloped_floor) {
             const slope = self.sectors[sector_index].floor_slope orelse return error.MissingSceneSlope;
             return slope.height(point);
         }
@@ -367,7 +425,7 @@ pub const Scene = struct {
         sector_index: usize,
         point: Vec2,
     ) !f32 {
-        if (self.sectors[sector_index].flags & 0x80000000 != 0) {
+        if (self.sectors[sector_index].flags.sloped_ceiling) {
             const slope = self.sectors[sector_index].ceiling_slope orelse return error.MissingSceneSlope;
             return slope.height(point);
         }
@@ -395,8 +453,8 @@ pub const Scene = struct {
         const wall = sector.walls[wall_index];
         const state = &self.sectors[sector_index].walls[wall_index];
 
-        state.render_flags = 0;
-        state.runtime_flags |= 1;
+        state.render_flags = .{};
+        state.runtime_flags.changed = true;
 
         if (wall.adjoin >= 0) {
             const first = sector.vertices[wall.v1];
@@ -427,19 +485,19 @@ pub const Scene = struct {
                 own_floor_last,
             );
 
-            state.render_flags = if (wall.dadjoin >= 0) @as(u32, 4) else 0;
+            state.render_flags = .{ .double_adjoin = wall.dadjoin >= 0 };
 
             if ((other_ceiling_first <= own_ceiling_first and other_ceiling_last < own_ceiling_last) or
-                (other_ceiling_first < own_ceiling_first and other_ceiling_last <= own_ceiling_last)) state.render_flags |= 1;
+                (other_ceiling_first < own_ceiling_first and other_ceiling_last <= own_ceiling_last)) state.render_flags.top = true;
 
             if ((own_floor_first <= other_floor_first and own_floor_last < other_floor_last) or
-                (own_floor_first < other_floor_first and own_floor_last <= other_floor_last)) state.render_flags |= 2;
+                (own_floor_first < other_floor_first and own_floor_last <= other_floor_last)) state.render_flags.bottom = true;
 
-            if (state.render_flags & 1 != 0) state.top_height = f32store(
+            if (state.render_flags.top) state.top_height = f32store(
                 (@as(f64, sector.ceiling.height) - level.sectors[upper].ceiling.height) * 8.0,
             );
 
-            if (state.render_flags & 2 != 0) state.bottom_height = f32store(
+            if (state.render_flags.bottom) state.bottom_height = f32store(
                 (@as(f64, level.sectors[lower].floor.height) - sector.floor.height) * 8.0,
             );
 
@@ -451,8 +509,8 @@ pub const Scene = struct {
                     ) - level.sectors[lower].ceiling.height) * 8.0,
                 );
             } else {
-                const ceiling = if (state.render_flags & 1 != 0) level.sectors[upper].ceiling.height else sector.ceiling.height;
-                const floor = if (state.render_flags & 2 != 0) level.sectors[upper].floor.height else sector.floor.height;
+                const ceiling = if (state.render_flags.top) level.sectors[upper].ceiling.height else sector.ceiling.height;
+                const floor = if (state.render_flags.bottom) level.sectors[upper].floor.height else sector.floor.height;
                 state.mid_height = f32store((@as(f64, ceiling) - floor) * 8.0);
             }
         } else {
@@ -472,6 +530,14 @@ fn wallAngle(dx: f32, dz: f32) i16 {
     const value: i32 = @intFromFloat(@as(f64, radians) * 0.15915494309644432 * 16384.0);
 
     return @intCast(value & 0x3fff);
+}
+
+/// Breakable glass stops walkers and fires its triggers when shot.
+fn makeGlass(wall: *WallState) void {
+    wall.flags.impassable = true;
+    wall.flags.triggers_on_shot = true;
+    wall.runtime_flags.flags_changed = true;
+    wall.runtime_flags.glass_ready = true;
 }
 
 fn chain(sector: level_asset.Sector, state: SectorState) u32 {
@@ -540,6 +606,22 @@ fn f32store(value: f64) f32 {
     return @floatCast(value);
 }
 
+/// The bits a dropped slope leaves on its sector.
+const slope_dropped = SectorRuntimeFlags{ .changed = true, .flags_changed = true };
+
+/// Puts a raw flag word on a sector or wall and returns the old one.
+fn swapFlags(level: *level_asset.Level, sector: usize, wall: ?usize, value: u32) u32 {
+    if (wall) |index| {
+        const flags = &level.sectors[sector].walls[index].flags;
+        defer flags.* = bits.from(WallFlags, value);
+        return bits.word(flags.*);
+    }
+
+    const flags = &level.sectors[sector].flags;
+    defer flags.* = bits.from(SectorFlags, value);
+    return bits.word(flags.*);
+}
+
 fn hashWord(hash: *std.crypto.hash.sha2.Sha256, word: u32) void {
     var bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &bytes, word, .little);
@@ -568,7 +650,7 @@ test "CD1 scene prepares every slope and first-sector portal wall" {
     defer scene.deinit();
 
     try std.testing.expectEqual(@as(usize, 416), scene.sectors.len);
-    try std.testing.expectEqual(@as(u32, 4), scene.sectors[410].walls[1].render_flags);
+    try std.testing.expectEqual(WallParts{ .double_adjoin = true }, scene.sectors[410].walls[1].render_flags);
     try std.testing.expectEqual(@as(f32, 0), scene.sectors[410].walls[1].top_height);
 
     for (level.sectors, scene.sectors) |source, state| {
@@ -623,7 +705,7 @@ test "CD1 scene prepares every slope and first-sector portal wall" {
         }
 
         for (state.walls) |wall| {
-            hashWord(&wall_hash, wall.render_flags);
+            hashWord(&wall_hash, bits.word(wall.render_flags));
             hashWord(&wall_hash, @bitCast(wall.top_height));
             hashWord(&wall_hash, @bitCast(wall.mid_height));
             hashWord(&wall_hash, @bitCast(wall.bottom_height));
@@ -694,7 +776,10 @@ test "all shipped slope hinges match loader normalization and planes" {
         try std.testing.expectEqual(map.sectors.len, scene.sectors.len);
 
         for (level.sectors, scene.sectors, map.sectors) |source, state, expected| {
-            try std.testing.expectEqual(expected.flags & 0xc0000000, state.flags & 0xc0000000);
+            const expected_flags = bits.from(SectorFlags, expected.flags);
+
+            try std.testing.expectEqual(expected_flags.sloped_floor, state.flags.sloped_floor);
+            try std.testing.expectEqual(expected_flags.sloped_ceiling, state.flags.sloped_ceiling);
 
             for ([_]level_asset.Plane{
                 source.floor,
@@ -738,7 +823,10 @@ test "all shipped slope hinges match loader normalization and planes" {
 
                     if (plane.slope != null) {
                         discarded += 1;
-                        try std.testing.expectEqual(expected.runtime & 9, state.runtime_flags & 9);
+                        try std.testing.expectEqual(
+                            bits.only(bits.from(SectorRuntimeFlags, expected.runtime), slope_dropped),
+                            bits.only(state.runtime_flags, slope_dropped),
+                        );
                     }
                 }
             }
@@ -807,15 +895,10 @@ test "CD1 loader flags and runtime slope changes match the reference" {
         const saved = try a.alloc(u32, case.changes.len);
         defer a.free(saved);
 
-        for (case.changes, saved) |change, *original| {
-            const value = if (change.wall) |wall| &level.sectors[change.sector].walls[wall].flags else &level.sectors[change.sector].flags;
-            original.* = value.*;
-            value.* = change.flags;
-        }
+        for (case.changes, saved) |change, *original| original.* = swapFlags(&level, change.sector, change.wall, change.flags);
 
         defer for (case.changes, saved) |change, original| {
-            const value = if (change.wall) |wall| &level.sectors[change.sector].walls[wall].flags else &level.sectors[change.sector].flags;
-            value.* = original;
+            _ = swapFlags(&level, change.sector, change.wall, original);
         };
 
         var scene = try Scene.init(a, &level, &angles);
@@ -823,12 +906,17 @@ test "CD1 loader flags and runtime slope changes match the reference" {
         var hash = std.crypto.hash.sha2.Sha256.init(.{});
 
         for (scene.sectors) |sector| {
-            hashWord(&hash, sector.flags);
-            hashWord(&hash, sector.runtime_flags & 9);
+            hashWord(&hash, bits.word(sector.flags));
+            hashWord(&hash, bits.word(bits.only(sector.runtime_flags, slope_dropped)));
 
             for (sector.walls) |wall| {
-                hashWord(&hash, wall.flags);
-                hashWord(&hash, wall.runtime_flags & 0x28000005);
+                hashWord(&hash, bits.word(wall.flags));
+                hashWord(&hash, bits.word(bits.only(wall.runtime_flags, .{
+                    .changed = true,
+                    .flags_changed = true,
+                    .glass_ready = true,
+                    .rail_guide = true,
+                })));
             }
         }
 
@@ -844,7 +932,7 @@ test "CD1 loader flags and runtime slope changes match the reference" {
         const saved = scene.sectors[case.sector].flags;
         defer scene.sectors[case.sector].flags = saved;
 
-        scene.sectors[case.sector].flags = case.flags;
+        scene.sectors[case.sector].flags = bits.from(SectorFlags, case.flags);
 
         for (case.walls) |expected| {
             const wall = &scene.sectors[expected.sector].walls[expected.wall];
@@ -852,13 +940,13 @@ test "CD1 loader flags and runtime slope changes match the reference" {
             wall.top_height = 1;
             wall.mid_height = 2;
             wall.bottom_height = 3;
-            wall.render_flags = 7;
-            wall.runtime_flags = 0x60000004;
+            wall.render_flags = .{ .top = true, .bottom = true, .double_adjoin = true };
+            wall.runtime_flags = .{ .flags_changed = true, .rail_guide = true, .seen = true };
 
             try scene.prepareWall(&level, expected.sector, expected.wall);
 
-            try std.testing.expectEqual(expected.render_flags, wall.render_flags);
-            try std.testing.expectEqual(expected.runtime_flags, wall.runtime_flags);
+            try std.testing.expectEqual(expected.render_flags, bits.word(wall.render_flags));
+            try std.testing.expectEqual(expected.runtime_flags, bits.word(wall.runtime_flags));
             try std.testing.expectEqual(
                 expected.heights,
                 [_]u32{
@@ -884,11 +972,12 @@ test "CD1 loader flags and runtime slope changes match the reference" {
     const flags = state.flags;
     defer state.flags = flags;
 
-    for ([_]u32{ 0x40000000, 0x80000000 }) |flag| {
-        state.flags = flags | flag;
+    for ([_]bool{ true, false }) |floor| {
+        state.flags = flags;
+        if (floor) state.flags.sloped_floor = true else state.flags.sloped_ceiling = true;
         const point = level.sectors[invalid.sector].vertices[0];
 
-        if (flag == 0x40000000)
+        if (floor)
             try std.testing.expectError(
                 error.MissingSceneSlope,
                 scene.floorHeight(&level, invalid.sector, point),

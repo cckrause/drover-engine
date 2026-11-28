@@ -6,6 +6,7 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const level = @import("../assets/level.zig");
 const Item = @import("../assets/item.zig").Item;
 const engine = @import("../audio/engine.zig");
@@ -15,6 +16,7 @@ const random = @import("../player/weapon.zig");
 const session_queues = @import("../render/session_queues.zig");
 const perception = @import("perception.zig");
 const enemy_session = @import("session.zig");
+const bits = @import("../util/bits.zig");
 
 pub const Kind = enum(u32) { item, enemy, point_sound, ambient_sound, indoor_sound };
 
@@ -44,7 +46,7 @@ pub const Record = struct {
     variation: u32 = 0,
     delay: u32 = 0,
     deadline: u32 = 0,
-    generatee_flags: u32 = 0,
+    generatee_flags: level.ObjectFlags = .{},
     maximum: i32 = 1,
     minimum_distance: f32 = 0,
     maximum_distance: f32 = 2147483648,
@@ -58,7 +60,7 @@ pub const Record = struct {
     sound_resource: ?struct {
         name: []const u8,
         priority: i8 = 1,
-        flags: u32 = 0x10000,
+        flags: engine.Flags = .{ .effects = true },
         created_at: u32,
     } = null,
     /// Every sound this generator started, ended or not. The original never
@@ -318,14 +320,14 @@ pub fn message(
     allocator: std.mem.Allocator,
     effects: *inventory.Effects,
     id: u32,
-    code: u32,
+    code: MessageCode,
 ) !bool {
     for (session.generators.records.items, 0..) |*record, index| if (record.id == id) {
-        if (code == 0x7d6) {
+        if (code == .trigger) {
             try generate(session, allocator, effects, index);
-        } else if (code == 0x7dd) {
+        } else if (code == .master_on) {
             record.enabled = true;
-        } else if (code == 0x7de) {
+        } else if (code == .master_off) {
             record.enabled = false;
         }
 
@@ -359,7 +361,7 @@ pub fn tick(session: anytype, allocator: std.mem.Allocator, effects: *inventory.
                     record.reschedule(now, &session.contact_state.random);
 
                     const player = enemy_session.playerSubject(session);
-                    const distance: f32 = if (player.secondary_flags & 0x01000000 != 0) record.minimum_distance else @floatCast(perception.distance(perception.point(record.position), perception.point(player.position)) + @abs(@as(f64, player.position.y) - record.position.y));
+                    const distance: f32 = if (player.secondary_flags.waiting_for_start) record.minimum_distance else @floatCast(perception.distance(perception.point(record.position), perception.point(player.position)) + @abs(@as(f64, player.position.y) - record.position.y));
 
                     if (distance <= record.maximum_distance and record.minimum_distance <= distance) {
                         var allowed = !record.los;
@@ -475,7 +477,7 @@ fn generate(
     const Child = union(enum) { actor: usize, sound: ?PlayingSound };
     const child: Child = switch (record.kind) {
         .item, .enemy => blk: {
-            const network = session.game_type == 4 or session.game_type == 5;
+            const network = session.game_type.isNetwork();
             if (network and !std.ascii.eqlIgnoreCase(
                 record.generatee,
                 "NULL",
@@ -506,9 +508,9 @@ fn generate(
 
             const actor = &session.actor_slots[source].?;
 
-            if (record.kind == .enemy and actor.secondary_flags & 0x100 != 0) session.enemy_shared.total_enemies -= 1;
+            if (record.kind == .enemy and actor.secondary_flags.enemy) session.enemy_shared.total_enemies -= 1;
 
-            if (record.generatee_flags & 0x10 != 0) actor.flags |= 0x80000400;
+            if (record.generatee_flags.physics) actor.flags = bits.with(actor.flags, .{ .physics = true, .changed = true });
 
             if (record.total > 0 and record.kind == .item and !session.generators.respawn_sound) {
                 try effects.append(.{
@@ -518,7 +520,7 @@ fn generate(
                         .position = record.position,
                         .priority = 32,
                         .volume = 127,
-                        .flags = 0,
+                        .flags = .{},
                     },
                 });
 
@@ -539,7 +541,7 @@ fn generate(
                 registration.?,
             ) else instances.allocateInstance()) orelse return;
 
-            const outside = session.scene.sectors[session.player.sector].flags & 1 != 0;
+            const outside = session.scene.sectors[session.player.sector].flags.sky_ceiling;
             if (record.kind == .indoor_sound and outside) return;
 
             var params: engine.Params = if (sound) |runtime| .{
@@ -550,7 +552,7 @@ fn generate(
 
             if (record.kind == .point_sound) {
                 params.position = .{ record.position.x, record.position.y, record.position.z };
-                params.flags |= engine.Flags.spatial | engine.Flags.ambient;
+                params.flags = bits.with(params.flags, .{ .spatial = true, .ambient = true });
                 params.frequency_factor = @floatCast(
                     random.randomFloat(&session.contact_state.random, 0.2) + @as(f32, 0.9),
                 );
@@ -774,7 +776,7 @@ test "all shipped generator constructors match the reference" {
             result.variation,
             result.delay,
             result.deadline,
-            result.generatee_flags,
+            bits.word(result.generatee_flags),
             @bitCast(result.maximum),
             @bitCast(result.minimum_distance),
             @bitCast(result.maximum_distance),
@@ -875,7 +877,7 @@ test "generator sound allocation and driver failure match the reference" {
         session.generators = .{};
         session.contact_state.random = 0x742389ac;
         session.animation_time = 1000;
-        session.scene.sectors[session.player.sector].flags = if (case.outside) 1 else 0;
+        session.scene.sectors[session.player.sector].flags = .{ .sky_ceiling = case.outside };
 
         try session.generators.append(
             session.arena.allocator(),

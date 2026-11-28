@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
@@ -41,7 +42,7 @@ fn expectVoices(session: *const Session, expected: []const []const u8) !void {
             try std.testing.expect(std.ascii.eqlIgnoreCase(expected[index], sound.basename));
             try std.testing.expectEqual(@as(?i32, 64), sound.priority);
             try std.testing.expectEqual(@as(?i32, 127), sound.volume);
-            try std.testing.expectEqual(@as(?u32, 0), sound.flags);
+            try std.testing.expectEqual(@as(?RequestFlags, .{}), sound.flags);
 
             index += 1;
         },
@@ -118,7 +119,7 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
 
         session.player.position.y = sector.floor.height + 0.01;
         session.player.velocity.y = if (lethal) -100 else -70;
-        session.player.flags = 0;
+        session.player.flags = .{};
 
         try session.advance(a, &.{}, 16);
 
@@ -183,22 +184,22 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
             @intFromEnum(
                 input.Slot.forward,
             )
-        ] = .{ .value = 5120, .flags = input.absolute };
+        ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
         packet.entries[
             @intFromEnum(
                 input.Slot.strafe,
             )
-        ] = .{ .value = 5120, .flags = input.absolute };
+        ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
-        packet.entries[@intFromEnum(input.Slot.speed)] = .{ .value = 300, .flags = input.unscaled };
+        packet.entries[@intFromEnum(input.Slot.speed)] = .{ .value = 300, .flags = .{ .unscaled = true } };
 
         if (lethal) {
             packet.entries[
                 @intFromEnum(
                     input.Slot.jump,
                 )
-            ] = .{ .value = 5120, .flags = input.absolute };
+            ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
             packet.entries[@intFromEnum(input.Slot.turn)] = .{ .value = 5120 };
         }
@@ -239,12 +240,12 @@ test "Hideout fall damage commits health audio HUD and lethal continuation" {
             try std.testing.expect(std.ascii.eqlIgnoreCase("RIFLOUT.WAV", cue.basename));
             try std.testing.expectEqual(@as(?i32, 32), cue.priority);
             try std.testing.expectEqual(@as(?i32, 50), cue.volume);
-            try std.testing.expectEqual(@as(?u32, 4), cue.flags);
+            try std.testing.expectEqual(@as(?RequestFlags, .default), cue.flags);
 
             try playVoices(session, audio);
 
             try std.testing.expect(session.player.dead);
-            try std.testing.expect(session.player.flags & 0x10000000 != 0);
+            try std.testing.expect(session.player.flags.dead);
 
             for (session.inventory.slots) |slot| try std.testing.expect(slot == null);
 

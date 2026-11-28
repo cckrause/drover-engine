@@ -12,6 +12,9 @@ const scene_module = @import("../render/scene.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const actor_links = @import("../render/actor_links.zig");
 const script_runtime = @import("../script/runtime.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const Vec2 = level_module.Vec2;
 const Vec3 = level_module.Vec3;
 
@@ -20,8 +23,8 @@ pub const Body = struct {
     sector: usize,
     height: f32,
     radius: f32,
-    flags: u32,
-    secondary_flags: u32,
+    flags: ActorFlags,
+    secondary_flags: ActorKind,
     sector_link_order: u64 = std.math.maxInt(u64),
 };
 
@@ -176,7 +179,8 @@ pub const Options = struct {
     query_observer: ?QueryObserver = null,
     projection: ?*@import("../projectile/contact.zig").Projection = null,
     drop_height: f32 = 0x1p31,
-    wall_block_mask: u32 = 0,
+    /// Walls with any of these flags block too.
+    wall_block_mask: level_module.WallFlags = .{},
     impassable_walls: bool = true,
     slide_walls: bool = true,
     rail_mode: bool = false,
@@ -444,7 +448,7 @@ const Context = struct {
         while (self.nextWall(sector, old, point.*, &previous_distance)) |wall| {
             const source = self.level.sectors[wall.sector].walls[wall.index];
             const state = self.scene.sectors[wall.sector].walls[wall.index];
-            if (state.flags & 0x800 != 0 and (self.options.rail_mode or state.runtime_flags & 0x20000000 == 0)) {
+            if (state.flags.impassable and (self.options.rail_mode or !state.runtime_flags.rail_guide)) {
                 self.cut(old, point, delta, wall);
                 try self.crossEvent(wall);
                 if (first) {
@@ -597,16 +601,16 @@ const Context = struct {
         const lower_state = self.scene.sectors[lower];
         const ceiling_flags = if (x_first) self.scene.sectors[sector].flags else upper_state.flags;
         const floor_flags = if (x_first) self.scene.sectors[sector].flags else lower_state.flags;
-        const ceiling = if (ceiling_flags & 1 != 0) @as(
+        const ceiling = if (ceiling_flags.sky_ceiling) @as(
             f32,
             0x1p31,
-        ) else if (ceiling_flags & 0x80000000 != 0) slopeHeight(
+        ) else if (ceiling_flags.sloped_ceiling) slopeHeight(
             upper_state.ceiling_slope orelse return error.MissingCollisionSlope,
             point,
             x_first,
         ) else self.level.sectors[upper].ceiling.height;
 
-        const floor = if (floor_flags & 0x40000000 != 0) slopeHeight(
+        const floor = if (floor_flags.sloped_floor) slopeHeight(
             lower_state.floor_slope orelse return error.MissingCollisionSlope,
             point,
             x_first,
@@ -717,15 +721,15 @@ const Context = struct {
         for (self.level.sectors[sector].walls, self.scene.sectors[sector].walls, 0..) |wall, state, index| {
             self.last_wall = .{ .sector = sector, .index = index };
 
-            const blocked = self.options.impassable_walls and state.flags & 0x800 != 0;
+            const blocked = self.options.impassable_walls and state.flags.impassable;
             const has_adjoin = wall.adjoin >= 0 and !blocked;
             const has_double = wall.dadjoin >= 0 and !blocked;
 
             if (!touches(q, self.level.sectors[sector].vertices[wall.v1], state)) continue;
 
-            if (self.rail_wall_filter and state.runtime_flags & 0x20000000 == 0) return true;
+            if (self.rail_wall_filter and !state.runtime_flags.rail_guide) return true;
 
-            if (state.flags & self.options.wall_block_mask != 0) return true;
+            if (bits.any(state.flags, self.options.wall_block_mask)) return true;
 
             if (has_adjoin or has_double) {
                 var collision = false;
@@ -828,11 +832,11 @@ const Context = struct {
                 };
             };
 
-            if (actor.sector != sector or actor.flags & 0x100 != 0) continue;
+            if (actor.sector != sector or actor.flags.not_solid) continue;
 
             if (pickups) {
-                if (actor.secondary_flags & 0x400 == 0) continue;
-            } else if (actor.secondary_flags & 0x400 != 0 or @as(
+                if (!actor.secondary_flags.item) continue;
+            } else if (actor.secondary_flags.item or @as(
                 u32,
                 @bitCast(actor.radius),
             ) > 0x80000000) continue;
@@ -845,7 +849,7 @@ const Context = struct {
                 body_height = -body_height;
 
                 const state = self.scene.sectors[sector];
-                const ceiling = if (state.flags & 0x80000000 != 0)
+                const ceiling = if (state.flags.sloped_ceiling)
                     slopeHeight(
                         state.ceiling_slope orelse return error.MissingCollisionSlope,
                         actor.position,

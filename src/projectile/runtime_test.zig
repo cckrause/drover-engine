@@ -11,12 +11,13 @@ const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
 const Angles = @import("../render/backends/software/camera.zig").Angles;
 const Vec3 = @import("../assets/level.zig").Vec3;
+const bits = @import("../util/bits.zig");
 
 fn point(value: [3]f32) Vec3 {
     return .{ .x = value[0], .y = value[1], .z = value[2] };
 }
 
-fn bits(value: Vec3) [3]u32 {
+fn vectorBits(value: Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -98,8 +99,8 @@ test "projectile launch matches the reference float stores and RNG" {
             .sector = 0,
             .position = .{ .x = 0, .y = 0, .z = 0 },
             .yaw = 0,
-            .flags = 0x8000014b,
-            .secondary_flags = 0,
+            .flags = .{ .active = true, .unused_1 = true, .shaded = true, .has_logic = true, .not_solid = true, .changed = true },
+            .secondary_flags = .{},
             .scale_x = 1,
             .scale_y = 1,
             .height = 2,
@@ -138,10 +139,10 @@ test "projectile launch matches the reference float stores and RNG" {
 
         try runtime.launch(&actor, &state, owner, input.fraction, &angles, &random);
         const actual: Result = .{
-            .position_bits = bits(actor.position),
-            .velocity_bits = bits(state.velocity),
-            .rotation_bits = bits(state.rotation),
-            .flags = actor.flags,
+            .position_bits = vectorBits(actor.position),
+            .velocity_bits = vectorBits(state.velocity),
+            .rotation_bits = vectorBits(state.rotation),
+            .flags = bits.word(actor.flags),
             .held = state.held,
             .random = random,
         };
@@ -208,13 +209,13 @@ test "player scheduler writes the later knife contact residue" {
 
         var packet: input.Packet = .{};
 
-        packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+        packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
         for (case.player_input) |slot| packet.entries[
             @intCast(
                 slot[0],
             )
-        ] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
+        ] = .{ .value = @intCast(slot[1]), .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
         var look: input.LookState = .{};
         const control = look.control(&packet);
@@ -343,7 +344,7 @@ test "knife contact damage and deferred particle transforms match the reference"
                 .speed_bits = @bitCast(damage.speed),
                 .yaw = damage.yaw,
                 .pitch = damage.pitch,
-                .position_bits = bits(value.messagePosition()),
+                .position_bits = vectorBits(value.messagePosition()),
                 .lateral_bits = @bitCast(damage.lateral),
                 .height_bits = @bitCast(damage.height),
             },
@@ -353,7 +354,7 @@ test "knife contact damage and deferred particle transforms match the reference"
             const visual = if (std.mem.eql(u8, expected.kind, "blood")) value.blood else value.dust;
             try std.testing.expectEqual(expected.sector, visual.sector);
             try std.testing.expectEqual(expected.count, @as(u32, @bitCast(visual.count)));
-            try std.testing.expectEqualDeep(expected.position_bits, bits(visual.average()));
+            try std.testing.expectEqualDeep(expected.position_bits, vectorBits(visual.average()));
         }
 
         if (case.visuals.len == 0) try std.testing.expect(
@@ -419,8 +420,8 @@ test "projectile radial damage and aggregation match the reference" {
                 .sector = 0,
                 .height = input.height,
                 .radius = input.radius,
-                .flags = 0,
-                .secondary_flags = 0x10,
+                .flags = .{},
+                .secondary_flags = .{ .player = true },
             },
         );
 
@@ -443,7 +444,7 @@ test "projectile radial damage and aggregation match the reference" {
             [2]u32{ @bitCast(blast.damage.lateral), @bitCast(blast.damage.height) },
         );
 
-        try std.testing.expectEqualDeep(case.result.position_bits, bits(blast.impact));
+        try std.testing.expectEqualDeep(case.result.position_bits, vectorBits(blast.impact));
     }
 }
 
@@ -516,7 +517,7 @@ test "projectile movement damping model rotation and slopes match the reference"
         var sector_state = std.mem.zeroes(scene_module.SectorState);
 
         if (input.slope) |slope| {
-            sector_state.flags |= 0x40000000;
+            sector_state.flags.sloped_floor = true;
             sector_state.floor_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = slope[0], .coeff_z = slope[1], .constant = slope[2] },
@@ -541,8 +542,8 @@ test "projectile movement damping model rotation and slopes match the reference"
             .pitch = input.angles[0],
             .yaw = input.angles[1],
             .roll = input.angles[2],
-            .flags = 0x8000004f,
-            .secondary_flags = 0x420,
+            .flags = .{ .active = true, .unused_1 = true, .visible = true, .shaded = true, .has_logic = true, .changed = true },
+            .secondary_flags = .{ .projectile = true, .item = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = 2,
@@ -582,13 +583,13 @@ test "projectile movement damping model rotation and slopes match the reference"
         runtime.afterMove(&state, point(input.velocity));
 
         const actual: Result = .{
-            .position_bits = bits(actor.position),
-            .velocity_bits = bits(state.velocity),
+            .position_bits = vectorBits(actor.position),
+            .velocity_bits = vectorBits(state.velocity),
             .angles = .{ actor.pitch, actor.yaw, actor.roll },
-            .flags = actor.flags,
+            .flags = bits.word(actor.flags),
             .floor_cache_bits = @bitCast(motion.floor_cache),
             .bounced = state.bounced,
-            .rotation_bits = bits(state.rotation),
+            .rotation_bits = vectorBits(state.rotation),
         };
 
         try std.testing.expectEqualDeep(case.result, actual);
@@ -598,7 +599,6 @@ test "projectile movement damping model rotation and slopes match the reference"
 test "projectile pickup and sound save records match the reference writers and readers" {
     const codec = @import("../save/projectile.zig");
     const pickup_codec = @import("../save/pickup.zig");
-    const sound_codec = @import("../save/sound.zig");
     const stream = @import("../save/stream.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -614,7 +614,7 @@ test "projectile pickup and sound save records match the reference writers and r
         bounced: bool,
         pickup: ?struct {
             entries: []pickup_codec.Entry,
-            sound: ?sound_codec.Record,
+            sound: ?RecordedSound,
             flags: i16,
             enabled: bool,
         },
@@ -658,7 +658,7 @@ test "projectile pickup and sound save records match the reference writers and r
             .configuration = value.configuration,
             .pickup = if (value.pickup) |ground| .{
                 .entries = ground.entries,
-                .sound = ground.sound,
+                .sound = if (ground.sound) |sound| sound.record() else null,
                 .flags = ground.flags,
             } else null,
         };
@@ -693,7 +693,7 @@ test "instant health and sheriff pickup save records match the reference" {
         encoded: []const u8,
         result: struct {
             entries: ?[]pickup.Entry = null,
-            sound: ?@import("../save/sound.zig").Record,
+            sound: ?RecordedSound,
             flags: i16 = 0,
             health_bonus: u8 = 0,
             message: i32 = -1,
@@ -733,7 +733,7 @@ test "instant health and sheriff pickup save records match the reference" {
         if (case.result.entries) |entries| {
             const expected: pickup.Record = .{
                 .entries = entries,
-                .sound = case.result.sound,
+                .sound = if (case.result.sound) |value| value.record() else null,
                 .flags = case.result.flags,
             };
 
@@ -741,7 +741,7 @@ test "instant health and sheriff pickup save records match the reference" {
             try std.testing.expectEqualDeep(expected, try pickup.Record.read(&reader, a));
         } else {
             const expected: pickup.Instant = .{
-                .sound = case.result.sound,
+                .sound = if (case.result.sound) |value| value.record() else null,
                 .health_bonus = case.result.health_bonus,
                 .message = case.result.message,
             };
@@ -776,3 +776,26 @@ test "a projectile definition that fails part way through keeps none of its stri
         runtime.Config.load(std.testing.allocator, &item, "PDYNAM.ITM"),
     );
 }
+
+/// A saved sound as fixtures record it, with its flags as a number.
+const RecordedSound = struct {
+    name: []const u8,
+    resource_type: u32 = 0x57415644,
+    priority: u8 = 64,
+    flags: u32 = 0x10000,
+    registered_at: u32,
+    volume: u8 = 127,
+    zero_tail: bool = false,
+
+    fn record(self: RecordedSound) @import("../save/sound.zig").Record {
+        return .{
+            .name = self.name,
+            .resource_type = self.resource_type,
+            .priority = self.priority,
+            .flags = @bitCast(self.flags),
+            .registered_at = self.registered_at,
+            .volume = self.volume,
+            .zero_tail = self.zero_tail,
+        };
+    }
+};

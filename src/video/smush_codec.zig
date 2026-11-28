@@ -264,6 +264,13 @@ const motion_vectors = [_][2]i16{
     .{ 0, 0 },
 };
 
+pub const RenderFlags = packed struct(u16) {
+    unused_0: u4 = 0,
+    /// Drops a frame the clock is behind on instead of drawing it.
+    skip: bool = false,
+    unused_5: u11 = 0,
+};
+
 pub const Frame = struct { pixels: []const u8, width: u16, height: u16 };
 
 pub const Decoder = struct {
@@ -302,10 +309,10 @@ pub const Decoder = struct {
     }
 
     pub fn decode(self: *Decoder, fobj: []const u8) !?Frame {
-        return self.decodeWithFlags(fobj, 0);
+        return self.decodeWithFlags(fobj, .{});
     }
 
-    pub fn decodeWithFlags(self: *Decoder, fobj: []const u8, flags: u16) !?Frame {
+    pub fn decodeWithFlags(self: *Decoder, fobj: []const u8, flags: RenderFlags) !?Frame {
         if (fobj.len < 40) return error.TruncatedSmushObject;
         if (fobj[0] != 47) return error.UnsupportedSmushCodec;
 
@@ -344,7 +351,7 @@ pub const Decoder = struct {
             }
         }
 
-        if ((mode == 2 or mode == 3 or mode == 4) and flags & 0x10 != 0 and fobj[17] == 0) {
+        if ((mode == 2 or mode == 3 or mode == 4) and flags.skip and fobj[17] == 0) {
             self.last_sequence = sequence;
             return null;
         }
@@ -799,7 +806,7 @@ test "frame skipping consumes sequence state but preserves referenced buffers" {
 
     try std.testing.expectEqual(
         @as(?Frame, null),
-        try decoder.decodeWithFlags(object[0..40], 0x10),
+        try decoder.decodeWithFlags(object[0..40], .{ .skip = true }),
     );
 
     try std.testing.expectEqual(@as(i16, 1), decoder.last_sequence);

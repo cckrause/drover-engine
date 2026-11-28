@@ -10,6 +10,9 @@ const occlusion = @import("../audio/occlusion.zig");
 const scene = @import("../render/scene.zig");
 const perception = @import("perception.zig");
 const Angles = @import("../render/backends/software/camera.zig").Angles;
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 const FovCase = struct {
     from: [3]f32,
@@ -95,8 +98,8 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
             .height = 6,
             .radius = 1.5,
             .yaw = sample.yaw,
-            .flags = 1,
-            .secondary_flags = sample.source_secondary,
+            .flags = .{ .active = true },
+            .secondary_flags = bits.from(ActorKind, sample.source_secondary),
         };
 
         const to = perception.Subject{
@@ -105,8 +108,8 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
             .height = sample.height,
             .radius = 1.5,
             .yaw = 0,
-            .flags = sample.target_flags,
-            .secondary_flags = sample.target_secondary,
+            .flags = bits.from(ActorFlags, sample.target_flags),
+            .secondary_flags = bits.from(ActorKind, sample.target_secondary),
         };
 
         var kill = false;
@@ -137,8 +140,8 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
 
     var states = [_]scene.SectorState{
         .{
-            .flags = 0,
-            .runtime_flags = 0,
+            .flags = .{},
+            .runtime_flags = .{},
             .floor_slope = null,
             .ceiling_slope = null,
             .walls = &.{},
@@ -156,7 +159,7 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
         var random = sample.seed;
 
         for (&states, sample.slopes) |*sector, parameters| {
-            sector.flags = 0;
+            sector.flags = .{};
             sector.ceiling_slope = null;
 
             if (parameters) |values| {
@@ -166,7 +169,7 @@ test "enemy FOV, sampled actor rays and navigation points match the reference" {
                 slope.coeff_z = values[1];
                 slope.constant = values[2];
                 sector.ceiling_slope = slope;
-                sector.flags = 0x80000000;
+                sector.flags = .{ .sloped_ceiling = true };
             }
         }
 

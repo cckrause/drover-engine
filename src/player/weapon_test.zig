@@ -14,6 +14,8 @@ const camera = @import("../render/backends/software/camera.zig");
 const runtime_module = @import("../script/runtime.zig");
 const input = @import("input.zig");
 const movement = @import("movement.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Bubble = struct { sector: usize, position: [3]u32, count: i32 };
 
@@ -132,7 +134,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
     };
 
     const AimCase = struct {
-        candidates: []weapon.AutoAimCandidate,
+        candidates: []struct { flags: u32, x: f32, y: f32, z: f32, height: f32 },
         random: u32,
         crt_random: u32,
         shots: [][11]u32,
@@ -235,7 +237,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
                     @intFromEnum(
                         slot,
                     )
-                ].flags = if (message & 1 != 0) input.pressed else input.released;
+                ].flags = if (message & 1 != 0) .{ .pressed = true } else .{ .released = true };
             }
 
             try state.inputPacket(&inventory, &packet, frame.now);
@@ -265,7 +267,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
                 playback.choreography,
                 playback.next_frame,
                 playback.frame,
-                playback.flags,
+                bits.word(playback.flags),
             };
 
             try std.testing.expectEqualSlices(u32, &frame.playback, &actual_playback);
@@ -408,6 +410,17 @@ test "bound weapon input, shots and reload match the reference and assets" {
         var effects = inventory_module.Effects.init(&effects_buffer);
         var shots_buffer: weapon.ShotBuffer = undefined;
         var shots = weapon.Shots.init(&shots_buffer);
+        var candidates: [16]weapon.AutoAimCandidate = undefined;
+        if (case.candidates.len > candidates.len) return error.TooManyReferenceCandidates;
+
+        for (case.candidates, candidates[0..case.candidates.len]) |raw, *candidate| candidate.* = .{
+            .flags = bits.from(ActorKind, raw.flags),
+            .x = raw.x,
+            .y = raw.y,
+            .z = raw.z,
+            .height = raw.height,
+        };
+
         var context: weapon.Context = .{
             .state = &state,
             .inventory = &inventory,
@@ -418,7 +431,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
             .now = 1000,
             .ready = true,
             .angles = &angles,
-            .candidates = case.candidates,
+            .candidates = candidates[0..case.candidates.len],
         };
 
         var playback: nwx.Playback = .{};
@@ -483,7 +496,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
 
         try playback.select(&costume, 0, 0, &context);
         var packet: input.Packet = .{};
-        packet.entries[@intFromEnum(input.Slot.reload)].flags = input.pressed;
+        packet.entries[@intFromEnum(input.Slot.reload)].flags = .{ .pressed = true };
         try state.inputPacket(&inventory, &packet, 1000);
         context.now = 1000;
         try context.tick(&playback, &costume);
@@ -513,7 +526,7 @@ test "bound weapon input, shots and reload match the reference and assets" {
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
         };
 
         try std.testing.expectEqualSlices(u32, &case.playback, &actual_playback);
@@ -638,7 +651,7 @@ test "menu reset cancels shot and reload WAX while retaining the reference scope
             @intFromEnum(
                 if (case.reload) input.Slot.reload else input.Slot.fire,
             )
-        ].flags = input.pressed;
+        ].flags = .{ .pressed = true };
 
         try state.inputPacket(&inventory, &packet, context.now);
         try context.tick(&playback, &costume);
@@ -668,7 +681,7 @@ test "menu reset cancels shot and reload WAX while retaining the reference scope
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
         };
 
         try std.testing.expectEqualSlices(u32, &expected_playback, &actual_playback);

@@ -6,6 +6,7 @@
 //! break glass and hit what is behind it.
 
 const std = @import("std");
+const Events = @import("../script/inf_flags.zig").Events;
 
 const level_module = @import("../assets/level.zig");
 const camera = @import("../render/backends/software/camera.zig");
@@ -414,12 +415,12 @@ pub fn trace(
 
         const flags = scene.sectors[sector].walls[hit.index].flags;
 
-        if ((flags & 1 == 0 or next != null) and flags & 0x8800 == 0x8800) {
+        if ((!flags.mid_texture_on_adjoin or next != null) and flags.impassable and flags.triggers_on_shot) {
             for (interaction.wallEvents(
                 level,
                 sector,
                 hit.index,
-                0x101,
+                .{ .cross_front = true, .shot_front = true },
                 0,
                 0,
             )) |event| if (event) |entry| try events.append(entry);
@@ -438,7 +439,7 @@ pub fn trace(
 
         const position = Vec3{ .x = hit_point.x, .y = y, .z = hit_point.z };
 
-        if (ray.kind == 0 or (flags & 1 == 0 and try scene.floorHeight(
+        if (ray.kind == 0 or (!flags.mid_texture_on_adjoin and try scene.floorHeight(
             level,
             sector,
             hit_point,
@@ -447,7 +448,7 @@ pub fn trace(
                 level,
                 sector,
                 hit.index,
-                0x100,
+                .{ .shot_front = true },
                 ray.kind,
                 y,
             )) |event| if (event) |entry| {
@@ -489,7 +490,7 @@ pub fn damageEnemy(
 
     var damage = input.damage;
     var speed = input.speed;
-    const boss = actor.secondary_flags & 0x200000 != 0;
+    const boss = actor.secondary_flags.boss;
 
     if (input.kind == 4 and boss) {
         damage = 3;
@@ -584,7 +585,7 @@ fn nearestActor(
 
         if (ray.exclude_source != null and actor.source_index == ray.exclude_source) continue;
 
-        if (actor.sector != sector or actor.flags & 0x100 != 0) continue;
+        if (actor.sector != sector or actor.flags.not_solid) continue;
 
         if (actors.runtime) |runtime| if (runtime.isRemoved(actor)) continue;
 
@@ -648,7 +649,7 @@ fn playerHit(
     sin_yaw: f32,
     cos_yaw: f32,
 ) ?ActorHit {
-    if (body.sector != sector or body.flags & 0x100 != 0) return null;
+    if (body.sector != sector or body.flags.not_solid) return null;
 
     const radius = @abs(body.radius);
     if (!(radius > 0) or body.height < 0) return null;

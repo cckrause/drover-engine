@@ -6,6 +6,7 @@
 const std = @import("std");
 
 const audio = @import("audio.zig");
+const bits = @import("../util/bits.zig");
 const codec = @import("smush_codec.zig");
 
 pub const Frame = struct {
@@ -84,14 +85,14 @@ pub const Movie = struct {
     }
 
     pub fn next(self: *Movie) !?Frame {
-        return self.nextWithFlags(0);
+        return self.nextWithFlags(.{});
     }
 
-    pub fn nextWithFlags(self: *Movie, flags: u16) !?Frame {
+    pub fn nextWithFlags(self: *Movie, flags: codec.RenderFlags) !?Frame {
         if (self.failed) return error.SanDecoderFailed;
 
         errdefer self.failed = true;
-        if (flags & ~@as(u16, 0x10) != 0) return error.UnsupportedSanRenderFlags;
+        if (bits.word(bits.without(flags, .{ .skip = true })) != 0) return error.UnsupportedSanRenderFlags;
         if (self.offset == self.data.len) {
             if (self.frame_number != self.frame_count) return error.InvalidSanFrameCount;
             return null;

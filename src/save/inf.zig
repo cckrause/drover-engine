@@ -6,11 +6,14 @@
 //! lists.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const level_module = @import("../assets/level.zig");
 const audio_module = @import("../audio/runtime.zig");
 const scene_module = @import("../render/scene.zig");
 const texture = @import("../render/texture_animation.zig");
+const atx = @import("../assets/atx.zig");
 const inf = @import("../script/inf.zig");
 const sound = @import("sound.zig");
 const stream = @import("stream.zig");
@@ -102,11 +105,13 @@ pub fn writeElevator(w: *stream.Writer, e: inf.Elevator, refs: References) !void
 
     try w.float(e.vector.x);
     try w.float(e.vector.z);
-    try w.integer(u32, e.flags);
+    try w.integer(u32, bits.word(e.flags));
 
     for (e.sounds) |name| try writeSound(w, refs, name);
 
-    for ([_]u5{ 0, 1, 2 }) |bit| try w.boolean(e.runtime_flags & (@as(u32, 1) << bit) != 0);
+    try w.boolean(e.runtime_flags.moving);
+    try w.boolean(e.runtime_flags.enabled);
+    try w.boolean(e.runtime_flags.short_wait);
 }
 
 pub fn readElevator(
@@ -173,21 +178,21 @@ pub fn readElevator(
     };
 
     e.vector = .{ .x = try r.float(), .z = try r.float() };
-    e.flags = try r.integer(u32);
+    e.flags = bits.from(inf.ElevatorFlags, try r.integer(u32));
 
     for (&e.sounds) |*name| name.* = try readSound(r, a, refs);
 
-    e.runtime_flags = 0;
-
-    for ([_]u5{ 0, 1, 2 }) |bit| if (try r.boolean()) {
-        e.runtime_flags |= @as(u32, 1) << bit;
+    e.runtime_flags = .{
+        .moving = try r.boolean(),
+        .enabled = try r.boolean(),
+        .short_wait = try r.boolean(),
     };
 
     return e;
 }
 
 pub fn writeTrigger(w: *stream.Writer, t: inf.Trigger, refs: References) !void {
-    try w.integer(u32, t.flags);
+    try w.integer(u32, bits.word(t.flags));
     try w.integer(u32, @intCast(t.clients.items.len));
 
     for (t.clients.items) |client| try writeClient(
@@ -202,8 +207,8 @@ pub fn writeTrigger(w: *stream.Writer, t: inf.Trigger, refs: References) !void {
         refs,
     );
 
-    try w.integer(u32, t.message.code);
-    try w.integer(u32, t.message.event_mask);
+    try w.integer(u32, @intFromEnum(t.message.code));
+    try w.integer(u32, bits.word(t.message.event_mask));
     try w.integer(i32, t.message.arg1);
     try w.integer(i32, t.message.arg2);
     try w.integer(u32, t.time20);
@@ -223,8 +228,8 @@ pub fn readTrigger(
     level: *const level_module.Level,
     refs: References,
 ) !inf.Trigger {
-    var t: inf.Trigger = .{ .target = target, .flags = try r.integer(u32) };
-    if (t.flags & 0xfc000000 == 0) return error.InvalidSavedTriggerKind;
+    var t: inf.Trigger = .{ .target = target, .flags = bits.from(inf.TriggerFlags, try r.integer(u32)) };
+    if (@intFromEnum(t.flags.kind) < @intFromEnum(inf.TriggerKind.wall)) return error.InvalidSavedTriggerKind;
 
     const clients = try count(r);
 
@@ -243,8 +248,8 @@ pub fn readTrigger(
     }
 
     t.message = .{
-        .code = try r.integer(u32),
-        .event_mask = try r.integer(u32),
+        .code = @enumFromInt(try r.integer(u32)),
+        .event_mask = bits.from(inf.Events, try r.integer(u32)),
         .arg1 = try r.integer(i32),
         .arg2 = try r.integer(i32),
     };
@@ -300,8 +305,8 @@ pub fn readClasses(
             .target = target,
             .kind = undefined,
             .index = 0,
-            .event_mask = 0,
-            .entity_mask = 0,
+            .event_mask = .{},
+            .entity_mask = .{},
         };
 
         switch (kind) {
@@ -331,8 +336,8 @@ pub fn readClasses(
             else => return error.InvalidSavedInfClass,
         }
 
-        link.event_mask = try r.integer(u32);
-        link.entity_mask = try r.integer(u32);
+        link.event_mask = bits.from(inf.Events, try r.integer(u32));
+        link.entity_mask = bits.from(ActorKind, try r.integer(u32));
 
         switch (link.kind) {
             .trigger => {
@@ -432,8 +437,8 @@ fn writeTargetClasses(
                 .target = target,
                 .kind = .atx,
                 .index = i,
-                .event_mask = 0x2000,
-                .entity_mask = 0xffffffff,
+                .event_mask = .{ .script = true },
+                .entity_mask = bits.from(ActorKind, 0xffffffff),
             },
             refs,
         );
@@ -491,12 +496,12 @@ fn writeLink(
         },
     }
 
-    try w.integer(u32, mask_event);
-    try w.integer(u32, mask_entity);
+    try w.integer(u32, bits.word(mask_event));
+    try w.integer(u32, bits.word(mask_entity));
 }
 
 fn writeAtx(w: *stream.Writer, instance: texture.Instance, level: *const level_module.Level) !void {
-    try w.integer(u16, instance.state.flags);
+    try w.integer(u16, bits.word(instance.state.flags));
     try w.integer(u32, instance.slot);
     if (instance.resource >= level.textures.len) return error.InvalidSavedAtxResource;
 
@@ -515,9 +520,9 @@ fn readAtx(
     level: *level_module.Level,
     scene: *scene_module.Scene,
 ) !texture.Instance {
-    const flags = try r.integer(u16);
+    const flags = bits.from(atx.StateFlags, try r.integer(u16));
     const slot = try r.integer(u32);
-    if (slot > 3 or flags & 3 == 0) return error.InvalidSavedAtxType;
+    if (slot > 3 or !(flags.on_sector or flags.on_wall)) return error.InvalidSavedAtxType;
 
     var buffer: [255]u8 = undefined;
     const name = try r.string(&buffer);
@@ -554,7 +559,7 @@ fn readAtx(
 
         destination.* = program.textures[displayed];
 
-        if (target.wall) |wall| scene.sectors[target.sector.?].walls[wall].runtime_flags |= 1 else scene.sectors[target.sector.?].runtime_flags |= 1;
+        if (target.wall) |wall| scene.sectors[target.sector.?].walls[wall].runtime_flags.changed = true else scene.sectors[target.sector.?].runtime_flags.changed = true;
     }
 
     return .{
@@ -573,8 +578,8 @@ fn readAtx(
 
 fn writeClient(w: *stream.Writer, m: inf.Message, refs: References) !void {
     try writeTarget(w, m.target, refs);
-    try w.integer(u32, m.code);
-    try w.integer(u32, m.event_mask);
+    try w.integer(u32, @intFromEnum(m.code));
+    try w.integer(u32, bits.word(m.event_mask));
     try w.integer(i32, m.arg1);
     try w.integer(i32, m.arg2);
 }
@@ -582,8 +587,8 @@ fn writeClient(w: *stream.Writer, m: inf.Message, refs: References) !void {
 fn readClient(r: *stream.Reader, level: *const level_module.Level, refs: References) !inf.Message {
     return .{
         .target = try readTarget(r, level, refs),
-        .code = try r.integer(u32),
-        .event_mask = try r.integer(u32),
+        .code = @enumFromInt(try r.integer(u32)),
+        .event_mask = bits.from(inf.Events, try r.integer(u32)),
         .arg1 = try r.integer(i32),
         .arg2 = try r.integer(i32),
     };
@@ -730,12 +735,12 @@ test "trigger movie filename preserves save bytes" {
     for (corpus.value.object.get("cases").?.array.items) |case| {
         var trigger: inf.Trigger = .{
             .target = .{ .sector = 20 },
-            .flags = @intCast(case.object.get("flags").?.integer),
-            .message = .{ .code = 0x7da, .event_mask = 0x2000, .arg1 = 7 },
+            .flags = bits.from(inf.TriggerFlags, @intCast(case.object.get("flags").?.integer)),
+            .message = .{ .code = .goto_stop, .event_mask = .{ .script = true }, .arg1 = 7 },
             .movie = "RAM.SAN",
         };
 
-        try trigger.clients.append(a, .{ .target = .{ .sector = 21 }, .mask = 0x30 });
+        try trigger.clients.append(a, .{ .target = .{ .sector = 21 }, .mask = .{ .nudge_front = true, .nudge_back = true } });
         var writer = stream.Writer{ .allocator = a };
         try writeTrigger(&writer, trigger, .{});
         const saved = try writer.finish();
@@ -813,8 +818,8 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
             .value = @bitCast(b[14]),
             .internal_value = @bitCast(b[14]),
             .vector = .{ .x = @bitCast(b[15]), .z = @bitCast(b[16]) },
-            .flags = b[17],
-            .runtime_flags = b[23],
+            .flags = bits.from(inf.ElevatorFlags, b[17]),
+            .runtime_flags = bits.from(inf.ElevatorState, b[23]),
         };
 
         try e.stops.append(a, .{ .value = 3.5, .delay = 0 });
@@ -843,10 +848,10 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
         const b = case.words;
         var t: inf.Trigger = .{
             .target = .{ .sector = 20 },
-            .flags = b[1],
+            .flags = bits.from(inf.TriggerFlags, b[1]),
             .message = .{
-                .code = b[4],
-                .event_mask = b[5],
+                .code = @enumFromInt(b[4]),
+                .event_mask = bits.from(inf.Events, b[5]),
                 .arg1 = @bitCast(b[6]),
                 .arg2 = @bitCast(b[7]),
             },
@@ -856,7 +861,7 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
             .excluded_object = b[11],
         };
 
-        try t.clients.append(a, .{ .target = .{ .sector = 21 }, .mask = 0x30 });
+        try t.clients.append(a, .{ .target = .{ .sector = 21 }, .mask = .{ .nudge_front = true, .nudge_back = true } });
         var w = stream.Writer{ .allocator = a };
         try writeTrigger(&w, t, .{});
         const bytes = try w.finish();
@@ -908,7 +913,7 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
                 .pc = sample.pc,
                 .displayed = sample.displayed,
                 .last_tick = sample.last_tick,
-                .flags = sample.flags,
+                .flags = bits.from(atx.StateFlags, sample.flags),
             },
         };
 
@@ -943,8 +948,8 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
         native.triggers = try a.dupe(
             inf.Trigger,
             &.{
-                .{ .target = .{ .sector = 410 }, .flags = 0x04f00001, .object_id = 1 },
-                .{ .target = .{ .sector = 410 }, .flags = 0x04f00001, .object_id = 2 },
+                .{ .target = .{ .sector = 410 }, .flags = .init(.wall), .object_id = 1 },
+                .{ .target = .{ .sector = 410 }, .flags = .init(.wall), .object_id = 2 },
             },
         );
 
@@ -967,8 +972,8 @@ test "INF and ATX saves match the reference on shipped geometry and scripts" {
             native.triggers[0].sound = "second.wav";
             native.triggers[1].sound = "first.wav";
 
-            try native.event(&level, .{ .sector = 410, .mask = 0, .now_ms = 20 });
-            try native.flushQueued(&level, &scene, 20, &.{}, 0x100000);
+            try native.event(&level, .{ .sector = 410, .mask = .{}, .now_ms = 20 });
+            try native.flushQueued(&level, &scene, 20, &.{}, .{ .good = true });
 
             try std.testing.expectEqual(@as(usize, 3), native.effects.items.len);
             try std.testing.expectEqual(

@@ -4,6 +4,8 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 
 const player_audio = @import("../audio/player.zig");
 const flash_module = @import("../render/damage_flash.zig");
@@ -121,11 +123,11 @@ test "player bullets projectiles armor impulse blood and health feedback" {
             .z = config.velocity[2],
         };
 
-        player.flags = config.flags;
+        player.flags = bits.from(PlayerFlags, config.flags);
 
         var inventory = inventory_module.Inventory{
             .health = config.health,
-            .player_flags = config.flags,
+            .player_flags = bits.from(PlayerFlags, config.flags),
             .sheriff_active = config.sheriff != 0,
         };
 
@@ -211,7 +213,7 @@ test "player bullets projectiles armor impulse blood and health feedback" {
                     id,
                     @bitCast(sound.priority.?),
                     @bitCast(sound.volume.?),
-                    sound.flags.?,
+                    bits.word(sound.flags.?),
                 };
 
                 event_count += 1;

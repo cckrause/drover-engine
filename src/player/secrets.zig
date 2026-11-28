@@ -15,7 +15,7 @@ pub const State = struct {
     pub fn init(level: *const level_module.Level) State {
         var state = State{};
 
-        for (level.sectors) |sector| if (sector.flags & 0x02000000 != 0) {
+        for (level.sectors) |sector| if (sector.flags.secret) {
             state.total +%= 1;
         };
 
@@ -24,9 +24,9 @@ pub const State = struct {
 
     pub fn discover(self: *State, scene: *scene_module.Scene, sector: usize) bool {
         const flags = &scene.sectors[sector].runtime_flags;
-        if (flags.* & 0x10000000 == 0) return false;
+        if (!flags.secret_unfound) return false;
 
-        flags.* &= ~@as(u32, 0x10000000);
+        flags.secret_unfound = false;
         self.found +%= 1;
 
         return true;

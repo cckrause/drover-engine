@@ -86,7 +86,7 @@ test "Hideout toilet seat jumps cross the dry opening and return with audio and 
             visited_opening = visited_opening or session.player.sector == 70;
             returned = returned or (tick >= 90 and session.player.sector == 212);
 
-            try std.testing.expect(session.player.flags & 0x8000 == 0);
+            try std.testing.expect(!session.player.flags.underwater);
 
             if (session.player.sector == 70) {
                 try std.testing.expect(

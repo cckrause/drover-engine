@@ -312,7 +312,7 @@ pub const Frame = struct {
         if (self.cached[sector_index] == null) {
             if (self.objects) |objects| {
                 self.model_sectors[sector_index] = objects.collectSector(sector_index);
-                if (sector.vadjoin >= 0 and sector.flags & 0x80 == 0) _ = objects.collectSector(
+                if (sector.vadjoin >= 0 and !sector.flags.underwater) _ = objects.collectSector(
                     @intCast(sector.vadjoin),
                 );
             }
@@ -331,12 +331,12 @@ pub const Frame = struct {
             .minimum_z = minimum_z,
         };
 
-        const count = if (state.runtime_flags & 0x40000000 != 0)
+        const count = if (state.runtime_flags.convex)
             visibility.convex(source, filtered, bounds, entrance)
         else
             visibility.filter(source, filtered, bounds, entrance);
 
-        if (state.runtime_flags & 0x40000000 == 0) {
+        if (!state.runtime_flags.convex) {
             std.mem.sortUnstable(visibility.Wall, filtered[0..count], {}, lessThan);
         }
 
@@ -380,9 +380,9 @@ pub const Frame = struct {
             const wall_state = state.walls[p.wall_index];
 
             wall.flags = wall_state.flags;
-            const flags = wall_state.render_flags;
+            const parts = wall_state.render_flags;
 
-            if (flags & 4 == 0) {
+            if (!parts.double_adjoin) {
                 if (wall.adjoin < 0) {
                     try walls.drawSolid(
                         &ctx,
@@ -392,11 +392,17 @@ pub const Frame = struct {
                         try self.surfaces(sector_index, p),
                     );
                 } else if (!self.active[sector_index][p.wall_index]) {
-                    try self.adjoin(&ctx, &portals, sector_index, wall, p, flags, flags & 3);
+                    try self.adjoin(&ctx, &portals, sector_index, wall, p, parts, .{
+                        .top = parts.top,
+                        .bottom = parts.bottom,
+                    });
                 }
             } else if (!self.active[sector_index][p.wall_index]) {
                 double_adjoins = true;
-                try self.adjoin(&ctx, &portals, sector_index, wall, p, 4, flags & 1);
+                try self.adjoin(&ctx, &portals, sector_index, wall, p, .{ .double_adjoin = true }, .{ .top = parts.top });
+
+                // Between the two openings the mid texture is drawn as the
+                // lower opening's top part, which is always there.
                 wall.top = wall.mid;
 
                 try self.adjoin(
@@ -405,8 +411,8 @@ pub const Frame = struct {
                     sector_index,
                     wall,
                     p,
-                    12,
-                    if (flags & 2 == 0) 1 else 3,
+                    .{ .double_adjoin = true, .lower_opening = true },
+                    .{ .top = true, .bottom = parts.bottom },
                 );
 
                 if (self.edges.count < first_edge + 2) return error.InvalidDoubleAdjoinEdges;
@@ -420,10 +426,10 @@ pub const Frame = struct {
                 upper.bottom_max = lower.bottom_max;
                 upper.bottom_min = lower.bottom_min;
                 self.edges.count -= 1;
-                state.walls[p.wall_index].runtime_flags |= 1;
+                state.walls[p.wall_index].runtime_flags.changed = true;
             }
 
-            state.walls[p.wall_index].runtime_flags |= 0x40000000;
+            state.walls[p.wall_index].runtime_flags.seen = true;
         }
 
         const plane_ctx = planes.Context{
@@ -445,7 +451,7 @@ pub const Frame = struct {
         var ceiling_override: ?[]const u8 = null;
         var floor_override: ?[]const u8 = null;
 
-        if (sector.flags & 0x80 != 0 and sector.vadjoin >= 0) {
+        if (sector.flags.underwater and sector.vadjoin >= 0) {
             try ripple.warp64(
                 self.angles,
                 try self.texels(sector.ceiling.texture),
@@ -454,7 +460,7 @@ pub const Frame = struct {
             );
 
             ceiling_override = &warped;
-        } else if (sector.vadjoin >= 0 or sector.flags & 0x800 != 0) {
+        } else if (sector.vadjoin >= 0 or sector.flags.rippling_floor) {
             try ripple.warp64(
                 self.angles,
                 try self.texels(sector.floor.texture),
@@ -482,15 +488,15 @@ pub const Frame = struct {
                 clipPortal(
                     portal.edge,
                     window,
-                    if (portal.flags == 8) alternate_top else top,
-                    if (portal.flags == 8) alternate_bottom else bottom,
+                    if (portal.lower_opening) alternate_top else top,
+                    if (portal.lower_opening) alternate_bottom else bottom,
                 );
             }
 
             for (portals.entries[0..portals.count]) |portal| {
                 const p = portal.projected;
                 const wall = sector.walls[p.wall_index];
-                const neighbor = if (portal.flags == 8) wall.dadjoin else wall.adjoin;
+                const neighbor = if (portal.lower_opening) wall.dadjoin else wall.adjoin;
                 if (neighbor < 0) return error.InvalidPortalSector;
 
                 const child = planes.ClipWindow{
@@ -500,8 +506,8 @@ pub const Frame = struct {
                     .bottom = @min(window.bottom, portal.edge.bottom_max),
                     .inner_top = @max(window.inner_top, portal.edge.top_max),
                     .inner_bottom = @min(window.inner_bottom, portal.edge.bottom_min),
-                    .top_clip = if (portal.flags == 8) alternate_top else top,
-                    .bottom_clip = if (portal.flags == 8) alternate_bottom else bottom,
+                    .top_clip = if (portal.lower_opening) alternate_top else top,
+                    .bottom_clip = if (portal.lower_opening) alternate_bottom else bottom,
                 };
 
                 const width: usize = @intCast(self.view.width);
@@ -511,7 +517,7 @@ pub const Frame = struct {
                 defer self.active[sector_index][p.wall_index] = false;
 
                 const original = findSource(source, p.wall_index);
-                const masked = state.walls[p.wall_index].flags & 1 != 0;
+                const masked = state.walls[p.wall_index].flags.mid_texture_on_adjoin;
 
                 if (dynamic or masked) @memcpy(child_depth, dynamic_depth);
 
@@ -525,15 +531,11 @@ pub const Frame = struct {
                     child_depth,
                 );
 
-                if ((dynamic or masked or self.model_sectors[
-                    @intCast(
-                        neighbor,
-                    )
-                ]) and self.scene.sectors[
-                    @intCast(
-                        neighbor,
-                    )
-                ].runtime_flags & 0x80000000 == 0 and !self.completed[sector_index]) {
+                const neighbor_index: usize = @intCast(neighbor);
+
+                if ((dynamic or masked or self.model_sectors[neighbor_index]) and
+                    !self.scene.sectors[neighbor_index].runtime_flags.keeps_depth and !self.completed[sector_index])
+                {
                     const start: usize = @intCast(child.left);
                     const end: usize = @intCast(child.right + 1);
                     @memcpy(dynamic_depth[start..end], child_depth[start..end]);
@@ -579,8 +581,7 @@ pub const Frame = struct {
         reverse: bool,
     ) !f32 {
         const slope = if (ceiling) self.scene.sectors[sector].ceiling_slope else self.scene.sectors[sector].floor_slope;
-        const flag: u32 = if (ceiling) 0x80000000 else 0x40000000;
-        if (self.scene.sectors[sector].flags & flag != 0) {
+        if (self.scene.sectors[sector].flags.sloped(ceiling)) {
             const s = slope orelse return error.MissingSceneSlope;
             const x = if (second) p.world_x2 else p.world_x1;
             const z = if (second) p.world_z2 else p.world_z1;
@@ -603,7 +604,7 @@ pub const Frame = struct {
             .lower1 = try self.height(sector, false, p, false, false),
             .lower2 = try self.height(sector, false, p, true, false),
             .lower_base = self.level.sectors[sector].floor.height,
-            .lower_sloped = self.scene.sectors[sector].flags & 0x40000000 != 0,
+            .lower_sloped = self.scene.sectors[sector].flags.sloped_floor,
         };
     }
 
@@ -614,41 +615,34 @@ pub const Frame = struct {
         sector: usize,
         wall: level_module.Wall,
         p: projection.ProjectedWall,
-        flags: u32,
-        part: u32,
+        pass: scene_module.WallParts,
+        drawn: scene_module.WallParts,
     ) !void {
         const primary: usize = @intCast(wall.adjoin);
-        const neighbor: usize = if (flags == 12) @intCast(wall.dadjoin) else primary;
+        const neighbor: usize = if (pass.lower_opening) @intCast(wall.dadjoin) else primary;
         const neighbor_flags = self.scene.sectors[neighbor].flags;
         const dispatch_flags = self.scene.sectors[primary].flags;
         var surface = try self.surfaces(sector, p);
 
-        if (flags == 4) {
+        if (pass.double_adjoin and !pass.lower_opening) {
             surface.lower1 = try self.height(primary, false, p, false, false);
             surface.lower2 = try self.height(primary, false, p, true, false);
-        } else if (flags == 12) {
+        } else if (pass.lower_opening) {
             surface.upper1 = try self.height(primary, false, p, false, false);
             surface.upper2 = try self.height(primary, false, p, true, false);
         }
 
-        var chosen: ?walls.AdjoinPart = switch (part) {
-            0 => null,
-            1 => .upper,
-            2 => .lower,
-            3 => .both,
-            else => unreachable,
-        };
-
-        if (chosen == .upper and dispatch_flags & 4 != 0) chosen = null;
-
-        if (chosen == .lower and dispatch_flags & 8 != 0) chosen = null;
-
-        if (chosen == .both) {
-            chosen = if (dispatch_flags & 4 != 0)
-                (if (dispatch_flags & 8 != 0) null else .lower)
-            else
-                (if (dispatch_flags & 8 != 0) .upper else .both);
-        }
+        // Where the sky carries on into the neighbour, that part isn't drawn.
+        const top = drawn.top and !dispatch_flags.sky_ceiling_adjoin;
+        const bottom = drawn.bottom and !dispatch_flags.sky_floor_adjoin;
+        const chosen: ?walls.AdjoinPart = if (top and bottom)
+            .both
+        else if (top)
+            .upper
+        else if (bottom)
+            .lower
+        else
+            null;
 
         const endpoints = walls.AdjoinEndpoints{
             .surfaces = surface,
@@ -656,7 +650,7 @@ pub const Frame = struct {
             .neighbor_upper2 = try self.height(neighbor, true, p, true, false),
             .neighbor_lower1 = try self.height(neighbor, false, p, false, chosen == null),
             .neighbor_lower2 = try self.height(neighbor, false, p, true, false),
-            .neighbor_upper_sloped = self.scene.sectors[if (chosen == .both) primary else neighbor].flags & 0x80000000 != 0,
+            .neighbor_upper_sloped = self.scene.sectors[if (chosen == .both) primary else neighbor].flags.sloped_ceiling,
             .sector_flags = self.scene.sectors[sector].flags,
             .neighbor_flags = neighbor_flags,
         };
@@ -668,9 +662,9 @@ pub const Frame = struct {
             wall,
             p,
             endpoints,
-            flags,
+            pass,
             selected,
-        ) else try walls.drawOpen(ctx, portals, sector, p, endpoints, flags);
+        ) else try walls.drawOpen(ctx, portals, sector, p, endpoints, pass);
     }
 };
 

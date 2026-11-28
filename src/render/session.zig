@@ -8,6 +8,8 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
+const GameType = @import("../game_type.zig").GameType;
 const item = @import("../assets/item.zig");
 const lab = @import("../assets/lab.zig");
 const level_module = @import("../assets/level.zig");
@@ -79,6 +81,8 @@ const session_queues = @import("session_queues.zig");
 const texture_animation = @import("texture_animation.zig");
 const weapon_render = @import("weapon.zig");
 const weapon_pose = @import("weapon_pose.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 comptime {
     // Each user message becomes one effect of the frame.
@@ -121,7 +125,7 @@ pub const Session = struct {
     damage_flash: damage_flash.State,
     pending_player_death: ?i32,
     campaign_completion_requested: bool = false,
-    player_bind_flags: u32 = 0,
+    player_bind_flags: inventory_module.LevelRules = .{},
     death_restart_requested: bool = false,
     death_restart: campaign.DeathRestart = .{},
     inventory: inventory_module.Inventory,
@@ -202,7 +206,7 @@ pub const Session = struct {
     router: *network_router.Router,
     server: *network_server.Server,
     database: *network_database.Database,
-    game_type: u32,
+    game_type: GameType,
     mode: u32,
     map_actor_ids: []u32,
     player_actor: object_render.Actor,
@@ -223,8 +227,9 @@ pub const Session = struct {
     loaded_actor_sectors: []bool,
     costumes: std.StringHashMap(*nwx.Costume),
     models: std.StringHashMap(*model_asset.Model),
-    difficulty_mask: u32,
-    object_mode_mask: u32,
+    difficulty: campaign.Difficulty,
+    /// Objects that take part in this game have one of these.
+    object_mode_mask: level_module.ObjectAvailability,
     object_option0: bool,
     level_name: []const u8,
     system_archive: lab.Archive,
@@ -400,7 +405,7 @@ pub const Session = struct {
             result.pending_sound_ledgers[self.inherited_sound_ledgers.len] = try self.sound_ledger.clone(a);
         }
 
-        result.inventory.player_flags &= ~@as(u32, 0x20000000);
+        result.inventory.player_flags.lamp_on = false;
         result.inventory.sheriff_active = false;
         result.inventory.sheriff_visible = false;
         result.inventory.sheriff_due = null;
@@ -448,7 +453,7 @@ pub const Session = struct {
         startup: *campaign.Startup,
         now: u32,
     ) !*Session {
-        if (self.game_type == 4 or self.game_type == 5) return error.NetworkRespawnNotPorted;
+        if (self.game_type.isNetwork()) return error.NetworkRespawnNotPorted;
 
         const request = startup.selected_level orelse return error.MissingRestartLevel;
         if (!std.ascii.eqlIgnoreCase(
@@ -694,7 +699,7 @@ pub const Session = struct {
     }
 
     pub fn registerSound(self: *Session, name: []const u8, priority: u8, now: u32) !void {
-        try self.sound_ledger.append(self.arena.allocator(), name, priority, now, 0);
+        try self.sound_ledger.append(self.arena.allocator(), name, priority, now, .{});
     }
 
     pub fn releaseSound(self: *Session, name: []const u8) void {
@@ -922,7 +927,7 @@ pub const Session = struct {
             &self.scene,
             self.animation_time,
             incoming_ids[0..incoming_count],
-            self.difficulty_mask >> 8,
+            self.difficulty.set(),
         );
 
         try self.drainDatabase(&animation_effects);
@@ -1070,24 +1075,25 @@ pub const Session = struct {
 
         if (logic) self.player.dead = !alive;
 
-        if (logic and !alive and self.player.flags & 4 != 0 and self.player.flags & 0x10000000 == 0) {
+        if (logic and !alive and self.player.flags.on_ground and !self.player.flags.dead) {
             self.lamp_state.hardOff();
 
-            self.player.flags = (self.player.flags | 0x10000000) & ~@as(u32, 0x20000000);
+            self.player.flags.dead = true;
+            self.player.flags.lamp_on = false;
             self.player.head_bob = 0;
             self.inventory.player_flags = self.player.flags;
             self.inventory.selected = 0;
             self.inventory.selected_weapon = 0;
 
-            if (self.game_type == 4 or self.game_type == 5)
+            if (self.game_type.isNetwork())
                 try network_combat.killPlayer(self, self.animation_time, &effects, &shots)
             else
                 try self.inventory.releaseAllSounds();
         }
 
         if (logic and self.death_restart.input(
-            !alive and self.player.flags & 4 != 0,
-            packet.get(.fire).flags & player_input.pressed != 0,
+            !alive and self.player.flags.on_ground,
+            packet.get(.fire).flags.pressed,
             self.animation_time,
         )) self.death_restart_requested = true;
 
@@ -1096,7 +1102,7 @@ pub const Session = struct {
         if (self.pending_player_death) |message| {
             try effects.append(.{ .message = .{ .index = message, .routed = true } });
             try effects.append(.{
-                .sound = .{ .basename = "riflout.wav", .priority = 32, .volume = 50, .flags = 4 },
+                .sound = .{ .basename = "riflout.wav", .priority = 32, .volume = 50, .flags = .default },
             });
         }
 
@@ -1114,7 +1120,7 @@ pub const Session = struct {
                             .basename = basename,
                             .priority = 0x40,
                             .volume = 0x7f,
-                            .flags = 4,
+                            .flags = .default,
                         },
                     });
 
@@ -1156,7 +1162,7 @@ pub const Session = struct {
         bodies.runtime = &runtime;
         bodies.allow_pickups = alive;
 
-        if (alive and packet.get(.drop).flags & player_input.pressed != 0) {
+        if (alive and packet.get(.drop).flags.pressed) {
             try self.dropSelected(&effects, &shots);
 
             runtime.pickups = self.pickup_slots;
@@ -1169,7 +1175,7 @@ pub const Session = struct {
 
         if (alive) try self.activatePlayer(packet, bodies, &runtime);
 
-        if (alive and seconds != 0 and packet.get(.lamp).flags & player_input.pressed != 0)
+        if (alive and seconds != 0 and packet.get(.lamp).flags.pressed)
             try self.lamp_state.toggle(&self.inventory, &self.lamp_config, &effects);
 
         if (alive) {
@@ -1226,7 +1232,7 @@ pub const Session = struct {
                 &player_audio_context,
             );
 
-            if (self.player.flags & 0x8000 != 0) self.lamp_state.hardOff();
+            if (self.player.flags.underwater) self.lamp_state.hardOff();
 
             self.inventory.player_flags = self.player.flags;
             self.pending_player_death = try player_damage.applyMovementWithEnvironment(
@@ -1248,7 +1254,7 @@ pub const Session = struct {
                 },
             );
 
-            if (self.game_type == 4 or self.game_type == 5) if (self.pending_player_death) |text| {
+            if (self.game_type.isNetwork()) if (self.pending_player_death) |text| {
                 self.pending_player_death = null;
                 try network_combat.deathTexts(
                     self,
@@ -1332,7 +1338,7 @@ pub const Session = struct {
                 .textures = self.textures,
                 .world = &geometry,
                 .inventory_ids = ids[0..id_count],
-                .game_mode_mask = self.difficulty_mask >> 8,
+                .game_mode_mask = self.difficulty.set(),
             },
         );
 
@@ -1406,7 +1412,7 @@ pub const Session = struct {
         shots: *weapon_module.Shots,
         ready: bool,
     ) weapon_module.Context {
-        var runtime = enemy_session.scriptContext(self, effects, 0x10);
+        var runtime = enemy_session.scriptContext(self, effects, .{ .player = true });
         runtime.bubble_host = .{ .context = self, .spawn = spawnBubbles };
 
         return .{
@@ -1429,14 +1435,14 @@ pub const Session = struct {
             .now = self.animation_time,
             .ready = ready,
             .angles = &self.angles,
-            .underwater = self.scene.sectors[self.player.sector].flags & 0x80 != 0,
+            .underwater = self.scene.sectors[self.player.sector].flags.underwater,
             .bubble_context = runtime,
             .candidates = self.aim_candidates[0..self.aim_count],
             .player_choreography = .{
                 .context = self,
                 .table = self.player_choreographies,
                 .animation = &self.player_animation,
-                .has_actor = (self.game_type != 4 and self.game_type != 5) or self.network_player_bound,
+                .has_actor = !self.game_type.isNetwork() or self.network_player_bound,
                 .set = setWeaponPlayerChoreography,
             },
         };
@@ -1552,7 +1558,7 @@ pub const Session = struct {
 
             try self.castEnemyEffects(allocator, effects);
 
-            if (pending.target == shooting.local_player and (self.game_type == 4 or self.game_type == 5)) {
+            if (pending.target == shooting.local_player and self.game_type.isNetwork()) {
                 try network_combat.localShot(self, pending);
                 continue;
             }
@@ -1585,7 +1591,7 @@ pub const Session = struct {
                 if (pending.sender) |source| try enqueueNativeActorMessage(
                     self,
                     source,
-                    if (self.inventory.health <= 0) 0x7e3 else 0x7e4,
+                    if (self.inventory.health <= 0) .hit_killed else .hit_survived,
                 );
 
                 continue;
@@ -1635,7 +1641,7 @@ pub const Session = struct {
     }
 
     pub fn enqueueActorActivation(host: *anyopaque, source: usize) !void {
-        return enqueueNativeActorMessage(host, source, 0x7d3);
+        return enqueueNativeActorMessage(host, source, .activate);
     }
 
     pub fn receiveActorContact(host: *anyopaque, source: usize) anyerror!void {
@@ -1664,7 +1670,7 @@ pub const Session = struct {
         self.syncActor(source);
     }
 
-    pub fn enqueueHitResult(host: *anyopaque, receiver: ?enemy.TargetId, code: u32) !void {
+    pub fn enqueueHitResult(host: *anyopaque, receiver: ?enemy.TargetId, code: MessageCode) !void {
         const target = receiver orelse return;
 
         return enqueueNativeActorMessage(host, switch (target) {
@@ -1673,7 +1679,7 @@ pub const Session = struct {
         }, code);
     }
 
-    pub fn enqueueNativeActorMessage(host: *anyopaque, source: usize, code: u32) !void {
+    pub fn enqueueNativeActorMessage(host: *anyopaque, source: usize, code: MessageCode) !void {
         const self: *Session = @ptrCast(@alignCast(host));
         try self.actor_messages.append(.{
             .target = source,
@@ -1717,7 +1723,7 @@ pub const Session = struct {
     }
 
     pub fn revive(self: *Session, now: u32) !void {
-        if (self.game_type != 4 and self.game_type != 5) return error.NotANetworkGame;
+        if (!self.game_type.isNetwork()) return error.NotANetworkGame;
         if (self.mode == 2) return error.TagPlayerNotPorted;
         if (self.stand_in or !self.network_player_bound) return error.NoNetworkPlayer;
         if (self.player_wax.len >= 0x20) return error.PlayerWaxTooLong;
@@ -1742,7 +1748,7 @@ pub const Session = struct {
             network_message.addressWord(network_message.Queue.server, @truncate(router.own_client)),
         );
 
-        _ = try router.post(0x100800, 0x3f6, bytes);
+        _ = try router.post(0x100800, .{ .code = 0x3f6 }, bytes);
 
         if (self.sound_ledger.audio) |audio| audio.stopAll();
 
@@ -1785,7 +1791,7 @@ pub const Session = struct {
 
             network_message.set(&bytes, network_message.reply_offset, number);
 
-            _ = try router.post(0, 0x3ff | 0x80000000, &bytes);
+            _ = try router.post(0, .{ .code = 0x3ff, .must_arrive = true }, &bytes);
         }
 
         self.player_number = 0;
@@ -1821,8 +1827,8 @@ pub const Session = struct {
             .yaw = self.player.yaw,
             .pitch = self.player.pitch,
             .roll = (try initial.PlayerEye.actorAngles(spawn))[2],
-            .flags = 0x8000006f,
-            .secondary_flags = 0x90,
+            .flags = object_render.ActorFlags.new_player,
+            .secondary_flags = .{ .player = true, .takes_hits = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = self.player.body_height,
@@ -1837,7 +1843,7 @@ pub const Session = struct {
         self.player_actor.birth_order = logic_id;
         self.next_actor_order = self.next_actor_id + 1;
         self.inventory.health = 10;
-        self.inventory.player_flags = 4;
+        self.inventory.player_flags = .new;
         self.inventory.statistics = .{};
         self.inventory.clock = now;
 
@@ -1963,11 +1969,11 @@ pub const Session = struct {
 
                 entries[0].count +%= @as(i16, @truncate(owned.count));
                 pickup.entries = entries;
-                pickup.flags |= 1;
+                pickup.flags.dropped = true;
 
                 if (drop.held_back) {
                     pickup.enabled = false;
-                    self.actor_slots[source].?.flags |= 0x80000040;
+                    self.actor_slots[source].?.flags = bits.with(self.actor_slots[source].?.flags, .{ .has_logic = true, .changed = true });
                 }
             }
 
@@ -2032,7 +2038,7 @@ pub const Session = struct {
         @memcpy(visible, visited_sectors);
 
         for (visited_sectors, self.level.sectors, self.scene.sectors) |visited, sector, state| {
-            if (visited and sector.vadjoin >= 0 and state.flags & 0x80 == 0) visible[
+            if (visited and sector.vadjoin >= 0 and !state.flags.underwater) visible[
                 @intCast(
                     sector.vadjoin,
                 )
@@ -2054,7 +2060,7 @@ pub const Session = struct {
 
             if (!self.acceptObject(
                 object,
-            ) or object.flags[0] & 1 != 0 or self.startMarker(object.name)) continue;
+            ) or object.flags.sound_only or self.startMarker(object.name)) continue;
 
             const sector = self.level.sectorIndex(object.sector_id) orelse {
                 std.log.warn(
@@ -2113,7 +2119,7 @@ pub const Session = struct {
                     &self.level,
                     &self.objects,
                     &.{ self.object_archive, self.system_archive },
-                    self.difficulty_mask,
+                    self.difficulty,
                 );
 
                 const sites = self.sanchez_sites.?;
@@ -2154,7 +2160,7 @@ pub const Session = struct {
             const uses_model = if (definition_ptr) |value|
                 value.function.len != 0 and std.ascii.endsWithIgnoreCase(value.animation, ".3DO")
             else
-                object.flags[0] & 8 != 0;
+                object.flags.model;
 
             if (uses_model) {
                 const animation = if (definition_ptr) |value| value.animation else try std.fmt.allocPrint(a, "{s}.3DO", .{std.fs.path.stem(object.name)});
@@ -2184,7 +2190,7 @@ pub const Session = struct {
                     sector,
                     definition_ptr,
                     model,
-                    self.difficulty_mask >> 8,
+                    self.difficulty,
                     self.game_type,
                 );
 
@@ -2195,7 +2201,7 @@ pub const Session = struct {
                 slot.*.?.source_index = source_index;
                 slot.*.?.sector_link_order = source_index + 1;
 
-                if (definition_ptr != null and (self.game_type == 4 or self.game_type == 5)) slot.*.?.network_item = object.name;
+                if (definition_ptr != null and self.game_type.isNetwork()) slot.*.?.network_item = object.name;
 
                 self.pickup_slots[source_index] = constructed.pickup;
 
@@ -2255,19 +2261,19 @@ pub const Session = struct {
             slot.*.?.source_index = source_index;
             slot.*.?.sector_link_order = source_index + 1;
 
-            if (definition_ptr != null and (self.game_type == 4 or self.game_type == 5)) slot.*.?.network_item = object.name;
+            if (definition_ptr != null and self.game_type.isNetwork()) slot.*.?.network_item = object.name;
 
             if (definition_ptr) |value| {
                 slot.*.?.logic_name = object_state.nativeName(value.function);
 
                 switch (try object_state.classify(value)) {
-                    .ground, .instant => self.pickup_slots[source_index] = try inventory_module.Pickup.parse(a, &.{ self.object_archive, self.weapon_archive, self.system_archive }, value, self.difficulty_mask >> 8, self.game_type),
+                    .ground, .instant => self.pickup_slots[source_index] = try inventory_module.Pickup.parse(a, &.{ self.object_archive, self.weapon_archive, self.system_archive }, value, self.difficulty, self.game_type),
                     .enemy, .chicken, .civilian, .slim, .sanchez => {
                         self.targets[source_index] = try target_module.Target.load(
                             a,
                             &.{ self.object_archive, self.weapon_archive, self.system_archive },
                             value,
-                            self.difficulty_mask >> 8,
+                            self.difficulty,
                         );
 
                         if (self.targets[source_index].?.native != .civilian and self.targets[source_index].?.native != .marshal) self.enemy_shared.total_enemies += 1;
@@ -2453,7 +2459,7 @@ pub const Session = struct {
         self.active_effects = null;
         self.enemy_native_effects = .init(&self.queue_storage.enemy_native_effects);
         self.campaign_completion_requested = false;
-        self.player_bind_flags = 0;
+        self.player_bind_flags = .{};
         self.death_restart_requested = false;
         self.death_restart = .{};
         self.actor_messages = .init(&self.queue_storage.actor_messages);
@@ -2525,7 +2531,7 @@ pub const Session = struct {
 
         try world.Workspace.checkLevel(&self.level);
 
-        if (self.game_type == 4 or self.game_type == 5) {
+        if (self.game_type.isNetwork()) {
             const item_path = try std.fmt.allocPrint(a, "{s}.itm", .{request.name});
             const item_bytes = try geometry.find(item_path, 0x4954454d);
             if (item_bytes.len < 8) return error.TruncatedLevelItem;
@@ -2533,7 +2539,7 @@ pub const Session = struct {
             const item_word = std.mem.readInt(u32, item_bytes[4..8], .little);
             const checksum = self.level.token_checksum ^ item_word;
 
-            if (self.game_type == 5) {
+            if (self.game_type == .hosting) {
                 self.server.record.parameter = checksum;
                 self.server.record.checksum = checksum;
             } else if (self.database.record.parameter != 0 and checksum != self.database.record.parameter) {
@@ -2541,7 +2547,7 @@ pub const Session = struct {
             }
         }
 
-        const loads_objects = self.game_type != 4;
+        const loads_objects = self.game_type != .joined;
         self.objects = if (loads_objects)
             try level_module.Objects.parse(
                 a,
@@ -2550,7 +2556,7 @@ pub const Session = struct {
         else
             .{ .arena = std.heap.ArenaAllocator.init(a), .name = "", .entries = &.{} };
 
-        const network = self.game_type == 4 or self.game_type == 5;
+        const network = self.game_type.isNetwork();
 
         if (network and loads_objects and !restoring) try self.postStartRecords(a, startup);
 
@@ -2570,21 +2576,12 @@ pub const Session = struct {
 
         self.angles = camera.Angles.init();
         self.scene = try scene_module.Scene.init(a, &self.level, &self.angles);
-        self.difficulty_mask = @intFromEnum(startup.difficulty) << 8;
+        self.difficulty = startup.difficulty;
 
-        const mode_masks = [_]u32{
-            0,
-            0x800000,
-            0x1000000,
-            0x2000000,
-            0x4000000,
-            0x8000000,
-            0x400000,
+        self.object_mode_mask = .{
+            .modes = try level_module.GameModes.forMode(self.mode),
+            .difficulties = self.difficulty.set(),
         };
-
-        if (self.mode >= mode_masks.len) return error.InvalidMultiplayerMode;
-
-        self.object_mode_mask = self.difficulty_mask | mode_masks[self.mode];
         self.object_option0 = self.server.configuration.options[0];
         self.map_actor_ids = try a.alloc(u32, self.objects.entries.len);
 
@@ -2595,7 +2592,7 @@ pub const Session = struct {
         if (!restoring) for (self.objects.entries, 0..) |object, source| {
             if (!self.acceptObject(
                 object,
-            ) or object.flags[0] & 1 != 0 or self.level.sectorIndex(
+            ) or object.flags.sound_only or self.level.sectorIndex(
                 object.sector_id,
             ) == null) continue;
 
@@ -2626,7 +2623,7 @@ pub const Session = struct {
                     "{s}.{s}",
                     .{
                         std.fs.path.stem(object.name),
-                        if (object.flags[0] & 8 != 0) @as([]const u8, "3DO") else "NWX",
+                        if (object.flags.model) @as([]const u8, "3DO") else "NWX",
                     },
                 );
 
@@ -2654,7 +2651,7 @@ pub const Session = struct {
         @memset(self.removed_actors, restoring);
 
         if (!restoring) for (self.objects.entries, 0..) |object, source| {
-            if (!self.acceptObject(object) or object.flags[0] & 1 != 0) continue;
+            if (!self.acceptObject(object) or object.flags.sound_only) continue;
 
             const sector = self.level.sectorIndex(object.sector_id) orelse continue;
             const name = try std.fmt.allocPrint(a, "{s}.ITM", .{std.fs.path.stem(object.name)});
@@ -2706,8 +2703,8 @@ pub const Session = struct {
             .yaw = self.player.yaw,
             .pitch = self.player.pitch,
             .roll = (try initial.PlayerEye.actorAngles(self.spawn))[2],
-            .flags = 0x8000006f,
-            .secondary_flags = 0x90,
+            .flags = object_render.ActorFlags.new_player,
+            .secondary_flags = .{ .player = true, .takes_hits = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = self.player.body_height,
@@ -2798,7 +2795,7 @@ pub const Session = struct {
 
         if (carry != null) {
             self.inventory.health = 10;
-            self.inventory.player_flags = 4;
+            self.inventory.player_flags = .new;
             self.inventory.statistics = .{};
             self.inventory.clock = now;
 
@@ -2957,7 +2954,7 @@ pub const Session = struct {
             &self.queue_storage.object_selections,
         );
 
-        self.difficulty_mask = @intFromEnum(startup.difficulty) << 8;
+        self.difficulty = startup.difficulty;
         self.actor_capacity = self.objects.entries.len;
         self.actor_storage = try a.alloc(object_render.Actor, self.actor_capacity);
         self.actor_transformed = try a.alloc(level_module.Vec3, self.actor_capacity);
@@ -3072,7 +3069,7 @@ pub const Session = struct {
             self.generators.start(now);
             try object_numbers.level(self, geometry_class_count, map_kinds, now);
 
-            if (self.game_type == 4 or self.game_type == 5) {
+            if (self.game_type.isNetwork()) {
                 self.player_wax = try a.dupe(
                     u8,
                     (try definition.stringValue("PLAYER_WAX")) orelse "james.nwx",
@@ -3099,7 +3096,7 @@ pub const Session = struct {
             };
         }
 
-        if (self.game_type == 4 and !restoring) try network_level.requestObjects(self.router);
+        if (self.game_type == .joined and !restoring) try network_level.requestObjects(self.router);
 
         self.rendered_sector_visits = 0;
 
@@ -3122,7 +3119,7 @@ pub const Session = struct {
     }
 
     fn unbindForLevelClose(self: *Session) !void {
-        if (self.player_bind_flags & 0x80000 != 0) try self.inventory.releaseAllSounds();
+        if (self.player_bind_flags.release_sounds_at_end) try self.inventory.releaseAllSounds();
 
         self.unbindPlayerSounds();
 
@@ -3341,7 +3338,7 @@ pub const Session = struct {
         self.player_animation = @bitCast(@as(i32, value));
         var bytes = network_message.choreography(self.router.own_client, self.player_animation);
         network_message.set(&bytes, network_message.reply_offset, self.player_number);
-        _ = try self.router.post(self.player_number, 0x403, &bytes);
+        _ = try self.router.post(self.player_number, .{ .code = 0x403 }, &bytes);
     }
 
     fn drainDatabase(self: *Session, effects: *inventory_module.Effects) !void {
@@ -3388,11 +3385,11 @@ pub const Session = struct {
                         .basename = "riflout.wav",
                         .priority = 0x40,
                         .volume = 0x7f,
-                        .flags = 4,
+                        .flags = .default,
                     },
                 });
             },
-            .configuration => |bits| self.server.configuration.fromDatabase(bits),
+            .configuration => |options| self.server.configuration.fromDatabase(options),
             .critical => if (self.mode >= 1 and self.mode <= 3) return error.ServerCriticalModeNotPorted,
             .object_request => |asked| try network_actors.answerObjectRequest(self, asked.sender),
             .actor_create => |value| try network_actors.receiveActorCreate(self, value),
@@ -3563,7 +3560,7 @@ pub const Session = struct {
         if (message.target >= self.actor_slots.len or self.removed_actors[message.target]) return;
 
         const actor = self.actor_slots[message.target] orelse return error.MissingScriptActor;
-        if (message.code == 0x66) {
+        if (message.code == .remove) {
             if (self.targets[message.target] == null and actor.logic_name.len != 0) switch (try cmm.resolve(actor.logic_name)) {
                 .object, .ground_object, .instant_ground_object, .ground_sheriff_star, .ground_vanishing_cream, .projectile_dispatch, .explosive_projectile_dispatch => {},
                 else => return error.UnsupportedActorDestructionNative,
@@ -3615,7 +3612,7 @@ pub const Session = struct {
         object_numbers.unlink(self, target.sector orelse return, target.wall, self.animation_time);
     }
 
-    fn dispatchInfObject(host: *anyopaque, id: u32, code: u32) !void {
+    fn dispatchInfObject(host: *anyopaque, id: u32, code: MessageCode) !void {
         const self: *Session = @ptrCast(@alignCast(host));
 
         for (self.objects.entries, 0..) |object, source| {
@@ -3648,7 +3645,7 @@ pub const Session = struct {
             return;
         }
 
-        if (!((code >= 0x7d4 and code <= 0x7de) or code == 0x7e1 or code == 0x7e2)) return error.UnsupportedGeneratorMessage;
+        if (!code.reachesGenerators()) return error.UnsupportedGeneratorMessage;
 
         _ = try generator.message(
             self,
@@ -3680,7 +3677,7 @@ pub const Session = struct {
             allocator,
             &self.level,
             startup.mode,
-            @intFromEnum(startup.difficulty),
+            startup.difficulty,
             self.server.configuration.options[0],
         );
 
@@ -3700,7 +3697,7 @@ pub const Session = struct {
         const starts = try self.objects.playerStarts(
             allocator,
             &self.level,
-            @intFromEnum(startup.difficulty),
+            startup.difficulty,
         );
 
         defer allocator.free(starts);
@@ -3769,7 +3766,7 @@ pub const Session = struct {
         const starts = try self.objects.playerStarts(
             allocator,
             &self.level,
-            @intFromEnum(startup.difficulty),
+            startup.difficulty,
         );
 
         defer allocator.free(starts);
@@ -3785,7 +3782,7 @@ pub const Session = struct {
         runtime: *script_runtime.Context,
     ) !void {
         for ([_]player_input.Slot{ .use, .nudge }) |slot| {
-            if (packet.get(slot).flags & player_input.pressed == 0) continue;
+            if (!packet.get(slot).flags.pressed) continue;
 
             const id: u32 = if (slot == .use) (try self.inventory.useSelected(
                 runtime.effects,
@@ -3815,7 +3812,7 @@ pub const Session = struct {
     }
 
     fn networkMarks(self: *Session) ?inf_geometry.Marks {
-        if (self.game_type != 4 and self.game_type != 5) return null;
+        if (!self.game_type.isNetwork()) return null;
 
         return network_level.marks(self);
     }
@@ -3857,8 +3854,8 @@ pub const Session = struct {
     }
 
     fn acceptObject(self: *const Session, object: level_module.Object) bool {
-        return object.flags[1] & self.object_mode_mask != 0 and
-            (self.mode == 0 or self.object_option0 or object.flags[1] & 0x200000 == 0);
+        return bits.any(object.availability, self.object_mode_mask) and
+            (self.mode == 0 or self.object_option0 or !object.availability.needs_host_option);
     }
 
     fn startMarker(_: *const Session, name: []const u8) bool {
@@ -4073,7 +4070,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try std.testing.expectEqual(@as(u32, 1), startup.engine.game_state);
     try std.testing.expectEqual(@as(u32, 8), startup.engine.scenario);
     try std.testing.expectEqual(
-        @as(?network_router.Player, .{ .code = 'J', .flags = 0x1000090 }),
+        @as(?network_router.Player, .{ .code = 'J', .flags = .{ .player = true, .takes_hits = true, .waiting_for_start = true } }),
         startup.router.clients[1].player,
     );
 
@@ -4114,7 +4111,7 @@ test "Death Match host receives a Dry Gulch start from its server" {
     try std.testing.expect(!session.stand_in);
     try std.testing.expect(session.player.position.y != -10000.0);
     try std.testing.expectEqual(
-        @as(?network_router.Player, .{ .code = 'J', .flags = 0x90 }),
+        @as(?network_router.Player, .{ .code = 'J', .flags = .{ .player = true, .takes_hits = true } }),
         startup.router.clients[1].player,
     );
 
@@ -4440,7 +4437,7 @@ test "bound campaign carry releases Ranch weapons through the retained sound ser
 
     defer fresh.deinit(a);
 
-    try std.testing.expectEqual(@as(u32, 0xc000), fresh.player_bind_flags);
+    try std.testing.expectEqual(inventory_module.LevelRules{ .drop_ammo = true, .drop_weapons = true }, fresh.player_bind_flags);
     try std.testing.expectEqual(@as(usize, 0), fresh.inventory.find("IPISTOL"));
     try std.testing.expectEqual(@as(usize, 0), fresh.inventory.find("IRIFLE"));
     try std.testing.expectEqual(@as(usize, 1), fresh.inventory.selected_weapon);
@@ -4665,7 +4662,7 @@ test "SYS drain skips Train LAST_DOOR's TRIGGER and still admits END_LEVEL" {
 
     defer session.deinit(a);
 
-    try session.inf.postSystem(.{ .code = 0x7d6 });
+    try session.inf.postSystem(.{ .code = .trigger });
     try network_server.requestEndLevel(session.router);
     try session.advance(a, &.{}, 1);
 
@@ -4721,7 +4718,7 @@ test "INF audio captures pre-player message and post-player task listener phases
     session.player.floor_cache = 0;
 
     var packet: player_input.Packet = .{};
-    packet.entries[@intFromEnum(player_input.Slot.nudge)].flags = player_input.pressed;
+    packet.entries[@intFromEnum(player_input.Slot.nudge)].flags = .{ .pressed = true };
     try session.advanceWithAudio(a, &packet, 16, audio);
     session.player.velocity.x = 10;
     const before_player = session.audioListener();
@@ -4886,7 +4883,7 @@ test "queued sounds precede handcar admission and retain their captured listener
     } else return error.MissingOriginalEnemyPlacement;
 
     for (session.actor_slots, 0..) |*slot, source| if (slot.*) |*actor| {
-        if (source != victim) actor.secondary_flags &= ~@as(u32, 0x100);
+        if (source != victim) actor.secondary_flags.enemy = false;
         session.syncActor(source);
     };
 
@@ -5028,7 +5025,7 @@ test "live vertical tasks retain double-mirror wall heights" {
         .kind = .floor_ceiling,
         .speed = 0,
         .value = 0,
-        .runtime_flags = 3,
+        .runtime_flags = .{ .moving = true, .enabled = true },
     }}), .classes = &.{}, .triggers = &.{} };
 
     try session.inf.reserveLists();
@@ -5046,10 +5043,10 @@ test "live vertical tasks retain double-mirror wall heights" {
         session.syncActor(source);
     }
 
-    for (case.wall_flags) |wall| session.scene.sectors[wall.sector].walls[wall.index].flags = wall.flags;
+    for (case.wall_flags) |wall| bits.setWord(&session.scene.sectors[wall.sector].walls[wall.index].flags, wall.flags);
 
     for (case.initial.sectors) |sector| for (sector.walls) |wall| {
-        session.scene.sectors[sector.index].walls[wall.index].runtime_flags = wall.runtime_flags;
+        bits.setWord(&session.scene.sectors[sector.index].walls[wall.index].runtime_flags, wall.runtime_flags);
     };
 
     try std.testing.expectEqual(@as(i32, 643), session.level.sectors[502].walls[0].dadjoin);
@@ -5095,8 +5092,8 @@ test "live vertical tasks retain double-mirror wall heights" {
                     },
                 );
 
-                try std.testing.expectEqual(wall.render_flags, state.render_flags);
-                try std.testing.expectEqual(wall.runtime_flags, state.runtime_flags);
+                try std.testing.expectEqual(wall.render_flags, bits.word(state.render_flags));
+                try std.testing.expectEqual(wall.runtime_flags, bits.word(state.runtime_flags));
             }
         }
 
@@ -5178,7 +5175,7 @@ test "live runtime flag clears survive unrelated light tasks" {
         if (elevator.automatic_door) break elevator;
     } else return error.MissingOriginalAutomaticDoor;
 
-    held.runtime_flags = 0;
+    held.runtime_flags = .{};
 
     var sectors: [4]usize = undefined;
     var count: usize = 0;
@@ -5194,7 +5191,7 @@ test "live runtime flag clears survive unrelated light tasks" {
         owned,
     ), .router = session.router, .elevators = try owned.dupe(inf_module.Elevator, &.{
         held,
-        .{ .sector = sectors[0], .kind = .light, .speed = 8, .value = 10, .runtime_flags = 3 },
+        .{ .sector = sectors[0], .kind = .light, .speed = 8, .value = 10, .runtime_flags = .{ .moving = true, .enabled = true } },
         .{
             .sector = sectors[2],
             .kind = .light,
@@ -5203,8 +5200,8 @@ test "live runtime flag clears survive unrelated light tasks" {
             .next_time = 0xffffffff,
         },
     }), .classes = &.{}, .triggers = try owned.dupe(inf_module.Trigger, &.{
-        .{ .target = .{ .sector = held.sector, .wall = 0 }, .flags = 0x04f00001 },
-        .{ .target = .{ .sector = sectors[3] }, .flags = 0x04f00001 },
+        .{ .target = .{ .sector = held.sector, .wall = 0 }, .flags = .init(.wall) },
+        .{ .target = .{ .sector = sectors[3] }, .flags = .init(.wall) },
     }) };
 
     try session.inf.reserveLists();
@@ -5220,26 +5217,26 @@ test "live runtime flag clears survive unrelated light tasks" {
 
     for (sectors[0..3], fixture.value.initial.ambient) |sector, ambient| {
         session.level.sectors[sector].ambient = ambient;
-        session.scene.sectors[sector].runtime_flags = 0;
+        session.scene.sectors[sector].runtime_flags = .{};
     }
 
-    session.scene.sectors[sectors[3]].runtime_flags = 0;
-    session.scene.sectors[held.sector].walls[0].runtime_flags = 0;
+    session.scene.sectors[sectors[3]].runtime_flags = .{};
+    session.scene.sectors[held.sector].walls[0].runtime_flags = .{};
 
     session.inf.applyScene(&session.level, &session.scene);
     const Check = struct {
         fn state(s: *const Session, owner: usize, lights: [4]usize, expected: State) !void {
             try std.testing.expectEqual(
                 expected.wall,
-                s.scene.sectors[owner].walls[0].runtime_flags,
+                bits.word(s.scene.sectors[owner].walls[0].runtime_flags),
             );
 
             for (lights[0..3], expected.flags, expected.ambient) |sector, flags, ambient| {
-                try std.testing.expectEqual(flags, s.scene.sectors[sector].runtime_flags);
+                try std.testing.expectEqual(flags, bits.word(s.scene.sectors[sector].runtime_flags));
                 try std.testing.expectEqual(ambient, s.level.sectors[sector].ambient);
             }
 
-            try std.testing.expectEqual(expected.trigger, s.scene.sectors[lights[3]].runtime_flags);
+            try std.testing.expectEqual(expected.trigger, bits.word(s.scene.sectors[lights[3]].runtime_flags));
         }
     };
 
@@ -5250,23 +5247,23 @@ test "live runtime flag clears survive unrelated light tasks" {
             .message = .{
                 .value = .{
                     .target = .{ .sector = held.sector, .wall = 0 },
-                    .code = 0x7e0,
+                    .code = .clear_bits,
                     .arg1 = 2,
                     .arg2 = -1,
                 },
-                .entity_mask = 0,
+                .entity_mask = .{},
             },
         });
 
         for (sectors) |sector| try session.inf.pending.append(.{
             .message = .{
-                .value = .{ .target = .{ .sector = sector }, .code = 0x7e0, .arg1 = 2, .arg2 = -1 },
-                .entity_mask = 0,
+                .value = .{ .target = .{ .sector = sector }, .code = .clear_bits, .arg1 = 2, .arg2 = -1 },
+                .entity_mask = .{},
             },
         });
 
         session.inf.elevators[1].speed = sample.speed;
-        session.inf.elevators[1].runtime_flags = if (sample.enabled) 3 else 0;
+        session.inf.elevators[1].runtime_flags = if (sample.enabled) .{ .moving = true, .enabled = true } else .{};
 
         try session.advance(a, &.{}, sample.now - session.animation_time);
         try Check.state(session, held.sector, sectors, sample.after);

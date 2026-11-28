@@ -19,6 +19,8 @@ const network_combat = @import("network_combat.zig");
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const camera = @import("backends/software/camera.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const testing = std.testing;
 
 fn expectHex(op: std.json.ObjectMap, field: []const u8, bytes: []const u8) !void {
@@ -137,7 +139,7 @@ test "fighting between machines matches the reference's messages, texts and poin
             var sent: [message.corpse_capacity]u8 = undefined;
             const bytes = try std.fmt.hexToBytes(&sent, op.get("sent").?.string);
 
-            _ = try router.post(0x100800, 0x3f6, bytes);
+            _ = try router.post(0x100800, .{ .code = 0x3f6 }, bytes);
 
             var server: server_module.Server = .{};
             var users_buffer: server_module.UserMessageBuffer = undefined;
@@ -154,7 +156,7 @@ test "fighting between machines matches the reference's messages, texts and poin
                 &router,
                 .{
                     .now = 5000,
-                    .game_type = 5,
+                    .game_type = .hosting,
                     .mode = 6,
                     .level_loaded = true,
                     .allocator = a,
@@ -187,13 +189,13 @@ test "fighting between machines matches the reference's messages, texts and poin
             const points: i32 = @bitCast(@as(u32, @intCast(op.get("points").?.integer)));
 
             router.clients[1].setName("Player");
-            router.clients[1].player = .{ .code = 'J', .flags = 0x91 };
+            router.clients[1].player = .{ .code = 'J', .flags = .{ .team = 1, .player = true, .takes_hits = true } };
             router.clients[3].setName("Joiner");
             router.clients[3].player = if (op.get(
                 "team",
             ).? == .integer) .{
                 .code = 'J',
-                .flags = 0x90 | @as(u32, @intCast(op.get("team").?.integer)),
+                .flags = .{ .player = true, .takes_hits = true, .team = @intCast(op.get("team").?.integer) },
             } else null;
 
             try network_combat.postFragDelta(&router, mode, client, points);
@@ -212,7 +214,7 @@ test "fighting between machines matches the reference's messages, texts and poin
             try database.applyFragDelta(
                 &router,
                 posted.frag_delta,
-                .{ .now = 0, .game_type = 5, .mode = mode, .game_state = 0 },
+                .{ .now = 0, .game_type = .hosting, .mode = mode, .game_state = 0 },
             );
 
             for (op.get("scores").?.array.items, 0..) |expected, index| {
@@ -248,14 +250,14 @@ test "fighting between machines matches the reference's messages, texts and poin
             router.player_name[0..7].* = "Joiner\x00".*;
 
             const mode: u32 = @intCast(op.get("mode").?.integer);
-            const entity: u32 = @intCast(op.get("entity").?.integer);
+            const entity = bits.from(ActorKind, @intCast(op.get("entity").?.integer));
 
             router.clients[1].setName(op.get("killer_name").?.string);
             router.clients[1].player = if (op.get(
                 "killer_entity",
             ).? == .integer) .{
                 .code = 'J',
-                .flags = @intCast(op.get("killer_entity").?.integer),
+                .flags = bits.from(ActorKind, @intCast(op.get("killer_entity").?.integer)),
             } else null;
 
             router.clients[3].setName("Joiner");
@@ -287,9 +289,9 @@ test "fighting between machines matches the reference's messages, texts and poin
 
                 player.radius = 2;
                 player.eye_height = 5.5;
-                player.flags = 4;
+                player.flags = .new;
 
-                var inventory = inventory_module.Inventory{ .health = 10, .player_flags = 4 };
+                var inventory = inventory_module.Inventory{ .health = 10, .player_flags = .new };
                 var flash: flash_module.State = .{};
                 var audio_state: player_audio.State = .{};
                 var audio = player_audio.Context{

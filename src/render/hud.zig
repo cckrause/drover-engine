@@ -85,7 +85,8 @@ pub const Node = struct {
         self.playback.next_frame = 0;
         self.playback.frame = 0;
         self.playback.direction = costume.choreographies[sequence].directions -% 1;
-        self.playback.flags = (self.playback.flags | 5) & ~@as(u32, 2);
+
+        self.playback.flags.start();
 
         try self.playback.advance(costume, 1, now);
     }
@@ -321,17 +322,16 @@ pub const Hud = struct {
             x -= heart_step;
         }
 
+        const half_heart_width = @divTrunc(
+            heart_width,
+            2,
+        );
+
         result.dead_heart.rect.x = 0x22e;
         result.dead_heart.rect.y = result.status_height;
         result.health_group.rect = .{
-            .x = result.hearts[9].rect.x - @divTrunc(heart_width, 2) - 1,
-            .width = @divTrunc(
-                heart_width,
-                2,
-            ) - (result.hearts[9].rect.x - @divTrunc(
-                heart_width,
-                2,
-            ) - 1) + result.hearts[0].rect.x + 2,
+            .x = result.hearts[9].rect.x - half_heart_width - 1,
+            .width = -(result.hearts[9].rect.x - half_heart_width - 1) + result.hearts[0].rect.x + 2,
             .height = result.status_height,
         };
 
@@ -358,9 +358,11 @@ pub const Hud = struct {
             x -= digit_step;
         }
 
+        const half_digit_width = @divTrunc(digit_width, 2);
+
         result.digits_group.rect = .{
-            .x = result.digits[2].rect.x - digit_width,
-            .width = result.digits[0].rect.x - (result.digits[2].rect.x - digit_width) + digit_width + 1,
+            .x = result.digits[2].rect.x - half_digit_width,
+            .width = result.digits[0].rect.x - (result.digits[2].rect.x - half_digit_width) + half_digit_width + 1,
             .height = result.status_height,
         };
 
@@ -453,7 +455,7 @@ pub const Hud = struct {
                         .basename = "cashopen.wav",
                         .priority = 64,
                         .volume = 127,
-                        .flags = 4,
+                        .flags = .default,
                     },
                 };
             }
@@ -467,7 +469,7 @@ pub const Hud = struct {
                         .basename = "cashcls.wav",
                         .priority = 64,
                         .volume = 127,
-                        .flags = 4,
+                        .flags = .default,
                     },
                 };
             }
@@ -475,7 +477,7 @@ pub const Hud = struct {
             self.health_group.show(150);
         }
 
-        if (inventory.player_flags & 0x10000000 == 0) {
+        if (!inventory.player_flags.dead) {
             if (@as(u32, @bitCast(breath)) & 0x7fffffff == 0) {
                 self.air_gauge.hide(0);
                 self.stamina_gauge.show(0);
@@ -859,7 +861,7 @@ pub const Hud = struct {
             }
         }
 
-        const fuel = if (inventory.player_flags & 0x20000000 != 0) classItem(
+        const fuel = if (inventory.player_flags.lamp_on) classItem(
             inventory,
             0x4655454c,
         ) else null;
@@ -948,7 +950,7 @@ pub fn blitMapped(
 
     if (cell.width == 0 or cell.height == 0) return;
 
-    if (cell.flags & 1 != 0) return error.UnsupportedHudColumnCell;
+    if (cell.flags.columns) return error.UnsupportedHudColumnCell;
 
     const source_width: i32 = @intCast(cell.width);
     const source_height: i32 = @intCast(cell.height);
@@ -960,7 +962,7 @@ pub fn blitMapped(
 
     if (rect.width < 0 or rect.height < 0) return error.InvalidHudDimensions;
 
-    const mirror = part.flags & 0x100 != 0;
+    const mirror = part.flags.mirrored;
 
     rect.x +%= @divTrunc(
         (if (mirror) 1 -% part.raw_x -% source_width else part.raw_x) *% rect.width,
@@ -1006,7 +1008,7 @@ pub fn blitMapped(
             const color = cell.pixels[@intCast(sx * source_height + source_height - 1 - sy)];
             const target = &pixels[@intCast(y * width + x)];
 
-            if (blend != null and cell.flags & 0x20 != 0) {
+            if (blend != null and cell.flags.translucent) {
                 if (color != 0) {
                     if (color < 16) target.* = blend.?[
                         @as(
@@ -1015,7 +1017,7 @@ pub fn blitMapped(
                         ) * 256 + target.*
                     ] else target.* = if (translation) |table| table[color] else color;
                 }
-            } else if (cell.flags & 0x10 == 0) {
+            } else if (!cell.flags.transparent) {
                 target.* = color;
             } else if (color != 0) target.* = if (translation) |table| table[color] else color;
 

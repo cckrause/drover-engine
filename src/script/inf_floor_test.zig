@@ -13,6 +13,7 @@ const Actor = @import("../render/objects.zig").Actor;
 const actor_links = @import("../render/actor_links.zig");
 const inf = @import("inf.zig");
 const geometry = @import("inf_geometry.zig");
+const bits = @import("../util/bits.zig");
 
 const State = struct {
     sectors: []const struct {
@@ -65,8 +66,8 @@ fn expectState(
                 },
             );
 
-            try std.testing.expectEqual(wall.render_flags, state.render_flags);
-            try std.testing.expectEqual(wall.runtime_flags, state.runtime_flags);
+            try std.testing.expectEqual(wall.render_flags, bits.word(state.render_flags));
+            try std.testing.expectEqual(wall.runtime_flags, bits.word(state.runtime_flags));
         }
     }
 
@@ -158,12 +159,12 @@ fn verifyVerticalFixture(
         defer scene.deinit();
 
         for (case.wall_flags) |wall| {
-            level.sectors[wall.sector].walls[wall.index].flags = wall.flags;
-            scene.sectors[wall.sector].walls[wall.index].flags = wall.flags;
+            bits.setWord(&level.sectors[wall.sector].walls[wall.index].flags, wall.flags);
+            bits.setWord(&scene.sectors[wall.sector].walls[wall.index].flags, wall.flags);
         }
 
         for (case.initial.sectors) |sector| for (sector.walls) |wall| {
-            scene.sectors[sector.index].walls[wall.index].runtime_flags = wall.runtime_flags;
+            bits.setWord(&scene.sectors[sector.index].walls[wall.index].runtime_flags, wall.runtime_flags);
         };
 
         var actors = try a.alloc(Actor, case.actors.len);
@@ -181,7 +182,7 @@ fn verifyVerticalFixture(
             actor.* = undefined;
             actor.source_index = source;
             actor.sector = definition.sector;
-            actor.flags = definition.flags;
+            bits.setWord(&actor.flags, definition.flags);
             actor.position = .{ .x = 0, .y = @bitCast(definition.y_bits), .z = 0 };
             slots[source] = actor.*;
             source_to_entry[source] = index;
@@ -216,7 +217,7 @@ fn verifyVerticalFixture(
             .kind = @enumFromInt(case.kind),
             .speed = 0,
             .value = 0,
-            .runtime_flags = 3,
+            .runtime_flags = .{ .moving = true, .enabled = true },
         }});
 
         for (case.slaves) |slave| try runtime.elevators[0].slaves.append(
@@ -424,7 +425,7 @@ test "plane speed reads live heights and newest matching receiver" {
                 .kind = @enumFromInt(definition.kind),
                 .speed = definition.speed,
                 .value = definition.value,
-                .runtime_flags = if (definition.active) 1 else 0,
+                .runtime_flags = .{ .moving = definition.active },
                 .deleted = definition.deleted,
             };
 

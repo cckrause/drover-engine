@@ -161,7 +161,7 @@ pub fn copy(frame: san.Frame, pixels: []u8) !void {
         .stride = 640,
         .height = 480,
         .clip = .{ .width = 640, .height = 480 },
-    }, 1);
+    }, .{ .fit = true });
 }
 
 pub fn renderFrames(

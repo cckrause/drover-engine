@@ -6,6 +6,9 @@
 //! message within the same call.
 
 const std = @import("std");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
+const bits = @import("../util/bits.zig");
+const Events = @import("inf_flags.zig").Events;
 
 const inventory = @import("../player/inventory.zig");
 const Actor = @import("../render/objects.zig").Actor;
@@ -27,7 +30,7 @@ pub const Context = struct {
     inf: ?*inf_module.Runtime = null,
     level: ?*level_module.Level = null,
     collision_diameter: ?*f32 = null,
-    entity_mask: u32 = 0x10,
+    entity_mask: ActorKind = .{ .player = true },
     sector_messages: bool = true,
     sector_relinked: ?*bool = null,
     links: ?*actor_links.Links = null,
@@ -79,7 +82,7 @@ pub const Context = struct {
             .mask = event.mask,
             .object_id = event.object_id,
             .entity_mask = self.entity_mask,
-            .from_player = self.entity_mask & 0x10 != 0 and event.wall == null and event.mask & 0x30 != 0,
+            .from_player = self.entity_mask.player and event.wall == null and bits.any(event.mask, Events.nudge),
             .now_ms = self.now_ms,
         });
     }
@@ -94,7 +97,7 @@ pub const Context = struct {
             level,
             sector,
             wall,
-            1,
+            .{ .cross_front = true },
             0,
             0,
         )) |event| if (event) |value| try self.infEvent(value);
@@ -107,7 +110,7 @@ pub const Context = struct {
 
         if (self.links) |links| if (self.linked_actor) |source| links.remove(source);
 
-        if (self.sector_messages) try self.infEvent(.{ .sector = old, .mask = 8 });
+        if (self.sector_messages) try self.infEvent(.{ .sector = old, .mask = .{ .leave_sector = true } });
 
         if (self.links) |links| if (self.linked_actor) |source| links.move(source, new);
 
@@ -116,7 +119,7 @@ pub const Context = struct {
             serial.* += 1;
         };
 
-        if (self.sector_messages) try self.infEvent(.{ .sector = new, .mask = 4 });
+        if (self.sector_messages) try self.infEvent(.{ .sector = new, .mask = .{ .enter_sector = true } });
 
         if (self.palette_host) |host| try host.enter(host.context, new);
     }

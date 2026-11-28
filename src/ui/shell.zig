@@ -8,12 +8,13 @@
 //! and input state. A campaign with no story is an error, not a default.
 
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
 const menu = @import("menu.zig");
 
-pub const MouseState = struct { x: i32 = 0, y: i32 = 0, buttons: u32 = 0 };
+pub const MouseState = struct { x: i32 = 0, y: i32 = 0, buttons: MouseButtons = .{} };
 
 pub const Shell = struct {
     screen: menu.Menu,
@@ -204,7 +205,7 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
     try shell.accept(
         allocator,
         archive,
-        shell.screen.takeResult(101, 0).?,
+        shell.screen.takeResult(101, .{}).?,
         101,
         .{ .x = -10, .y = 500 },
     );
@@ -215,22 +216,22 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
     try std.testing.expectEqual(@as(i32, 479), shell.screen.mouse_y);
     try std.testing.expect(shell.screen.mouse_suppressed);
 
-    shell.screen.mouseState(100, 170, 0, 10);
-    shell.screen.mouseState(100, 350, 1, 11);
+    shell.screen.mouseState(100, 170, .{}, 10);
+    shell.screen.mouseState(100, 350, .{ .left = true }, 11);
 
     try std.testing.expectEqual(@as(?i32, 0), shell.screen.pending_result);
     try std.testing.expectEqual(@as(i32, 2), shell.screen.selected);
 
     shell.screen.presented(20);
-    shell.screen.mouseState(500, 270, 0, 70);
+    shell.screen.mouseState(500, 270, .{}, 70);
 
-    try std.testing.expectEqual(@as(?i32, null), shell.screen.takeResult(119, 0));
-    try std.testing.expectEqual(@as(?i32, null), shell.screen.takeResult(120, 1));
+    try std.testing.expectEqual(@as(?i32, null), shell.screen.takeResult(119, .{}));
+    try std.testing.expectEqual(@as(?i32, null), shell.screen.takeResult(120, .{ .left = true }));
 
-    const clicked = shell.screen.takeResult(120, 0).?;
+    const clicked = shell.screen.takeResult(120, .{}).?;
     try shell.accept(allocator, archive, clicked, 120, .{ .x = 500, .y = 270 });
     try std.testing.expectEqual(menu.Kind.difficulty, shell.screen.kind);
-    shell.screen.mouseState(500, 270, 0, 121);
+    shell.screen.mouseState(500, 270, .{}, 121);
 
     try std.testing.expectEqual(@as(i32, 0), shell.screen.selected);
     try std.testing.expect(shell.screen.mouse_suppressed);
@@ -240,7 +241,7 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
     try shell.accept(
         allocator,
         archive,
-        shell.screen.takeResult(300, 0).?,
+        shell.screen.takeResult(300, .{}).?,
         300,
         .{ .x = 500, .y = 270 },
     );
@@ -252,14 +253,14 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
     shell.screen.select(0, 400);
     shell.screen.enter();
     shell.screen.presented(400);
-    try shell.accept(allocator, archive, shell.screen.takeResult(500, 0).?, 500, .{});
+    try shell.accept(allocator, archive, shell.screen.takeResult(500, .{}).?, 500, .{});
     shell.screen.tab(true, 510);
 
     try std.testing.expectEqual(@as(i32, 3), shell.screen.selected);
 
     shell.screen.enter();
     shell.screen.presented(520);
-    try shell.accept(allocator, archive, shell.screen.takeResult(620, 0).?, 620, .{});
+    try shell.accept(allocator, archive, shell.screen.takeResult(620, .{}).?, 620, .{});
 
     try std.testing.expectEqual(menu.Kind.main, shell.screen.kind);
     try std.testing.expectEqual(@as(i32, 0), shell.screen.selected);
@@ -270,7 +271,7 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
 
     shell.screen.enter();
     shell.screen.presented(700);
-    try shell.accept(allocator, archive, shell.screen.takeResult(800, 0).?, 800, .{});
+    try shell.accept(allocator, archive, shell.screen.takeResult(800, .{}).?, 800, .{});
 
     try std.testing.expectEqual(@as(i32, 3), shell.screen.selected);
 
@@ -281,7 +282,7 @@ test "CD1 main-game transitions preserve descriptor selection and sample the cur
     shell.screen.presented(820);
 
     try std.testing.expect(shell.startup == null);
-    try shell.accept(allocator, archive, shell.screen.takeResult(920, 0).?, 920, .{});
+    try shell.accept(allocator, archive, shell.screen.takeResult(920, .{}).?, 920, .{});
 
     try std.testing.expectEqual(campaign.Difficulty.ugly, shell.startup.?.difficulty);
     try std.testing.expectEqualStrings("OUTLAWS.rcs", shell.startup.?.request.path());

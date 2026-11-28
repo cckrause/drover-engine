@@ -8,6 +8,8 @@
 //! machine would do.
 
 const std = @import("std");
+const GameType = @import("game_type.zig").GameType;
+const Pose = @import("player/flags.zig").Pose;
 
 const lab = @import("assets/lab.zig");
 const campaign = @import("campaign.zig");
@@ -148,7 +150,7 @@ fn insideSector(level: *const Session, sector: usize, x: f32, z: f32) bool {
 
 fn faceGlass(level: *Session) !Glass {
     for (level.level.sectors, 0..) |sector, sector_index| for (sector.walls, 0..) |wall, wall_index| {
-        if (level.scene.sectors[sector_index].walls[wall_index].flags & 0x4000 == 0 or wall.adjoin < 0) continue;
+        if (!level.scene.sectors[sector_index].walls[wall_index].flags.shatters or wall.adjoin < 0) continue;
 
         const a = sector.vertices[wall.v1];
         const b = sector.vertices[wall.v2];
@@ -364,7 +366,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     } else return error.NoGameRecord;
 
     try testing.expectEqualStrings("GETTING INFO", std.mem.sliceTo(&joiner.loading.text, 0));
-    try testing.expectEqual(@as(u32, 4), joiner.engine.game_type);
+    try testing.expectEqual(GameType.joined, joiner.engine.game_type);
     try testing.expectEqual(@as(u32, 6), joiner.mode);
     try testing.expectEqual(@as(u32, 1), joiner.engine.scenario);
     try testing.expectEqual(@as(u32, 0x37169dc6), joiner.database.record.parameter);
@@ -417,7 +419,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     try testing.expectEqual(@as(u32, 0), host.router.rejected);
     try testing.expectEqual(rejected_before, joiner.router.rejected);
 
-    const stand_in: @import("network/router.zig").Player = .{ .code = 'J', .flags = 0x1000090 };
+    const stand_in: @import("network/router.zig").Player = .{ .code = 'J', .flags = .{ .player = true, .takes_hits = true, .waiting_for_start = true } };
 
     for ([_]*campaign.Startup{ &host, &joiner }) |side| {
         try testing.expectEqual(@as(usize, 2), side.database.player_count);
@@ -469,9 +471,9 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     var walls: usize = 0;
 
     for (host_level.scene.sectors, join_level.scene.sectors) |host_sector, join_sector| {
-        for (host_sector.walls, join_sector.walls) |host_wall, join_wall| if (host_wall.runtime_flags & 4 != 0) {
+        for (host_sector.walls, join_sector.walls) |host_wall, join_wall| if (host_wall.runtime_flags.flags_changed) {
             try testing.expectEqual(host_wall.flags, join_wall.flags);
-            try testing.expect(join_wall.runtime_flags & 4 != 0);
+            try testing.expect(join_wall.runtime_flags.flags_changed);
             walls += 1;
         };
     }
@@ -534,7 +536,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         @intFromEnum(
             player_input.Slot.forward,
         )
-    ] = .{ .value = 5120, .flags = player_input.absolute };
+    ] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
     var largest_gap: f32 = 0;
     var reckoned_frames: usize = 0;
@@ -577,7 +579,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         host_level.player_animation,
     );
 
-    try testing.expectEqual(@as(u32, 0x20), host_level.player.flags & 0x3f0);
+    try testing.expectEqual(Pose{ .walk = true }, host_level.player.flags.pose);
     try testing.expectEqual(
         host_level.player_animation,
         join_level.actor_slots[join_level.remote_players.items[0].source].?.choreography,
@@ -624,7 +626,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         join_level.actor_numbers[join_level.remote_players.items[0].source],
     );
 
-    try testing.expectEqual(@as(u32, 0), remote_host.secondary_flags & 0x1000000);
+    try testing.expect(!remote_host.secondary_flags.waiting_for_start);
     try testing.expectEqual(host_level.player.sector, remote_host.sector);
     try testing.expect(
         @abs(remote_host.position.x - walked.x) + @abs(remote_host.position.z - walked.z) < 1,
@@ -698,10 +700,10 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         @intFromEnum(
             player_input.Slot.fire,
         )
-    ] = .{ .value = 1, .flags = player_input.absolute | player_input.pressed };
+    ] = .{ .value = 1, .flags = .{ .absolute = true, .pressed = true } };
 
     var releasing: player_input.Packet = .{};
-    releasing.entries[@intFromEnum(player_input.Slot.fire)] = .{ .flags = player_input.released };
+    releasing.entries[@intFromEnum(player_input.Slot.fire)] = .{ .flags = .{ .released = true } };
 
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
@@ -738,7 +740,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     try testing.expect(stood_after_shot);
     try testing.expect(copy_shot_frames > 0);
     try testing.expectEqual(@as(f32, 10), host_level.inventory.health);
-    try testing.expect(join_level.player.flags & 0x10000000 != 0);
+    try testing.expect(join_level.player.flags.dead);
 
     for (join_level.inventory.slots[1..]) |slot| if (slot) |owned| {
         try testing.expect(owned.definition.item_class != 0x57454150);
@@ -760,7 +762,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         @intFromEnum(
             player_input.Slot.fire,
         )
-    ] = .{ .value = 1, .flags = player_input.absolute | player_input.pressed };
+    ] = .{ .value = 1, .flags = .{ .absolute = true, .pressed = true } };
 
     for (0..400) |frame| {
         try pair.frame(&packet, if (frame % 30 == 0) &pressing else &packet);
@@ -797,7 +799,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     try testing.expect(restarted);
     try testing.expectEqual(@as(u32, 2), joiner.engine.scenario);
     try testing.expectEqual(@as(f32, 10), join_level.inventory.health);
-    try testing.expect(join_level.player.flags & 0x10000000 == 0);
+    try testing.expect(!join_level.player.flags.dead);
     try testing.expect(join_level.player_number != old_number);
 
     for (0..100) |_| try pair.frame(&packet, &packet);
@@ -894,7 +896,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
     }) |side| {
         const glass = try faceGlass(side.shooter);
         try testing.expect(
-            side.other.scene.sectors[glass.sector].walls[glass.wall].flags & 0x4000 != 0,
+            side.other.scene.sectors[glass.sector].walls[glass.wall].flags.shatters,
         );
 
         for (0..300) |_| {
@@ -916,14 +918,11 @@ test "two games on local UDP: a joiner gets its client number, the game record a
                 &packet,
             ) else try pair.frame(&packet, shot);
 
-            if (side.shooter.scene.sectors[glass.sector].walls[glass.wall].flags & 0x4000 == 0) break;
+            if (!side.shooter.scene.sectors[glass.sector].walls[glass.wall].flags.shatters) break;
         }
 
         try testing.expect(side.shooter.weapon_state.shot_count != shots_before);
-        try testing.expectEqual(
-            @as(u32, 0),
-            side.shooter.scene.sectors[glass.sector].walls[glass.wall].flags & 0x4000,
-        );
+        try testing.expect(!side.shooter.scene.sectors[glass.sector].walls[glass.wall].flags.shatters);
 
         for (0..20) |_| try pair.frame(&packet, &packet);
 
@@ -932,8 +931,8 @@ test "two games on local UDP: a joiner gets its client number, the game record a
             .{ glass.mirror_sector, glass.mirror_wall },
         }) |at| {
             const wall = side.other.scene.sectors[at[0]].walls[at[1]];
-            try testing.expectEqual(@as(u32, 0), wall.flags & 0x4800);
-            try testing.expect(wall.runtime_flags & 4 != 0);
+            try testing.expect(!wall.flags.shatters and !wall.flags.impassable);
+            try testing.expect(wall.runtime_flags.flags_changed);
         }
     }
 
@@ -979,7 +978,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         host_level.player.pitch = 0;
 
         var nudging: player_input.Packet = .{};
-        nudging.entries[@intFromEnum(player_input.Slot.nudge)].flags = player_input.pressed;
+        nudging.entries[@intFromEnum(player_input.Slot.nudge)].flags = .{ .pressed = true };
         try pair.frame(&nudging, &packet);
 
         host_level.player.position = stood[0];
@@ -1011,7 +1010,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
             }
 
             for (host_level.scene.sectors[sector].walls, join_level.scene.sectors[sector].walls) |host_wall, join_wall| {
-                if (host_wall.runtime_flags & 2 == 0) continue;
+                if (!host_wall.runtime_flags.corners_changed) continue;
 
                 try testing.expectEqual(host_wall.length, join_wall.length);
                 try testing.expectEqual(host_wall.direction, join_wall.direction);
@@ -1022,7 +1021,7 @@ test "two games on local UDP: a joiner gets its client number, the game record a
         }
 
         for (host_level.scene.sectors[door].walls) |wall| try testing.expect(
-            wall.runtime_flags & 2 != 0,
+            wall.runtime_flags.corners_changed,
         );
 
         try testing.expect(turned >= 8);

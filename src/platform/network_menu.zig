@@ -164,7 +164,7 @@ pub fn run(
     const raw = try screen.close();
     try settings_file.save(a, io, store);
 
-    while (mouseState().buttons != 0) {
+    while (mouseState().buttons.any()) {
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event) != 0) if (event.type == c.SDL_QUIT) return .quit;
         c.SDL_Delay(16);
@@ -566,7 +566,7 @@ fn drive(
 
         var input = mouseState();
 
-        if (left_pressed) input.buttons |= 1;
+        if (left_pressed) input.buttons.left = true;
 
         left_pressed = false;
         input.shift = c.SDL_GetModState() & c.KMOD_SHIFT != 0;
@@ -577,7 +577,7 @@ fn drive(
 
         for (played.*..screen.shared.sounds) |_|
             _ = try audio.play(
-                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = 4 },
+                .{ .basename = "RIFLOUT.WAV", .priority = 64, .volume = 127, .flags = .default },
                 null,
                 c.SDL_GetTicks(),
             );
@@ -600,7 +600,7 @@ fn drive(
 
 fn mouseState() dialog.Input {
     var input = dialog.Input{};
-    input.buttons = c.SDL_GetMouseState(&input.x, &input.y);
+    input.buttons = sdl.mouseButtons(c.SDL_GetMouseState(&input.x, &input.y));
 
     return input;
 }

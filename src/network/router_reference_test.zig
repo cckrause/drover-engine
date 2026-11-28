@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
@@ -79,7 +80,7 @@ test "router one-machine half and message names match the reference" {
             const buffer = try hex(a, op.get("bytes").?.string);
             defer a.free(buffer);
             const destination = int(op, "destination");
-            const posted = try router.post(destination, int(op, "number"), buffer);
+            const posted = try router.post(destination, bits.from(message.Number, int(op, "number")), buffer);
 
             try std.testing.expectEqual(int(op, "result"), @intFromBool(posted != .queued));
             const logs = op.get("logs").?.array.items;

@@ -9,6 +9,8 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
+const GameType = @import("../game_type.zig").GameType;
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
@@ -84,7 +86,7 @@ pub const Database = struct {
 
     pub const ScoreContext = struct {
         now: u32,
-        game_type: u32,
+        game_type: GameType,
         mode: u32,
         game_state: u32,
         holder: u32,
@@ -236,9 +238,9 @@ pub const Database = struct {
         );
 
         if (repeat == 0)
-            try router.postHereAndEveryone(to.number, words[0] | 0x80000000, &bytes)
+            try router.postHereAndEveryone(to.number, .{ .code = @intCast(words[0]), .must_arrive = true }, &bytes)
         else
-            _ = try router.post(to.number, words[0] | 0x80008000, &bytes);
+            _ = try router.post(to.number, .{ .code = @intCast(words[0]), .repeat = true, .must_arrive = true }, &bytes);
     }
 
     pub fn give(self: *Database, own_client: u32, object: Object) !u32 {
@@ -401,11 +403,11 @@ pub const Database = struct {
         self: *Database,
         router: *Router,
         mode: u32,
-        game_type: u32,
+        game_type: GameType,
         now: u32,
     ) !void {
         self.player_count = 0;
-        if (game_type == 4) try self.countHolderOnce(router, mode, now);
+        if (game_type == .joined) try self.countHolderOnce(router, mode, now);
         try self.listPlayers(router, mode);
     }
 
@@ -413,7 +415,7 @@ pub const Database = struct {
         self: *Database,
         router: *Router,
         mode: u32,
-        game_type: u32,
+        game_type: GameType,
         now: u32,
         rebuild: bool,
     ) !void {
@@ -447,13 +449,13 @@ pub const Database = struct {
 
         self.player_count = 0;
 
-        if (game_type == 4) try self.countHolderOnce(router, mode, now);
+        if (game_type == .joined) try self.countHolderOnce(router, mode, now);
 
         try self.listPlayers(router, mode);
     }
 
     pub fn sendScores(self: *Database, router: *Router, context: ScoreContext) !void {
-        if (router.own_client != 1 or context.game_type != 5) return;
+        if (router.own_client != 1 or context.game_type != .hosting) return;
 
         const seconds: i32 = @intCast(context.now / 1000);
 
@@ -488,7 +490,7 @@ pub const Database = struct {
         message.set(bytes, message.sender_offset, (router.own_client & 0xff) << 11);
         message.set(bytes, message.reply_offset, 0);
 
-        _ = try router.post(0, 0x409 | 0x40000000, bytes);
+        _ = try router.post(0, .{ .code = 0x409, .buffered = true }, bytes);
         var over = false;
 
         if (context.kill_limit != 0 and !self.game_over) {
@@ -511,7 +513,7 @@ pub const Database = struct {
         if (over) {
             var end: [message.end_level_capacity]u8 = undefined;
             const ended = message.endLevel(&end, router.own_client, "~5126");
-            try router.postHereAndEveryone(0, 0x404 | 0x40000000, ended);
+            try router.postHereAndEveryone(0, .{ .code = 0x404, .buffered = true }, ended);
             self.game_over = true;
         }
 
@@ -522,7 +524,7 @@ pub const Database = struct {
         self: *Database,
         router: *const Router,
         game_state: u32,
-        game_type: u32,
+        game_type: GameType,
     ) void {
         if (game_state != 1) return;
 
@@ -546,8 +548,8 @@ pub const Database = struct {
                 @memcpy(entry.name[0..name.len], name);
             }
 
-            entry.code = if (game_type == 5 or game_type == 4) player.code else 'J';
-            entry.team = player.flags & 0xf;
+            entry.code = if (game_type.isNetwork()) player.code else 'J';
+            entry.team = player.flags.team;
             entry.points = router.scores[number].points;
             entry.seconds = router.scores[number].seconds;
         }
@@ -584,7 +586,7 @@ pub const Database = struct {
 
         self.player_count = 0;
 
-        if (context.game_type == 4) try self.countHolderOnce(router, context.mode, context.now);
+        if (context.game_type == .joined) try self.countHolderOnce(router, context.mode, context.now);
 
         try self.listPlayers(router, context.mode);
         self.holder_clock = context.now;
@@ -667,7 +669,7 @@ pub const Database = struct {
         message.set(bytes, message.sender_offset, (router.own_client & 0xff) << 11);
         message.set(bytes, message.reply_offset, message.addressWord(message.Queue.server, own));
 
-        _ = try router.post(0x100000, 0x414 | 0x40000000, bytes);
+        _ = try router.post(0x100000, .{ .code = 0x414, .buffered = true }, bytes);
     }
 
     pub fn requestObject(
@@ -687,11 +689,11 @@ pub const Database = struct {
 
         if (message.client(
             sender,
-        ) != router.own_client) _ = try router.post(sender & 0x7f800, 0x402, &request);
+        ) != router.own_client) _ = try router.post(sender & 0x7f800, .{ .code = 0x402 }, &request);
     }
 
     pub fn drained(self: *Database, router: *Router, context: LevelContext, holder: u32) !void {
-        if (context.game_type == 4) return self.countHolder(
+        if (context.game_type == .joined) return self.countHolder(
             router,
             context.mode,
             context.game_type,
@@ -699,7 +701,7 @@ pub const Database = struct {
             true,
         );
 
-        if (context.game_type != 5) return;
+        if (context.game_type != .hosting) return;
 
         const seconds: i32 = @intCast(context.now / 1000);
 
@@ -804,7 +806,7 @@ pub const Database = struct {
 
                     message.set(&request, message.reply_offset, target);
 
-                    _ = try router.post(sender, 0x402, &request);
+                    _ = try router.post(sender, .{ .code = 0x402 }, &request);
                 }
             }
 
@@ -816,15 +818,19 @@ pub const Database = struct {
                 const code = self.strip(bytes);
                 const sender = self.senderActor(bytes);
 
+                const game_code: MessageCode = @enumFromInt(code);
+
+                if (game_code.reachesGenerators() or game_code.movesWallFrame()) return self.hold(
+                    bytes,
+                    .{ .link = try link(object, code, bytes, sender) },
+                );
+
+                if (game_code == .set_bits or game_code == .clear_bits) return self.hold(
+                    bytes,
+                    .{ .bits = try link(object, code, bytes, sender) },
+                );
+
                 switch (code) {
-                    0x7d4...0x7de, 0x7e1, 0x7e2, 0x7e7...0x7ea => return self.hold(
-                        bytes,
-                        .{ .link = try link(object, code, bytes, sender) },
-                    ),
-                    0x7df, 0x7e0 => return self.hold(
-                        bytes,
-                        .{ .bits = try link(object, code, bytes, sender) },
-                    ),
                     0x402 => return error.ObjectRequestNotPorted,
                     else => {
                         var name: [16]u8 = undefined;
@@ -857,37 +863,36 @@ pub const Database = struct {
                     .{message.client(sender)},
                 );
 
-                switch (code) {
-                    0x7d4...0x7de, 0x7e1, 0x7e2 => {
-                        if (bytes.len < message.words_size) return error.MalformedNetworkMessage;
+                if (@as(MessageCode, @enumFromInt(code)).reachesGenerators()) {
+                    if (bytes.len < message.words_size) return error.MalformedNetworkMessage;
 
-                        return self.hold(
-                            bytes,
-                            .{ .generator = .{ .index = index, .code = code } },
-                        );
-                    },
-                    else => {
-                        var name: [16]u8 = undefined;
-
-                        std.log.debug(
-                            "dbm_ProcessGeneratorRequest: Unhandled message {s}",
-                            .{message.name(code, &name)},
-                        );
-
-                        self.endRepeat();
-                        return null;
-                    },
+                    return self.hold(
+                        bytes,
+                        .{ .generator = .{ .index = index, .code = code } },
+                    );
                 }
+
+                var name: [16]u8 = undefined;
+
+                std.log.debug(
+                    "dbm_ProcessGeneratorRequest: Unhandled message {s}",
+                    .{message.name(code, &name)},
+                );
+
+                self.endRepeat();
+                return null;
             },
         }
     }
 
     fn strip(self: *Database, bytes: []u8) u32 {
-        const number = message.get(bytes, message.number_offset);
-        message.set(bytes, message.number_offset, number & 0xffff7fff);
-        self.repeat_previous = if (number & 0x8000 != 0) self.swapRepeat(1) else null;
+        var number: message.Number = @bitCast(message.get(bytes, message.number_offset));
+        const repeat = number.repeat;
+        number.repeat = false;
+        message.set(bytes, message.number_offset, @bitCast(number));
+        self.repeat_previous = if (repeat) self.swapRepeat(1) else null;
 
-        return number & 0xffff7fff;
+        return @bitCast(number);
     }
 
     fn endRepeat(self: *Database) void {
@@ -1030,7 +1035,7 @@ pub const Database = struct {
 
 pub const LevelContext = struct {
     now: u32,
-    game_type: u32,
+    game_type: GameType,
     mode: u32,
     game_state: u32,
 };
@@ -1055,7 +1060,7 @@ pub fn requestServerCreate(router: *Router, value: message.HaveServerCreate) !vo
     defer router.allocator.free(buffer);
     const bytes = try message.haveServerCreate(buffer, router.own_client, value);
 
-    _ = try router.post(0x100800, 0x415 | 0xc0000000, bytes);
+    _ = try router.post(0x100800, .{ .code = 0x415, .buffered = true, .must_arrive = true }, bytes);
 }
 
 pub fn comment(router: *Router, text: []const u8, destination: u32) !void {
@@ -1068,14 +1073,14 @@ pub fn comment(router: *Router, text: []const u8, destination: u32) !void {
     message.set(bytes, message.sender_offset, (router.own_client & 0xff) << 11);
     message.set(bytes, message.reply_offset, destination);
 
-    _ = try router.post(destination, 0x40a | 0xc0000000, bytes);
+    _ = try router.post(destination, .{ .code = 0x40a, .buffered = true, .must_arrive = true }, bytes);
 }
 
 pub fn sendConfiguration(router: *Router, bits: u32) !void {
     var bytes = message.configuration(router.own_client, bits);
     message.set(&bytes, message.sender_offset, (router.own_client & 0xff) << 11);
     message.set(&bytes, message.reply_offset, 0);
-    _ = try router.post(0, 0x41f | 0x40000000, &bytes);
+    _ = try router.post(0, .{ .code = 0x41f, .buffered = true }, &bytes);
 }
 
 pub fn commentText(
@@ -1217,14 +1222,14 @@ test "PostFragDelta adds to the client and, outside mode 1, to its team" {
     router.reset();
 
     var bytes = message.fragDelta(1, .{ .client = 3, .team = 2, .points = 1 });
-    _ = try router.post(0x800, 0x408 | 0xc0000000, &bytes);
+    _ = try router.post(0x800, .{ .code = 0x408, .buffered = true, .must_arrive = true }, &bytes);
     const request = (try database.next(&router, true, 0)).?;
     try std.testing.expectEqual(
         message.FragDelta{ .client = 3, .team = 2, .points = 1 },
         request.frag_delta,
     );
 
-    const context: LevelContext = .{ .now = 0, .game_type = 5, .mode = 4, .game_state = 1 };
+    const context: LevelContext = .{ .now = 0, .game_type = .hosting, .mode = 4, .game_state = 1 };
 
     try database.applyFragDelta(&router, request.frag_delta, context);
     try database.applyFragDelta(
@@ -1247,7 +1252,7 @@ test "PostFragDelta adds to the client and, outside mode 1, to its team" {
     try database.applyFragDelta(
         &router,
         .{ .client = 3, .team = 1, .points = 1 },
-        .{ .now = 0, .game_type = 5, .mode = 1, .game_state = 1 },
+        .{ .now = 0, .game_type = .hosting, .mode = 1, .game_state = 1 },
     );
 
     try std.testing.expectEqual(@as(i16, 4), router.scores[3].points);

@@ -4,14 +4,16 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const MessageCode = @import("../message_code.zig").MessageCode;
 const Session = @import("../render/session.zig").Session;
 const lab = @import("../assets/lab.zig");
 const level = @import("../assets/level.zig");
 const enemy_session = @import("../enemy/session.zig");
 const inventory = @import("../player/inventory.zig");
 const object = @import("object.zig");
+const bits = @import("../util/bits.zig");
 
-fn bits(v: level.Vec3) [3]u32 {
+fn vectorBits(v: level.Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -174,13 +176,13 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
                     playback.choreography,
                     playback.next_frame,
                     playback.frame,
-                    playback.flags,
+                    bits.word(playback.flags),
                     @intFromBool(playback.terminated),
                 },
             );
 
-            try std.testing.expectEqual(step.state.flags, actor.flags);
-            try std.testing.expectEqual(step.state.secondary_flags, actor.secondary_flags);
+            try std.testing.expectEqual(step.state.flags, bits.word(actor.flags));
+            try std.testing.expectEqual(step.state.secondary_flags, bits.word(actor.secondary_flags));
             try std.testing.expectEqual(step.state.height_bits, @as(u32, @bitCast(actor.height)));
             try std.testing.expectEqual(
                 step.state.radius_bits,
@@ -198,10 +200,10 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
                 const particle = session.actor_slots[index].?;
 
                 try std.testing.expectEqualStrings("FX_ExplosionFragment", particle.logic_name);
-                try std.testing.expectEqualDeep(expected.position_bits, bits(particle.position));
+                try std.testing.expectEqualDeep(expected.position_bits, vectorBits(particle.position));
                 try std.testing.expectEqualDeep(
                     expected.velocity_bits,
-                    bits(session.general_slots[index].?.velocity),
+                    vectorBits(session.general_slots[index].?.velocity),
                 );
 
                 try std.testing.expectEqualDeep(
@@ -221,11 +223,11 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
                     try std.testing.expect(index < session.inf.pending.items.len);
                     const pending = session.inf.pending.items[index].message;
 
-                    try std.testing.expectEqual(@as(u32, 0xffffffff), pending.entity_mask);
+                    try std.testing.expectEqual(@as(u32, 0xffffffff), bits.word(pending.entity_mask));
                     try std.testing.expectEqual(@as(?usize, sector), pending.value.target.sector);
                     try std.testing.expectEqual(@as(?usize, null), pending.value.target.wall);
-                    try std.testing.expectEqual(@as(u32, 0x7d6), pending.value.code);
-                    try std.testing.expectEqual(event.mask, pending.value.event_mask);
+                    try std.testing.expectEqual(MessageCode.trigger, pending.value.code);
+                    try std.testing.expectEqual(event.mask, bits.word(pending.value.event_mask));
                     try std.testing.expectEqualDeep(
                         event.arguments,
                         [2]i32{ pending.value.arg1, pending.value.arg2 },
@@ -241,13 +243,13 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
                 const request = effects.items[sound_index].sound;
 
                 try std.testing.expectEqualStrings(event.name, request.basename);
-                try std.testing.expectEqualDeep(event.position_bits, bits(request.position.?));
+                try std.testing.expectEqualDeep(event.position_bits, vectorBits(request.position.?));
                 try std.testing.expectEqualDeep(
                     event.options,
                     [3]u32{
                         @bitCast(request.priority.?),
                         @bitCast(request.volume.?),
-                        request.flags.?,
+                        bits.word(request.flags.?),
                     },
                 );
 

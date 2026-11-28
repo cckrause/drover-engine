@@ -6,6 +6,7 @@
 //! traversal, walls one each.
 
 const std = @import("std");
+const Events = @import("inf_flags.zig").Events;
 
 const level_module = @import("../assets/level.zig");
 const texture = @import("../assets/texture.zig");
@@ -18,7 +19,7 @@ const FixedList = @import("../util/fixed_list.zig").FixedList;
 pub const Event = struct {
     sector: usize,
     wall: ?usize = null,
-    mask: u32,
+    mask: Events,
     object_id: u32 = 0,
     actor: ?usize = null,
 };
@@ -60,7 +61,7 @@ pub fn activate(
     const check = scene.collision_check.*;
     var sector = player.sector;
 
-    try events.append(.{ .sector = sector, .mask = 0x10, .object_id = object_id });
+    try events.append(.{ .sector = sector, .mask = .{ .nudge_front = true }, .object_id = object_id });
     try actorActivation(events, level, scene, actors, sector, origin, end, y);
 
     var previous: f32 = -0x1p31;
@@ -115,7 +116,7 @@ pub fn activate(
             level,
             hit.sector,
             hit.index,
-            0x10,
+            .{ .nudge_front = true },
             object_id,
             y,
         )) |event| if (event) |entry| {
@@ -140,7 +141,7 @@ pub fn activate(
 
         if (next) |target| {
             if (scene.sectors[target].last_collision_check != check) {
-                try events.append(.{ .sector = target, .mask = 0x20, .object_id = object_id });
+                try events.append(.{ .sector = target, .mask = .{ .nudge_back = true }, .object_id = object_id });
                 try actorActivation(events, level, scene, actors, target, origin, end, y);
                 scene.sectors[target].last_collision_check = check;
             }
@@ -174,7 +175,7 @@ pub fn wallEvents(
     level: *const level_module.Level,
     sector: usize,
     index: usize,
-    mask: u32,
+    mask: Events,
     object_id: u32,
     y: f32,
 ) [2]?Event {
@@ -197,7 +198,7 @@ pub fn wallEvents(
         if (other) |m| .{
             .sector = m.sector,
             .wall = m.index,
-            .mask = mask *% 2,
+            .mask = mask.back(),
             .object_id = object_id,
         } else null,
     };
@@ -223,21 +224,23 @@ pub fn overlayAccepts(
     var left = f(@as(f64, wall.overlay.offset.x) * 0.125);
     var top = f(@as(f64, h) - @as(f64, wall.overlay.offset.z) * 0.125);
 
-    switch (scene.sectors[sector].walls[index].render_flags) {
-        0 => {
+    // The overlay sits on the part it's drawn on: the bottom part when
+    // there is one, else the top part, else the mid wall. A wall with two
+    // openings leaves it where it is.
+    const parts = scene.sectors[sector].walls[index].render_flags;
+
+    if (!parts.double_adjoin) {
+        if (parts.bottom) {
             top = f(@as(f64, level.sectors[sector].floor.height) + top);
-            left = f(@as(f64, left) - @as(f64, wall.mid.offset.x) * 0.125);
-        },
-        1 => {
+            left = f(@as(f64, left) - @as(f64, wall.bottom.offset.x) * 0.125);
+        } else if (parts.top) {
             if (wall.adjoin < 0) return error.InvalidInfOverlayAdjoin;
             top = f(@as(f64, level.sectors[@intCast(wall.adjoin)].ceiling.height) + top);
             left = f(@as(f64, left) - @as(f64, wall.top.offset.x) * 0.125);
-        },
-        2, 3 => {
+        } else {
             top = f(@as(f64, level.sectors[sector].floor.height) + top);
-            left = f(@as(f64, left) - @as(f64, wall.bottom.offset.x) * 0.125);
-        },
-        else => {},
+            left = f(@as(f64, left) - @as(f64, wall.mid.offset.x) * 0.125);
+        }
     }
 
     return !(x < @as(
@@ -256,7 +259,7 @@ pub fn actorMaskHit(
     height_above_bottom: f32,
 ) !bool {
     const costume = actor.costume orelse return true;
-    if (actor.secondary_flags & 0x80000000 == 0) return true;
+    if (!actor.secondary_flags.mask_hit) return true;
 
     const dx = f(@as(f64, from.x) - actor.position.x);
     const dz = f(@as(f64, from.z) - actor.position.z);
@@ -311,11 +314,11 @@ pub fn actorMaskHit(
         if (y >= cell.height) return error.InvalidInfActorHitPixel;
 
         const column: usize = @intCast(
-            if (part.flags & 0x100 != 0) @as(i32, @intCast(cell.width)) - x - 1 else x,
+            if (part.flags.mirrored) @as(i32, @intCast(cell.width)) - x - 1 else x,
         );
 
         const row: usize = @intCast(@as(i32, @intCast(cell.height)) - y - 1);
-        const bytes = if (cell.flags & 1 != 0) cell.pixels else cell.encoded;
+        const bytes = if (cell.flags.columns) cell.pixels else cell.encoded;
         const offset = column * cell.height + row;
         if (offset >= bytes.len) return error.InvalidInfActorHitPixel;
 
@@ -352,7 +355,8 @@ fn actorActivation(
 
         const actor = actors.get(index);
 
-        if (actor.sector != sector or actor.secondary_flags & 0x1040 == 0 or actor.flags & 0x100 != 0) continue;
+        const usable = actor.secondary_flags.used_when_activated or actor.secondary_flags.ai_controlled;
+        if (actor.sector != sector or !usable or actor.flags.not_solid) continue;
 
         if (actors.runtime) |runtime| if (runtime.isRemoved(actor)) continue;
 
@@ -385,7 +389,7 @@ fn actorActivation(
         ))
             try events.append(.{
                 .sector = sector,
-                .mask = 0,
+                .mask = .{},
                 .actor = actor.source_index orelse return error.MissingScriptActor,
             });
     }
@@ -474,7 +478,7 @@ test "INF actor transparency matches WAX hit testing" {
             .{
                 .width = fixture.width,
                 .height = fixture.height,
-                .flags = @intFromBool(fixture.compressed),
+                .flags = .{ .columns = fixture.compressed },
                 .pixels = fixture.pixels,
                 .encoded = fixture.pixels,
             },
@@ -488,7 +492,7 @@ test "INF actor transparency matches WAX hit testing" {
             .offset_y = @bitCast(fixture.offset_bits[3]),
             .width = 0,
             .height = 0,
-            .flags = if (fixture.mirrored) 0x100 else 0,
+            .flags = .{ .mirrored = fixture.mirrored },
         }};
 
         var frames = [_]nwx.Frame{
@@ -522,8 +526,8 @@ test "INF actor transparency matches WAX hit testing" {
             .sector = 0,
             .position = .{ .x = 0, .y = 0, .z = 0 },
             .yaw = 0,
-            .flags = 0,
-            .secondary_flags = 0x80000000,
+            .flags = .{},
+            .secondary_flags = .{ .mask_hit = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = 8,

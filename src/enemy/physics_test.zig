@@ -13,6 +13,9 @@ const physics = @import("physics.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const lab = @import("../assets/lab.zig");
 const nwx = @import("../assets/nwx.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Snapshot = struct {
     position_bits: [3]u32,
@@ -40,8 +43,8 @@ fn expectSnapshot(
     health: f32,
     next_tick: u32,
 ) !void {
-    try std.testing.expectEqual(expected.position_bits, bits(state.position));
-    try std.testing.expectEqual(expected.velocity_bits, bits(state.velocity));
+    try std.testing.expectEqual(expected.position_bits, vectorBits(state.position));
+    try std.testing.expectEqual(expected.velocity_bits, vectorBits(state.velocity));
     try std.testing.expectEqual(expected.health_bits, @as(u32, @bitCast(health)));
     try std.testing.expectEqual(expected.speed_bits, @as(u32, @bitCast(state.move_speed)));
     try std.testing.expectEqual(expected.floor_bits, @as(u32, @bitCast(state.floor_cache)));
@@ -53,9 +56,9 @@ fn expectSnapshot(
     try std.testing.expectEqual(expected.yaw, state.yaw);
     try std.testing.expectEqual(expected.blocked_until, state.blocked_until);
     try std.testing.expectEqual(expected.next_tick, next_tick);
-    try std.testing.expectEqual(expected.actor_position_bits, bits(actor.position));
+    try std.testing.expectEqual(expected.actor_position_bits, vectorBits(actor.position));
     try std.testing.expectEqual(expected.actor_yaw, actor.yaw);
-    try std.testing.expectEqual(expected.flags, actor.flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
 }
 
 fn point(value: [3]f32) level_module.Vec3 {
@@ -66,7 +69,7 @@ fn pointBits(value: [3]u32) level_module.Vec3 {
     return .{ .x = @bitCast(value[0]), .y = @bitCast(value[1]), .z = @bitCast(value[2]) };
 }
 
-fn bits(value: level_module.Vec3) [3]u32 {
+fn vectorBits(value: level_module.Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -182,8 +185,8 @@ test "enemy damping movement and commit match the reference bits" {
             .sector = 0,
             .position = point(case.position),
             .yaw = -345,
-            .flags = 0x454f,
-            .secondary_flags = 0x140,
+            .flags = .{ .active = true, .unused_1 = true, .visible = true, .shaded = true, .has_logic = true, .not_solid = true, .physics = true, .dead = true },
+            .secondary_flags = .{ .ai_controlled = true, .enemy = true },
             .scale_x = 1,
             .scale_y = 1,
             .height = 6,
@@ -213,8 +216,8 @@ test "enemy damping movement and commit match the reference bits" {
             .sector = 0,
             .height = 6,
             .radius = 1.5,
-            .flags = player.flags,
-            .secondary_flags = player.secondary_flags,
+            .flags = bits.from(ActorFlags, player.flags),
+            .secondary_flags = bits.from(ActorKind, player.secondary_flags),
         };
 
         try expectSnapshot(case.initial, actor, body, health, next_tick);
@@ -299,8 +302,8 @@ test "corpse constructor matches asset playback and collision state" {
 
             const actual = try lifecycle.corpse(actor, frame.now);
 
-            try std.testing.expectEqual(@as(u32, @intCast(effect.flags.?.integer)), actual.flags);
-            try std.testing.expectEqual(effect.secondary_flags.?, actual.secondary_flags);
+            try std.testing.expectEqual(@as(u32, @intCast(effect.flags.?.integer)), bits.word(actual.flags));
+            try std.testing.expectEqual(effect.secondary_flags.?, bits.word(actual.secondary_flags));
             try std.testing.expectEqual(effect.height_bits.?, @as(u32, @bitCast(actual.height)));
             try std.testing.expectEqual(
                 effect.radius_bits.?,
@@ -319,7 +322,7 @@ test "corpse constructor matches asset playback and collision state" {
                     playback.choreography,
                     playback.next_frame,
                     playback.frame,
-                    playback.flags,
+                    bits.word(playback.flags),
                 },
             );
 

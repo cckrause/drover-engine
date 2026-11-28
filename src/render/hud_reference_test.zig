@@ -4,6 +4,8 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const PlayerFlags = @import("../player/flags.zig").PlayerFlags;
+const bits = @import("../util/bits.zig");
 
 const fixtures = @import("../testing/fixtures.zig");
 const read = fixtures.read;
@@ -159,7 +161,7 @@ test "HUD node transitions and indexed pixels match the reference" {
         inventory.health = case.health;
         inventory.selected = case.selected_item;
         inventory.selected_weapon = case.selected_weapon;
-        inventory.player_flags = case.player_flags;
+        inventory.player_flags = bits.from(PlayerFlags, case.player_flags);
         inventory.sheriff_visible = case.sheriff_visible;
         hud.?.blend_table = if (case.blend_file) |path| try read(a, path) else null;
         hud.?.color_map = if (case.color_map_file) |path| try read(a, path) else null;

@@ -4,13 +4,13 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
 const Session = @import("../render/session.zig").Session;
 const enemy_session = @import("../enemy/session.zig");
 const input = @import("input.zig");
-const lamp = @import("lamp.zig");
 
 test "portable lamp commits input oil HUD lighting and restart state" {
     const a = std.testing.allocator;
@@ -59,13 +59,14 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     var keys: input.State = .{};
     keys.key(38, true, session.animation_time + 1);
     const pressed = try keys.sample(session.animation_time + 16, .{});
-    try std.testing.expect(pressed.get(.lamp).flags & input.pressed != 0);
+    try std.testing.expect(pressed.get(.lamp).flags.pressed);
     try session.advance(a, &pressed, 16);
 
     try std.testing.expectEqual(@as(i32, 59), session.inventory.slots[fuel].?.count);
-    try std.testing.expect(session.player.flags & lamp.active_flag != 0);
+    try std.testing.expect(session.player.flags.lamp_on);
     try std.testing.expectEqual(session.player.flags, session.inventory.player_flags);
-    try std.testing.expectEqual(@as(u32, 0x10), enemy_session.playerSubject(session).flags & 0x18);
+    const lit = enemy_session.playerSubject(session).flags;
+    try std.testing.expect(lit.glowing and !lit.shaded);
 
     var light_sounds: usize = 0;
 
@@ -75,7 +76,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     )) {
         try std.testing.expectEqual(@as(?i32, 64), effect.sound.priority);
         try std.testing.expectEqual(@as(?i32, 127), effect.sound.volume);
-        try std.testing.expectEqual(@as(?u32, 0), effect.sound.flags);
+        try std.testing.expectEqual(@as(?RequestFlags, .{}), effect.sound.flags);
         light_sounds += 1;
     };
 
@@ -86,9 +87,9 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     try std.testing.expect(session.lamp_state.force_depth);
 
     const held = try keys.sample(session.animation_time + 16, .{});
-    try std.testing.expect(held.get(.lamp).flags & input.pressed == 0);
+    try std.testing.expect(!held.get(.lamp).flags.pressed);
     try session.advance(a, &held, 16);
-    try std.testing.expect(session.player.flags & lamp.active_flag != 0);
+    try std.testing.expect(session.player.flags.lamp_on);
 
     for (0..6) |_| {
         try session.advance(a, &.{}, 250);
@@ -118,7 +119,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
         @intFromEnum(
             input.Slot.weapon,
         )
-    ] = .{ .value = 3, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 3, .flags = .{ .absolute = true, .pressed = true } };
 
     for (0..5) |_| {
         try session.advance(a, &selection, 600);
@@ -144,7 +145,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
         @intFromEnum(
             input.Slot.weapon,
         )
-    ] = .{ .value = 3, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 3, .flags = .{ .absolute = true, .pressed = true } };
 
     selection.entries[@intFromEnum(input.Slot.lamp)] = pressed.get(.lamp);
 
@@ -177,7 +178,7 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     try std.testing.expectEqual(scoped_lamp.flicker_time, restarted.lamp_state.flicker_time);
     try std.testing.expect(!restarted.lamp_state.force_depth);
     try std.testing.expectEqual(@as(i32, 0), restarted.lamp_state.depth_bias);
-    try std.testing.expectEqual(@as(u32, 0), restarted.player.flags & lamp.active_flag);
+    try std.testing.expect(!restarted.player.flags.lamp_on);
     try std.testing.expectEqual(
         @as(i32, 60),
         restarted.inventory.slots[restarted.inventory.find("IOIL")].?.count,
@@ -189,17 +190,17 @@ test "portable lamp commits input oil HUD lighting and restart state" {
     restarted.player.sector = 66;
     restarted.player.position = .{ .x = 465.5, .y = -10, .z = 460 };
     restarted.player.velocity = .{ .x = 0, .y = 0, .z = 0 };
-    restarted.player.flags = lamp.active_flag;
+    restarted.player.flags = .{ .lamp_on = true };
     restarted.player.floor_cache = -2147483648;
 
     try restarted.advance(a, &.{}, 16);
 
-    try std.testing.expect(restarted.player.flags & 0x8000 != 0);
-    try std.testing.expectEqual(@as(u32, 0), restarted.player.flags & lamp.active_flag);
+    try std.testing.expect(restarted.player.flags.underwater);
+    try std.testing.expect(!restarted.player.flags.lamp_on);
     try std.testing.expect(!restarted.lamp_state.force_depth);
 
     try restarted.advance(a, &pressed, 16);
-    try std.testing.expectEqual(@as(u32, 0), restarted.player.flags & lamp.active_flag);
+    try std.testing.expect(!restarted.player.flags.lamp_on);
 
     restarted.player = original_player;
     try restarted.advance(a, &pressed, 16);
@@ -207,16 +208,16 @@ test "portable lamp commits input oil HUD lighting and restart state" {
 
     restarted.player.position.y = restarted.level.sectors[restarted.player.sector].floor.height + 0.01;
     restarted.player.velocity.y = -100;
-    restarted.player.flags &= ~@as(u32, 4);
+    restarted.player.flags.on_ground = false;
 
     try restarted.advance(a, &.{}, 16);
 
     try std.testing.expectEqual(@as(f32, 0), restarted.inventory.health);
     try std.testing.expect(restarted.lamp_state.force_depth);
-    try std.testing.expect(restarted.player.flags & lamp.active_flag != 0);
+    try std.testing.expect(restarted.player.flags.lamp_on);
 
     try restarted.advance(a, &.{}, 16);
 
     try std.testing.expect(!restarted.lamp_state.force_depth);
-    try std.testing.expectEqual(@as(u32, 0), restarted.player.flags & lamp.active_flag);
+    try std.testing.expect(!restarted.player.flags.lamp_on);
 }

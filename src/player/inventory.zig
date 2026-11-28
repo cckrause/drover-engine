@@ -6,11 +6,15 @@
 //! messages is visible to scripts, so keep it.
 
 const std = @import("std");
+const GameType = @import("../game_type.zig").GameType;
+const bits = @import("../util/bits.zig");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const nwx = @import("../assets/nwx.zig");
 const cmm = @import("../script/cmm.zig");
 const FixedList = @import("../util/fixed_list.zig").FixedList;
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 
 /// Messages and sounds one pass may collect before they are handed on: a
 /// sound for every shot a pass may hold, and 16 more. The test suite never
@@ -219,13 +223,21 @@ pub const Entry = struct {
     message: i16,
 };
 
+/// From the item's FLAGS line.
+pub const PickupFlags = packed struct(u16) {
+    /// Dropped by a player: taking it again doesn't count towards the
+    /// level's found items and gold.
+    dropped: bool = false,
+    unused_1: u15 = 0,
+};
+
 pub const Pickup = struct {
     function: cmm.Native,
     entries: []const Entry = &.{},
     allocator: std.mem.Allocator = undefined,
     archives: []const lab.Archive = &.{},
-    game_type: u32 = 1,
-    flags: i16 = 0,
+    game_type: GameType = .campaign,
+    flags: PickupFlags = .{},
     health_bonus: u8 = 0,
     message: i32 = -1,
     sound: ?[]const u8 = null,
@@ -241,18 +253,17 @@ pub const Pickup = struct {
             @as(f64, player_position.x) - actor.position.x,
         ) + @abs(@as(f64, player_position.z) - actor.position.z);
 
-        actor.flags = if (self.enabled) (actor.flags & ~@as(
-            u32,
-            0x40,
-        )) | 0x80000000 else actor.flags | 0x80000040;
+        // Once the player has moved away, the pickup stops thinking.
+        actor.flags.has_logic = !self.enabled;
+        actor.flags.changed = true;
     }
 
     pub fn parse(
         a: std.mem.Allocator,
         archives: []const lab.Archive,
         item: *const Item,
-        difficulty: u32,
-        game_type: u32,
+        difficulty: Difficulty,
+        game_type: GameType,
     ) !Pickup {
         const native = try cmm.inventoryFunction(item.function);
         var result: Pickup = .{ .function = native, .allocator = a, .game_type = game_type };
@@ -267,7 +278,7 @@ pub const Pickup = struct {
 
         if (native != .ground_object and native != .ground_sheriff_star and native != .ground_vanishing_cream and native != .projectile_dispatch) return error.UnsupportedPickupConstructor;
 
-        result.flags = short(item.intValue("FLAGS") orelse 0);
+        result.flags = @bitCast(short(item.intValue("FLAGS") orelse 0));
 
         const count = item.intValue(
             "PICKUP_COUNT",
@@ -287,7 +298,7 @@ pub const Pickup = struct {
             const raw_amount = item.intValue(try fieldName(&buffer, "COUNT", i)) orelse 0;
             var amount = if (raw_amount == 0) @as(i16, 1) else short(raw_amount);
 
-            if (game_type != 4 and game_type != 5 and game_type != 6 and difficulty == 0x200000 and std.ascii.eqlIgnoreCase(name, "ICART")) amount = @max(1, amount >> 1);
+            if (!game_type.isMultiplayer() and difficulty == .bad and std.ascii.eqlIgnoreCase(name, "ICART")) amount = @max(1, amount >> 1);
 
             const slot = short(item.intValue(try fieldName(&buffer, "SLOT", i)) orelse 0);
             if (slot < 0 or slot >= 26) return error.InvalidInventorySlot;
@@ -326,11 +337,25 @@ pub const Statistics = struct {
     native_words: [15]u32 = @splat(0),
 };
 
+/// What a level does to the inventory the player brings in, from the FLAGS
+/// line of the level's player definition.
+pub const LevelRules = packed struct(u32) {
+    unused_0: u14 = 0,
+    drop_ammo: bool = false,
+    drop_weapons: bool = false,
+    drop_health: bool = false,
+    drop_fuel: bool = false,
+    /// Takes everything; the other drops don't apply.
+    drop_everything: bool = false,
+    release_sounds_at_end: bool = false,
+    unused_20: u12 = 0,
+};
+
 pub const Inventory = struct {
     slots: [26]?OwnedItem = [_]?OwnedItem{null} ** 26,
     sound_host: ?SoundHost = null,
     health: f32 = 10,
-    player_flags: u32 = 0,
+    player_flags: PlayerFlags = .{},
     selected: usize = 0,
     selected_weapon: usize = 0,
     browse_cursor: usize = 0,
@@ -521,7 +546,7 @@ pub const Inventory = struct {
     }
 
     pub fn acquire(self: *Inventory, definition: Definition, requested_slot: usize) !usize {
-        if (self.player_flags & 0x10000000 != 0) return 0;
+        if (self.player_flags.dead) return 0;
 
         const existing = self.find(definition.name);
         if (existing != 0) return existing;
@@ -602,25 +627,27 @@ pub const Inventory = struct {
         a: std.mem.Allocator,
         archives: []const lab.Archive,
         cid: *const Item,
-        flags: u32,
+        flags: LevelRules,
     ) !void {
-        if (flags & 0x40000 != 0) {
+        if (flags.drop_everything) {
             try self.releaseAllSounds();
             try self.restoreFist(a, archives);
         } else {
-            for ([_]u32{
-                0x4000,
-                0x8000,
-                0x10000,
-                0x20000,
-            }, [_]u32{ 0x414d4d4f, 0x57454150, 0x4845414c, 0x4655454c }) |mask, class| {
-                if (flags & mask == 0) continue;
+            // Item classes are four letters read as a number: AMMO, WEAP,
+            // HEAL, FUEL.
+            for ([_]LevelRules{
+                .{ .drop_ammo = true },
+                .{ .drop_weapons = true },
+                .{ .drop_health = true },
+                .{ .drop_fuel = true },
+            }, [_]u32{ 0x414d4d4f, 0x57454150, 0x4845414c, 0x4655454c }) |rule, class| {
+                if (!bits.any(flags, rule)) continue;
 
                 for (1..self.slots.len) |slot| if (self.slots[slot]) |owned| {
                     if (owned.definition.item_class == class) try self.remove(slot);
                 };
 
-                if (mask == 0x8000) try self.restoreFist(a, archives);
+                if (rule.drop_weapons) try self.restoreFist(a, archives);
             }
         }
 
@@ -664,10 +691,9 @@ pub const Inventory = struct {
     }
 
     pub fn browseInput(self: *Inventory, entry: @import("input.zig").Entry) void {
-        const input = @import("input.zig");
-        if (entry.flags & input.pressed == 0) return;
+        if (!entry.flags.pressed) return;
 
-        if (entry.flags & input.absolute == 0) {
+        if (!entry.flags.absolute) {
             if (entry.value == 0) return;
 
             if (!self.browsing) {
@@ -726,7 +752,7 @@ pub const Inventory = struct {
                 const sound = if (accepted) owned.definition.use_success_sound else owned.definition.use_failure_sound;
 
                 if (sound) |basename| try effects.append(.{
-                    .sound = .{ .basename = basename, .priority = 64, .volume = 127, .flags = 4 },
+                    .sound = .{ .basename = basename, .priority = 64, .volume = 127, .flags = .default },
                 });
 
                 if (accepted and self.slots[slot].?.count < 1) try self.remove(slot);
@@ -851,7 +877,7 @@ pub const Inventory = struct {
     }
 
     fn returnAmmunition(self: *Inventory, owned: OwnedItem) !void {
-        if (self.player_flags & 0x10000000 != 0) return;
+        if (self.player_flags.dead) return;
 
         const existing = self.find(owned.definition.ammo);
         const definition = if (existing != 0) self.slots[existing].?.definition else definition: {
@@ -908,7 +934,7 @@ pub const Inventory = struct {
             var changed = false;
 
             if (index == 0) {
-                var can_acquire = self.player_flags & 0x10000000 == 0;
+                var can_acquire = !self.player_flags.dead;
 
                 if (entry.slot == 0) {
                     var free: usize = 11;
@@ -950,10 +976,10 @@ pub const Inventory = struct {
                 }
             }
 
-            if (index != 0 and index < 10 and (pickup.game_type == 4 or pickup.game_type == 5)) changed = true;
+            if (index != 0 and index < 10 and pickup.game_type.isNetwork()) changed = true;
 
             if (changed and index != 0) {
-                if (@as(u16, @bitCast(pickup.flags)) & 1 == 0) {
+                if (!pickup.flags.dropped) {
                     switch (self.slots[index].?.definition.item_class) {
                         0x444f4355, 0x42414c4c, 0x464c4147 => {},
                         0x47424152 => {
@@ -1254,13 +1280,13 @@ test "player bind flags and restart preparation preserve inventory branch order"
         try inventory.startItems(a, &archives, &cid);
 
         if (std.mem.eql(u8, case.kind, "bind")) {
-            inventory.player_flags = 4;
-            try inventory.applyLevelFlags(a, &archives, &cid, case.flags);
+            inventory.player_flags = .new;
+            try inventory.applyLevelFlags(a, &archives, &cid, bits.from(LevelRules, case.flags));
         } else {
             try std.testing.expectEqualStrings("restart", case.kind);
 
             inventory.selected_weapon = 2;
-            inventory.player_flags = if (case.dead) 0x10000000 else 4;
+            inventory.player_flags = if (case.dead) .{ .dead = true } else .new;
 
             try inventory.releaseAllSounds();
             try inventory.startItems(a, &archives, &cid);
@@ -1390,7 +1416,7 @@ test "inventory destruction releases sounds and returns loaded ammunition" {
             .resolve = Capture.resolve,
         };
 
-        inventory.player_flags = if (case.dead) 0x10000000 else 0;
+        inventory.player_flags = .{ .dead = case.dead };
 
         try inventory.remove(slot);
 
@@ -1448,8 +1474,8 @@ test "inventory startup and twenty pickups match the reference" {
             a,
             &archives,
             &definition,
-            if (i == 9 or i == 10) 0x200000 else 0x100000,
-            1,
+            if (i == 9 or i == 10) .bad else .good,
+            .campaign,
         );
 
         const accepted = try inventory.take(&pickup, 0, &effects);
@@ -1496,8 +1522,8 @@ test "Death Match accepts an existing full weapon pickup as in" {
 
     var weapon_pickup = try Item.parse(a, item_bytes);
     defer weapon_pickup.deinit();
-    const campaign_pickup = try Pickup.parse(a, &archives, &weapon_pickup, 0x200000, 1);
-    const network_pickup = try Pickup.parse(a, &archives, &weapon_pickup, 0x200000, 5);
+    const campaign_pickup = try Pickup.parse(a, &archives, &weapon_pickup, .bad, .campaign);
+    const network_pickup = try Pickup.parse(a, &archives, &weapon_pickup, .bad, .hosting);
     const maximum = inventory.slots[slot].?.definition.max_count;
 
     inventory.slots[slot].?.count = maximum;
@@ -1539,9 +1565,9 @@ test "inventory instant pickup and sheriff task match handlers" {
     defer elixir_item.deinit();
     var badge_item = try Item.parse(a, (try resource(&archives, "GBADGE.ITM")).?);
     defer badge_item.deinit();
-    const canteen = try Pickup.parse(a, &archives, &canteen_item, 0x100000, 1);
-    const elixir = try Pickup.parse(a, &archives, &elixir_item, 0x100000, 1);
-    const badge = try Pickup.parse(a, &archives, &badge_item, 0x100000, 1);
+    const canteen = try Pickup.parse(a, &archives, &canteen_item, .good, .campaign);
+    const elixir = try Pickup.parse(a, &archives, &elixir_item, .good, .campaign);
+    const badge = try Pickup.parse(a, &archives, &badge_item, .good, .campaign);
     var inventory: Inventory = .{};
     var effects_buffer: EffectBuffer = undefined;
     var effects = Effects.init(&effects_buffer);
@@ -1702,7 +1728,7 @@ test "inventory validates negative pickup allocation and invalid signed slots" {
 
     try std.testing.expectError(
         error.InvalidPickupCount,
-        Pickup.parse(a, &.{}, &negative, 0x100000, 1),
+        Pickup.parse(a, &.{}, &negative, .good, .campaign),
     );
 
     var bad_slot = try Item.parse(
@@ -1714,7 +1740,7 @@ test "inventory validates negative pickup allocation and invalid signed slots" {
 
     try std.testing.expectError(
         error.InvalidInventorySlot,
-        Pickup.parse(a, &.{}, &bad_slot, 0x100000, 1),
+        Pickup.parse(a, &.{}, &bad_slot, .good, .campaign),
     );
 
     try std.testing.expectError(error.MissingInventoryItem, Definition.load(a, &.{}, "IKEY"));
@@ -1731,9 +1757,9 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     );
 
     defer absent.deinit();
-    const defaulted = try Pickup.parse(a, &archives, &absent, 0x100000, 1);
+    const defaulted = try Pickup.parse(a, &archives, &absent, .good, .campaign);
 
-    try std.testing.expectEqual(@as(i16, 99), defaulted.flags);
+    try std.testing.expectEqual(@as(i16, 99), @as(i16, @bitCast(defaulted.flags)));
     try std.testing.expectEqual(@as(i16, 1), defaulted.entries[0].count);
     try std.testing.expectEqual(@as(i16, 0), defaulted.entries[0].slot);
     try std.testing.expectEqual(@as(i16, -1), defaulted.entries[0].message);
@@ -1744,7 +1770,7 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     );
 
     defer truncated.deinit();
-    const wrapped = try Pickup.parse(a, &archives, &truncated, 0x100000, 1);
+    const wrapped = try Pickup.parse(a, &archives, &truncated, .good, .campaign);
 
     try std.testing.expectEqual(@as(i16, 0), wrapped.entries[0].count);
 
@@ -1754,8 +1780,8 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     );
 
     defer cartridges.deinit();
-    const campaign_cartridges = try Pickup.parse(a, &archives, &cartridges, 0x200000, 1);
-    const death_match_cartridges = try Pickup.parse(a, &archives, &cartridges, 0x200000, 5);
+    const campaign_cartridges = try Pickup.parse(a, &archives, &cartridges, .bad, .campaign);
+    const death_match_cartridges = try Pickup.parse(a, &archives, &cartridges, .bad, .hosting);
 
     try std.testing.expectEqual(@as(i16, 3), campaign_cartridges.entries[0].count);
     try std.testing.expectEqual(@as(i16, 7), death_match_cartridges.entries[0].count);
@@ -1766,7 +1792,7 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     );
 
     defer health.deinit();
-    const instant = try Pickup.parse(a, &archives, &health, 0x100000, 1);
+    const instant = try Pickup.parse(a, &archives, &health, .good, .campaign);
 
     try std.testing.expectEqual(@as(u8, 0), instant.health_bonus);
 
@@ -1783,7 +1809,7 @@ test "inventory missing numeric fields clear scratch and count default precedes 
     );
 
     defer fractional.deinit();
-    const fractional_pickup = try Pickup.parse(a, &archives, &fractional, 0x100000, 1);
+    const fractional_pickup = try Pickup.parse(a, &archives, &fractional, .good, .campaign);
 
     inventory.health = 0;
 

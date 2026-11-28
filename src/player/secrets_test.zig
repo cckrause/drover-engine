@@ -10,6 +10,7 @@ const secrets = @import("secrets.zig");
 const Session = @import("../render/session.zig").Session;
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
+const bits = @import("../util/bits.zig");
 
 test "secret discovery matches player ticks and one-shot ordering" {
     const a = std.testing.allocator;
@@ -57,13 +58,13 @@ test "secret discovery matches player ticks and one-shot ordering" {
     scene.collision_check = &collision_check;
 
     for (parsed.value.samples) |sample| {
-        sectors[0].runtime_flags = sample.initial[0];
+        bits.setWord(&sectors[0].runtime_flags, sample.initial[0]);
         var state = secrets.State{ .found = sample.initial[1] };
 
         for (sample.frames) |expected| {
             const discovered = state.discover(&scene, 0);
 
-            try std.testing.expectEqual(expected.flags, sectors[0].runtime_flags);
+            try std.testing.expectEqual(expected.flags, bits.word(sectors[0].runtime_flags));
             try std.testing.expectEqual(expected.found, state.found);
             try std.testing.expectEqual(
                 expected.messages.len,
@@ -72,7 +73,7 @@ test "secret discovery matches player ticks and one-shot ordering" {
 
             if (discovered) {
                 try std.testing.expectEqual(@as(u32, 0x13), expected.messages[0].message);
-                try std.testing.expectEqual(expected.messages[0].flags, sectors[0].runtime_flags);
+                try std.testing.expectEqual(expected.messages[0].flags, bits.word(sectors[0].runtime_flags));
                 try std.testing.expectEqual(expected.messages[0].found, state.found);
             }
         }
@@ -115,15 +116,12 @@ test "Hideout secret discovery updates the live HUD once and retains primary fla
     const sector = session.player.sector;
     const original = session.scene.sectors[sector].flags;
 
-    session.scene.sectors[sector].runtime_flags |= 0x10000000;
+    session.scene.sectors[sector].runtime_flags.secret_unfound = true;
     try session.advance(a, &.{}, 16);
 
     try std.testing.expectEqual(@as(u32, 1), session.secrets.found);
     try std.testing.expectEqual(original, session.scene.sectors[sector].flags);
-    try std.testing.expectEqual(
-        @as(u32, 0),
-        session.scene.sectors[sector].runtime_flags & 0x10000000,
-    );
+    try std.testing.expect(!session.scene.sectors[sector].runtime_flags.secret_unfound);
 
     const entries = session.messages.entries;
     try std.testing.expect(entries[0].string().len != 0);

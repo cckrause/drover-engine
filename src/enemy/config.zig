@@ -5,6 +5,7 @@
 //! recursively, and the difficulty descriptors are applied last.
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const WeaponMode = @import("../player/weapon_config.zig").Mode;
@@ -86,7 +87,7 @@ pub const Config = struct {
         a: std.mem.Allocator,
         archives: []const lab.Archive,
         item: *const Item,
-        difficulty: u32,
+        difficulty: Difficulty,
     ) !Config {
         var self: Config = .{};
 
@@ -266,7 +267,7 @@ pub const Config = struct {
         }
     }
 
-    fn scaleDifficulty(self: *Config, difficulty: u32) void {
+    fn scaleDifficulty(self: *Config, difficulty: Difficulty) void {
         const Factors = struct {
             speed: f32,
             shoot: f32,
@@ -279,7 +280,7 @@ pub const Config = struct {
         };
 
         const factors: Factors = switch (difficulty) {
-            0x100000 => .{
+            .good => .{
                 .speed = 0.8,
                 .shoot = 2,
                 .health = 1,
@@ -289,7 +290,7 @@ pub const Config = struct {
                 .aggression = 0.3,
                 .damage = 0.8,
             },
-            0x400000 => .{
+            .unpicked => .{
                 .speed = 1.2,
                 .shoot = 0.5,
                 .health = 1,
@@ -299,7 +300,7 @@ pub const Config = struct {
                 .aggression = 1,
                 .damage = 2.8,
             },
-            0x800000 => .{
+            .ugly => .{
                 .speed = 1.4,
                 .shoot = 1.5,
                 .health = 1,
@@ -309,7 +310,7 @@ pub const Config = struct {
                 .aggression = 1.3,
                 .damage = 4,
             },
-            else => .{
+            .bad => .{
                 .speed = 1,
                 .shoot = 2,
                 .health = 0.75,

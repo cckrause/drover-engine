@@ -209,7 +209,7 @@ test "3DO polygon clipping and four shading modes match the reference pixels" {
         .height = 8,
         .pixels = &texels,
         .height_shift = 3,
-        .flags = 0,
+        .flags = .{},
     };
 
     var pixels: [64 * 48]u8 = undefined;

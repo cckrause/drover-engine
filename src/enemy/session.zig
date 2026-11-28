@@ -24,6 +24,9 @@ const blood = @import("blood.zig");
 pub const spawnItem = @import("item_spawn.zig").spawn;
 pub const model = @import("item_spawn.zig").model;
 pub const bareModel = @import("item_spawn.zig").bareModel;
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Phase = enum { animation, selection, tick };
 
@@ -39,7 +42,7 @@ pub fn preload(session: anytype, allocator: std.mem.Allocator) !void {
     var nodes: std.ArrayList(controller.Node) = .empty;
 
     for (session.objects.entries) |object| {
-        if (object.flags[1] & session.difficulty_mask == 0 or object.flags[0] & 1 != 0) continue;
+        if (!bits.any(object.availability.difficulties, session.difficulty.set()) or object.flags.sound_only) continue;
 
         const sector = session.level.sectorIndex(object.sector_id) orelse continue;
         const name = try std.fmt.allocPrint(a, "{s}.ITM", .{std.fs.path.stem(object.name)});
@@ -107,11 +110,23 @@ pub fn playerSubject(session: anytype) controller.Subject {
         .flags = @import(
             "../player/lamp.zig",
         ).actorFlags(
-            0x8000006f | @as(u32, if (session.player.flags & 0x10000000 != 0) 0x4100 else 0),
-            session.player.flags & 0x20000000 != 0,
+            playerActorFlags(session.player.flags.dead),
+            session.player.flags.lamp_on,
         ),
-        .secondary_flags = 0x10,
+        .secondary_flags = .{ .player = true },
     };
+}
+
+/// The player's actor flags before the lamp has its say.
+pub fn playerActorFlags(dead: bool) ActorFlags {
+    var flags = ActorFlags.new_player;
+
+    if (dead) {
+        flags.dead = true;
+        flags.not_solid = true;
+    }
+
+    return flags;
 }
 
 pub fn context(
@@ -147,7 +162,7 @@ pub fn context(
         .shot_sink = .{ .context = session, .emit = @TypeOf(session.*).emitEnemyShot },
         .nodes = session.enemy_nodes,
         .sanchez_sites = session.sanchez_sites orelse &.{},
-        .difficulty = session.difficulty_mask >> 8,
+        .difficulty = session.difficulty,
         .complete_level = .{
             .context = session,
             .enqueue = @TypeOf(session.*).enqueueLevelCompletion,
@@ -206,7 +221,7 @@ pub fn run(
 
     const removed = try execute(phase, target, actor, &ctx);
 
-    if (phase == .tick and !removed) actor.flags |= 0x80000080;
+    if (phase == .tick and !removed) actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
 
     session.targets[source] = target.*;
     session.actor_slots[source] = actor.*;
@@ -220,7 +235,7 @@ pub fn run(
 pub fn scriptContext(
     session: anytype,
     effects: *inventory.Effects,
-    entity_mask: u32,
+    entity: ActorKind,
 ) script_runtime.Context {
     return .{
         .sector_messages = if (@hasField(
@@ -237,7 +252,7 @@ pub fn scriptContext(
         .inf = &session.inf,
         .level = &session.level,
         .collision_diameter = &session.collision_diameter,
-        .entity_mask = entity_mask,
+        .entity_mask = entity,
         .links = &session.actor_links,
         .link_serial = &session.actor_link_serial,
         .solid_host = .{ .context = session, .touch = @TypeOf(session.*).receiveActorContact },
@@ -270,7 +285,7 @@ pub fn playerNoise(
     try session.drainSounds(effects);
 
     var ctx = context(session, allocator, session.active_audio, null);
-    var runtime = scriptContext(session, effects, 0x10);
+    var runtime = scriptContext(session, effects, .{ .player = true });
 
     ctx.actors.runtime = &runtime;
     const source = session.player.sector;
@@ -297,7 +312,7 @@ pub fn playerNoise(
 
             const actor = ctx.actors.get(entry);
 
-            if (actor.secondary_flags & 0x100 == 0 or actor.logic_name.len == 0) continue;
+            if (!actor.secondary_flags.enemy or actor.logic_name.len == 0) continue;
 
             const perception = @import("perception.zig");
 
@@ -459,13 +474,13 @@ pub fn tick(
                     try @import(
                         "../projectile/session.zig",
                     ).tick(session, allocator, effects, index);
-                } else if (session.pickup_slots[index] != null and actor.flags & 0x41 == 0x41 and actor.secondary_flags & 0x01000000 == 0 and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time) {
+                } else if (session.pickup_slots[index] != null and actor.flags.logicReady() and !actor.secondary_flags.waiting_for_start and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time) {
                     session.pickup_slots[index].?.tick(
                         &session.actor_slots[index].?,
                         session.player.position,
                     );
 
-                    session.actor_slots[index].?.flags |= 0x80000080;
+                    session.actor_slots[index].?.flags = bits.with(session.actor_slots[index].?.flags, .{ .updated = true, .changed = true });
                     session.syncActor(index);
                 }
 
@@ -477,7 +492,7 @@ pub fn tick(
 
         const actor = session.actor_slots[index] orelse return error.MissingEnemyActor;
 
-        if (actor.flags & 0x41 != 0x41 or actor.secondary_flags & 0x01000000 != 0 or session.targets[index].?.next_tick > session.animation_time) {
+        if (!actor.flags.logicReady() or actor.secondary_flags.waiting_for_start or session.targets[index].?.next_tick > session.animation_time) {
             if (inRemovalSector(session, actor)) try removeActor(session, index);
             continue;
         }
@@ -494,7 +509,7 @@ pub fn tick(
 }
 
 pub fn inRemovalSector(session: anytype, actor: Actor) bool {
-    return session.scene.sectors[actor.sector].flags & 0x01000000 != 0 and actor.secondary_flags & 0x30 == 0;
+    return session.scene.sectors[actor.sector].flags.removes_objects and !actor.secondary_flags.player and !actor.secondary_flags.projectile;
 }
 
 pub fn removeActor(session: anytype, source: usize) !void {
@@ -551,7 +566,7 @@ pub fn finishDeath(session: anytype, allocator: std.mem.Allocator, index: usize)
         _ = try spawnItem(session, target.drop_item, place);
     }
 
-    if (actor.secondary_flags & 0x100 != 0) session.enemy_shared.killed_enemies += 1;
+    if (actor.secondary_flags.enemy) session.enemy_shared.killed_enemies += 1;
 
     const resource = actor.logic_resource orelse blk: {
         var entries = session.costumes.iterator();
@@ -679,8 +694,8 @@ pub fn networkCorpse(
         .sector = sector,
         .position = position,
         .yaw = 0,
-        .flags = 0,
-        .secondary_flags = 0,
+        .flags = .{},
+        .secondary_flags = .{},
         .scale_x = 1,
         .scale_y = 1,
         .height = 1,
@@ -791,7 +806,7 @@ pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !u
     session.removed_actors[index] = false;
     session.actor_next_update[index] = 0;
     session.blood_slots[index] = null;
-    session.general_slots[index] = if (actor.flags & 0x400 != 0) .{
+    session.general_slots[index] = if (actor.flags.physics) .{
         .velocity = .{ .x = 0, .y = 0, .z = 0 },
     } else null;
 

@@ -56,7 +56,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
         @intFromEnum(
             input.Slot.fire,
         )
-    ] = .{ .value = 1, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 1, .flags = .{ .absolute = true, .pressed = true } };
 
     var sound_count: usize = 0;
     var checked_repeated_presentation = false;
@@ -66,7 +66,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
             @intFromEnum(
                 input.Slot.fire,
             )
-        ] = .{ .flags = input.released };
+        ] = .{ .flags = .{ .released = true } };
 
         if (frame == 2) packet = .{};
 
@@ -108,14 +108,14 @@ test "Hideout fires and reloads the installed pistol through the production fram
         @intFromEnum(
             input.Slot.reload,
         )
-    ] = .{ .value = 1, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 1, .flags = .{ .absolute = true, .pressed = true } };
 
     for (0..60) |frame| {
         if (frame == 1) packet.entries[
             @intFromEnum(
                 input.Slot.reload,
             )
-        ] = .{ .flags = input.released };
+        ] = .{ .flags = .{ .released = true } };
 
         if (frame == 2) packet = .{};
 
@@ -131,7 +131,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
         @intFromEnum(
             input.Slot.weapon,
         )
-    ] = .{ .value = 3, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 3, .flags = .{ .absolute = true, .pressed = true } };
 
     for (0..80) |frame| {
         if (frame == 1) packet = .{};
@@ -156,7 +156,7 @@ test "Hideout fires and reloads the installed pistol through the production fram
         @intFromEnum(
             input.Slot.weapon,
         )
-    ] = .{ .value = 3, .flags = input.absolute | input.pressed };
+    ] = .{ .value = 3, .flags = .{ .absolute = true, .pressed = true } };
 
     try session.advance(a, &packet, 16);
     _ = try session.render(pixels, session.animation_time);

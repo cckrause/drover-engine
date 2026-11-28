@@ -10,6 +10,7 @@ const Vec3 = @import("../assets/level.zig").Vec3;
 const Actor = @import("../render/objects.zig").Actor;
 const Angles = @import("../render/backends/software/camera.zig").Angles;
 const random_module = @import("../player/weapon.zig");
+const bits = @import("../util/bits.zig");
 
 pub const Kind = enum(u32) { knife = 2, explosive = 3 };
 
@@ -149,8 +150,11 @@ pub fn initialize(actor: *Actor, config: *const Config, descriptor: Descriptor, 
     actor.roll = 0;
     actor.height = f(@as(f64, config.collide_radius) * 2.0);
     actor.collision_radius = config.collide_radius;
-    actor.flags = (actor.flags & ~@as(u32, 0x404)) | 0x80000140;
-    actor.secondary_flags |= 0x420;
+    actor.flags = bits.with(
+        bits.without(actor.flags, .{ .visible = true, .physics = true }),
+        .{ .has_logic = true, .not_solid = true, .changed = true },
+    );
+    actor.secondary_flags = bits.with(actor.secondary_flags, .{ .projectile = true, .item = true });
     actor.logic_name = if (descriptor.kind == .explosive) "shot_ExpProjectileDispatch" else "shot_ProjectileDispatch";
     actor.projectile_explodes = config.explosion != null;
 
@@ -174,7 +178,9 @@ pub fn launch(
 ) !void {
     if (!std.math.isFinite(fraction)) return error.InvalidProjectileFloat;
 
-    actor.flags = (actor.flags & ~@as(u32, 0x100)) | 0x80000004;
+    actor.flags.not_solid = false;
+    actor.flags.visible = true;
+    actor.flags.changed = true;
 
     const degrees = @as(f64, state.config.throw_pitch) * 45.5112;
     if (!std.math.isFinite(

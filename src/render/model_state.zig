@@ -6,6 +6,8 @@
 //! dimensions, and the radius fallback compares against that.
 
 const std = @import("std");
+const GameType = @import("../game_type.zig").GameType;
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const lab = @import("../assets/lab.zig");
 const level = @import("../assets/level.zig");
@@ -14,6 +16,7 @@ const Model = @import("../assets/model.zig").Model;
 const inventory = @import("../player/inventory.zig");
 const cmm = @import("../script/cmm.zig");
 const objects = @import("objects.zig");
+const bits = @import("../util/bits.zig");
 
 pub const Constructed = struct { actor: objects.Actor, pickup: ?inventory.Pickup = null };
 
@@ -24,8 +27,8 @@ pub fn init(
     sector: usize,
     definition: ?*const Item,
     model: *const Model,
-    difficulty: u32,
-    game_type: u32,
+    difficulty: Difficulty,
+    game_type: GameType,
 ) !Constructed {
     var result: Constructed = .{ .actor = .{
         .model = model,
@@ -34,8 +37,8 @@ pub fn init(
         .yaw = object.angles[1],
         .pitch = object.angles[0],
         .roll = object.angles[2],
-        .flags = 0x8000000f,
-        .secondary_flags = 0,
+        .flags = objects.ActorFlags.new,
+        .secondary_flags = .{},
         .scale_x = 1,
         .scale_y = 1,
         .height = 6,
@@ -56,18 +59,18 @@ pub fn init(
 
         switch (try cmm.resolve(item.function)) {
             .object => {
-                result.actor.flags |= 0x40;
-                result.actor.secondary_flags = 0x400;
+                result.actor.flags.has_logic = true;
+                result.actor.secondary_flags = .{ .item = true };
 
                 if (try item.stringValue("TYPE")) |kind|
                     result.actor.secondary_flags = if (std.ascii.eqlIgnoreCase(
                         kind,
                         "SHOOT",
-                    )) 0x2000 else 0x1000;
+                    )) .{ .used_when_shot = true } else .{ .used_when_activated = true };
             },
             .ground_object, .ground_sheriff_star, .ground_vanishing_cream => {
-                result.actor.flags |= 0x440;
-                result.actor.secondary_flags = 0x400;
+                result.actor.flags = bits.with(result.actor.flags, .{ .has_logic = true, .physics = true });
+                result.actor.secondary_flags = .{ .item = true };
                 result.pickup = try inventory.Pickup.parse(
                     allocator,
                     archives,
@@ -77,8 +80,8 @@ pub fn init(
                 );
             },
             .instant_ground_object => {
-                result.actor.flags |= 0x400;
-                result.actor.secondary_flags = 0x400;
+                result.actor.flags.physics = true;
+                result.actor.secondary_flags = .{ .item = true };
                 result.pickup = try inventory.Pickup.parse(
                     allocator,
                     archives,
@@ -116,8 +119,8 @@ pub fn init(
                 }
 
                 result.actor.height = @floatCast(@as(f64, result.actor.collision_radius) * 2.0);
-                result.actor.flags |= 0x40;
-                result.actor.secondary_flags = 0x400;
+                result.actor.flags.has_logic = true;
+                result.actor.secondary_flags = .{ .item = true };
                 result.pickup = try inventory.Pickup.parse(
                     allocator,
                     archives,
@@ -134,16 +137,16 @@ pub fn init(
         if (item.floatValue("HEIGHT")) |height| result.actor.height = height;
 
         if (item.floatValue("RADIUS")) |radius| result.actor.collision_radius = radius;
-    } else if (object.flags[0] & 8 == 0) return error.UnsupportedObjectModel;
+    } else if (!object.flags.model) return error.UnsupportedObjectModel;
 
-    if (object.flags[0] & 0x10 != 0) result.actor.flags |= 0x400;
+    if (object.flags.physics) result.actor.flags.physics = true;
 
     return result;
 }
 
 pub fn tick(session: anytype, source: usize) !void {
     const actor = &session.actor_slots[source].?;
-    if (actor.flags & 0x41 != 0x41 or actor.secondary_flags & 0x01000000 != 0 or @as(
+    if (!actor.flags.logicReady() or actor.secondary_flags.waiting_for_start or @as(
         u32,
         @bitCast(session.actor_next_update[source]),
     ) > session.animation_time) return;
@@ -154,7 +157,7 @@ pub fn tick(session: anytype, source: usize) !void {
         @as(f64, session.player.position.x) - actor.position.x,
     ) + @abs(@as(f64, session.player.position.z) - actor.position.z);
 
-    actor.flags |= 0x800000c0;
+    actor.flags = bits.with(actor.flags, .{ .has_logic = true, .updated = true, .changed = true });
     session.syncActor(source);
 }
 
@@ -235,7 +238,8 @@ test "3DO constructors match GDYNAM GKNIFE and bare actor factories" {
             .position = .{ .x = 4, .y = 0, .z = -3 },
             .rotation = .{ .x = 0, .y = 0, .z = 0 },
             .angles = .{ 100, -2345, 300 },
-            .flags = .{ case[1], 0xffffffff },
+            .flags = bits.from(level.ObjectFlags, case[1]),
+            .availability = bits.from(level.ObjectAvailability, 0xffffffff),
         };
 
         const constructed = try init(
@@ -245,12 +249,12 @@ test "3DO constructors match GDYNAM GKNIFE and bare actor factories" {
             0,
             if (definition) |*value| value else null,
             &model,
-            0x100000,
-            1,
+            .good,
+            .campaign,
         );
 
-        try std.testing.expectEqual(case[2], constructed.actor.flags);
-        try std.testing.expectEqual(case[3], constructed.actor.secondary_flags);
+        try std.testing.expectEqual(case[2], bits.word(constructed.actor.flags));
+        try std.testing.expectEqual(case[3], bits.word(constructed.actor.secondary_flags));
         try std.testing.expectEqual(case[4], constructed.actor.height);
         try std.testing.expectEqual(case[5], constructed.actor.collision_radius);
         try std.testing.expectEqualSlices(

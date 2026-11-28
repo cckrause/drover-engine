@@ -11,10 +11,13 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
+const bits = @import("../util/bits.zig");
 const contract = @import("driver.zig");
 const message = @import("message.zig");
 const message_store = @import("message_store.zig");
 const network_layer = @import("network.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 const MessageStore = message_store.MessageStore;
 const Chain = message_store.Chain;
 pub const Score = message.Score;
@@ -62,7 +65,7 @@ pub const Client = struct {
     }
 };
 
-pub const Player = struct { code: u8, flags: u32 };
+pub const Player = struct { code: u8, flags: ActorKind };
 
 pub const Game = struct {
     context: *anyopaque = undefined,
@@ -149,7 +152,7 @@ pub const Router = struct {
     join_deadline: u32 = 0,
     join_tries: u32 = 0,
     join_saved_leave: bool = false,
-    game_type: u32 = 1,
+    game_type: GameType = .campaign,
     sender_check: bool = true,
     multiplex: ?Multiplex = null,
     multiplex_ring: [8]?Multiplex = @splat(null),
@@ -348,10 +351,10 @@ pub const Router = struct {
         try self.game.removeClient(self.game.context, number);
         try self.game.players(self.game.context);
 
-        if (self.game_type == 5) try self.game.forget(self.game.context, number);
+        if (self.game_type == .hosting) try self.game.forget(self.game.context, number);
     }
 
-    pub fn post(self: *Router, destination: u32, number: u32, bytes: []u8) !Posted {
+    pub fn post(self: *Router, destination: u32, number: message.Number, bytes: []u8) !Posted {
         if (bytes.len < message.header_size or bytes.len > 0xffff) return error.MalformedNetworkMessage;
 
         if (self.multiplex) |*table| {
@@ -371,17 +374,18 @@ pub const Router = struct {
             const copy = self.store.get(index);
 
             message.set(copy, message.destination_offset, destination);
-            message.set(copy, message.number_offset, number);
+            message.set(copy, message.number_offset, bits.word(number));
             table.parts.push(&self.store, index);
 
             return .multiplexed;
         }
 
         const target = message.client(destination);
-        const must: u32 = number >> 31;
+        const must: u32 = @intFromBool(number.must_arrive);
+        const sent: message.Number = .{ .code = number.code, .repeat = number.repeat, .unused_16 = number.unused_16 };
 
         message.set(bytes, message.destination_offset, destination);
-        message.set(bytes, message.number_offset, number & 0xffffff);
+        message.set(bytes, message.number_offset, bits.word(sent));
 
         if (target == self.own_client and target != 0) {
             try self.addToQueues(bytes);
@@ -451,7 +455,7 @@ pub const Router = struct {
         self.multiplex = previous;
     }
 
-    pub fn postHereAndEveryone(self: *Router, destination: u32, number: u32, bytes: []u8) !void {
+    pub fn postHereAndEveryone(self: *Router, destination: u32, number: message.Number, bytes: []u8) !void {
         _ = try self.post((self.own_client & 0xff) << 11 | (destination & 0x7807ff), number, bytes);
         _ = try self.post(destination & 0x7807ff, number, bytes);
     }
@@ -560,7 +564,7 @@ pub const Router = struct {
 
         message.set(bytes, message.reply_offset, 0x180000);
 
-        _ = try self.post(0x180000, 0x3f7, bytes);
+        _ = try self.post(0x180000, .{ .code = 0x3f7 }, bytes);
 
         try self.setClient(@truncate(self.own_client), &self.own_address, name);
     }
@@ -689,7 +693,7 @@ pub const Router = struct {
         for (self.clients[1..], 1..) |*client, number| {
             if (number == 2 or message.isNone(&client.address)) continue;
             const player = client.player orelse continue;
-            if (player.flags & 0x1000000 == 0) count += 1;
+            if (!player.flags.waiting_for_start) count += 1;
         }
 
         return count;
@@ -726,7 +730,7 @@ pub const Router = struct {
 
         message.set(bytes, message.reply_offset, message.get(bytes, message.sender_offset));
 
-        _ = try self.post(0x100000, 0x3e9, bytes);
+        _ = try self.post(0x100000, .{ .code = 0x3e9 }, bytes);
 
         self.own_client = 0xffffffff;
     }
@@ -817,7 +821,7 @@ pub const Router = struct {
 
             const destination = message.addressWord(message.Queue.router, @truncate(table.client));
 
-            _ = try self.post(destination, 0x3f8, packet[0..length]);
+            _ = try self.post(destination, .{ .code = 0x3f8 }, packet[0..length]);
             if (table.parts.count != 0) return;
         }
 
@@ -945,7 +949,7 @@ pub const Router = struct {
             offset += length;
             _ = try self.post(
                 message.get(part, message.destination_offset),
-                message.get(part, message.number_offset),
+                bits.from(message.Number, message.get(part, message.number_offset)),
                 part,
             );
         }
@@ -977,7 +981,7 @@ test "router keeps queued messages through reset and frees only taken ones" {
     var request: [message.header_size]u8 = @splat(0);
     try std.testing.expectEqual(
         Posted.queued,
-        try router.post(message.addressWord(message.Queue.server, 1), 0x3ef, &request),
+        try router.post(message.addressWord(message.Queue.server, 1), .{ .code = 0x3ef }, &request),
     );
 
     router.close();
@@ -1002,7 +1006,7 @@ test "post here and to everyone keeps the own client on the first copy" {
     router.own_client = 5;
 
     var request: [message.header_size]u8 = @splat(0);
-    try router.postHereAndEveryone(0x100800, 0x7d6, &request);
+    try router.postHereAndEveryone(0x100800, .of(.trigger), &request);
 
     const queued = (try router.read(message.Queue.server)).?;
     try std.testing.expectEqual(
@@ -1029,11 +1033,11 @@ test "a multiplexed message too large for any packet is refused when posted" {
     defer router.cancelMultiplex(null);
 
     var fits: [multiplex_limit - multiplex_overhead - 1]u8 = @splat(0);
-    try std.testing.expectEqual(Posted.multiplexed, try router.post(0x100000, 0x3ef, &fits));
+    try std.testing.expectEqual(Posted.multiplexed, try router.post(0x100000, .{ .code = 0x3ef }, &fits));
 
     var too_large: [multiplex_limit - multiplex_overhead]u8 = @splat(0);
 
-    try std.testing.expectEqual(Posted.too_large, try router.post(0x100000, 0x3ef, &too_large));
+    try std.testing.expectEqual(Posted.too_large, try router.post(0x100000, .{ .code = 0x3ef }, &too_large));
     try std.testing.expectEqual(@as(usize, 1), router.multiplex.?.parts.count);
 }
 
@@ -1046,15 +1050,15 @@ test "queued messages are held to the router's totals and counted until freed" {
     var request: [0x400]u8 = @splat(0);
     const destination = message.addressWord(message.Queue.server, 1);
 
-    for (0..max_queued_bytes / request.len) |_| _ = try router.post(destination, 0x3ef, &request);
+    for (0..max_queued_bytes / request.len) |_| _ = try router.post(destination, .{ .code = 0x3ef }, &request);
 
     try std.testing.expectEqual(@as(usize, max_queued_bytes), router.store.used_bytes);
-    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &request));
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, .{ .code = 0x3ef }, &request));
 
     const taken = (try router.read(message.Queue.server)).?;
-    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &request));
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, .{ .code = 0x3ef }, &request));
     router.release(taken);
-    _ = try router.post(destination, 0x3ef, &request);
+    _ = try router.post(destination, .{ .code = 0x3ef }, &request);
 
     router.dropQueued();
 
@@ -1063,9 +1067,9 @@ test "queued messages are held to the router's totals and counted until freed" {
 
     var small: [message.header_size]u8 = @splat(0);
 
-    for (0..max_queued_messages) |_| _ = try router.post(destination, 0x3ef, &small);
+    for (0..max_queued_messages) |_| _ = try router.post(destination, .{ .code = 0x3ef }, &small);
 
-    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, 0x3ef, &small));
+    try std.testing.expectError(error.NetworkQueueFull, router.post(destination, .{ .code = 0x3ef }, &small));
 }
 
 test "queued messages, messages being read and bundles reuse the router's storage without asking for memory" {
@@ -1086,12 +1090,12 @@ test "queued messages, messages being read and bundles reuse the router's storag
 
         for (0..10) |_| try std.testing.expectEqual(
             Posted.multiplexed,
-            try router.post(destination, 0x3ef, &request),
+            try router.post(destination, .{ .code = 0x3ef }, &request),
         );
 
         router.endMultiplex(previous);
 
-        _ = try router.post(destination, 0x3f0, &request);
+        _ = try router.post(destination, .{ .code = 0x3f0 }, &request);
         router.now += 100;
 
         try router.process();
@@ -1208,6 +1212,6 @@ test "a driver that fails to receive is reported, not read as silence" {
     var request: [message.header_size]u8 = @splat(0);
     try std.testing.expectError(
         error.SendFailed,
-        router.post(message.addressWord(message.Queue.database, 3), 0x3ef, &request),
+        router.post(message.addressWord(message.Queue.database, 3), .{ .code = 0x3ef }, &request),
     );
 }

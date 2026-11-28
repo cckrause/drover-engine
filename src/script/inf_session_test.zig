@@ -4,6 +4,9 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
+const recorded = @import("../testing/recorded_event.zig");
+const RecordedEvent = recorded.RecordedEvent;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
@@ -42,7 +45,7 @@ test "Hideout activation ray matches 320 reference traces" {
             yaw: i16,
             height_bits: u32,
             object_id: u32,
-            events: []const interaction.Event,
+            events: []const RecordedEvent,
         },
     };
 
@@ -106,7 +109,7 @@ test "Hideout activation ray matches 320 reference traces" {
             case.object_id,
         );
 
-        std.testing.expectEqualDeep(case.events, events.items) catch |err| {
+        recorded.expectEvents(case.events, events.items) catch |err| {
             std.debug.print(
                 "reference activation ray case{d}, sector{d}, yaw{d}\n",
                 .{ index, case.sector, case.yaw },
@@ -161,18 +164,18 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
     try std.testing.expectEqual(@as(f32, 0.125), session.level.sectors[20].ceiling.height);
 
     var packet: input.Packet = .{};
-    packet.entries[@intFromEnum(input.Slot.nudge)].flags = input.pressed;
+    packet.entries[@intFromEnum(input.Slot.nudge)].flags = .{ .pressed = true };
     try session.advance(a, &packet, 16);
 
     try std.testing.expectEqual(@as(f32, 0.125), session.level.sectors[20].ceiling.height);
     try std.testing.expectEqual(@as(u32, 0xffffffff), elevator.next_time);
-    try std.testing.expect(elevator.runtime_flags & 1 == 0);
+    try std.testing.expect(!elevator.runtime_flags.moving);
 
     try session.advance(a, &.{}, 16);
 
     try std.testing.expectEqual(@as(u32, 32), elevator.next_time);
     try std.testing.expectEqual(@as(f32, 0.125), session.level.sectors[20].ceiling.height);
-    try std.testing.expect(elevator.runtime_flags & 1 != 0);
+    try std.testing.expect(elevator.runtime_flags.moving);
 
     try session.advance(a, &.{}, 16);
     try std.testing.expect(session.level.sectors[20].ceiling.height > 0.125);
@@ -181,7 +184,7 @@ test "Hideout nudge opens TOOLSEC through the live INF task" {
 
     try std.testing.expectEqual(@as(f32, 4), session.level.sectors[20].ceiling.height);
     try std.testing.expectEqual(@as(u32, 0xffffffff), elevator.next_time);
-    try std.testing.expect(elevator.runtime_flags & 1 == 0);
+    try std.testing.expect(!elevator.runtime_flags.moving);
 
     const pixels = try a.alloc(u8, 640 * 480);
     defer a.free(pixels);
@@ -239,7 +242,7 @@ test "Hideout automatic swinging door opens and closes through queued messages" 
 
     try session.inf.event(
         &session.level,
-        .{ .sector = 32, .mask = 0x20, .now_ms = session.animation_time },
+        .{ .sector = 32, .mask = .{ .nudge_back = true }, .now_ms = session.animation_time },
     );
 
     try session.advance(a, &.{}, 16);
@@ -254,7 +257,7 @@ test "Hideout automatic swinging door opens and closes through queued messages" 
 
     try session.inf.event(
         &session.level,
-        .{ .sector = 32, .mask = 0x20, .now_ms = session.animation_time },
+        .{ .sector = 32, .mask = .{ .nudge_back = true }, .now_ms = session.animation_time },
     );
 
     try session.advance(a, &.{}, 16);
@@ -313,7 +316,7 @@ test "Hideout INF selected keys retain success and failure sound requests" {
 
         try session.inf.event(
             &session.level,
-            .{ .sector = brass, .mask = 0x10, .object_id = id, .now_ms = session.animation_time },
+            .{ .sector = brass, .mask = .{ .nudge_front = true }, .object_id = id, .now_ms = session.animation_time },
         );
 
         try session.advance(a, &.{}, 16);
@@ -329,7 +332,7 @@ test "Hideout INF selected keys retain success and failure sound requests" {
         try std.testing.expectEqualStrings(expected, sound.basename);
         try std.testing.expectEqual(@as(?i32, 0x40), sound.priority);
         try std.testing.expectEqual(@as(?i32, 0x7f), sound.volume);
-        try std.testing.expectEqual(@as(?u32, 4), sound.flags);
+        try std.testing.expectEqual(@as(?RequestFlags, .default), sound.flags);
     }
 }
 
@@ -551,7 +554,7 @@ test "Train lethal ground delivers death text and cleanup on the next frame" {
         } else if (death_tick) |died_at| {
             try std.testing.expectEqual(@as(f32, 0), session.inventory.health);
             try std.testing.expect(session.player.dead);
-            try std.testing.expect(session.player.flags & 0x10000000 != 0);
+            try std.testing.expect(session.player.flags.dead);
 
             for (session.inventory.slots) |slot| try std.testing.expect(slot == null);
 

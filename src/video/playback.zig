@@ -6,6 +6,17 @@
 
 const std = @import("std");
 
+const RenderFlags = @import("smush_codec.zig").RenderFlags;
+
+pub const ClockFlags = packed struct(u32) {
+    unused_0: bool = true,
+    unused_1: u2 = 0,
+    shows_every_frame: bool = false,
+    unused_4: u26 = 0,
+    unused_30: bool = true,
+    unused_31: bool = false,
+};
+
 pub const Clock = struct {
     rate: u32 = 12,
     base_time: u32 = 0,
@@ -15,7 +26,7 @@ pub const Clock = struct {
     displayed_frame: i32 = 0,
     consecutive_skips: u8 = 0,
     skip_decode: bool = false,
-    flags: u32 = 0x40000001,
+    flags: ClockFlags = .{},
     audio_enabled: bool = false,
     stream_paused: bool = false,
     no_audio_base: u32 = 0,
@@ -28,7 +39,7 @@ pub const Clock = struct {
 
     pub fn initAudio(now: u32, rate: i16) !Clock {
         var self = try init(now, rate);
-        self.flags = 1;
+        self.flags = .{ .unused_30 = false };
         self.audio_enabled = true;
 
         return self;
@@ -107,7 +118,7 @@ pub const Clock = struct {
     pub fn present(self: *Clock, frame_number: u16, now: u32) bool {
         const late = self.deficit(now);
         self.displayed_frame = frame_number;
-        const copy = !(self.flags & 8 == 0 and late > 1 and self.consecutive_skips < 3);
+        const copy = self.flags.shows_every_frame or late <= 1 or self.consecutive_skips >= 3;
 
         if (copy) self.consecutive_skips = 0 else self.consecutive_skips += 1;
 
@@ -122,8 +133,8 @@ pub const Clock = struct {
         return copy;
     }
 
-    pub fn renderFlags(self: *const Clock) u16 {
-        return if (self.skip_decode) 0x10 else 0;
+    pub fn renderFlags(self: *const Clock) RenderFlags {
+        return .{ .skip = self.skip_decode };
     }
 
     pub fn togglePause(self: *Clock) void {
@@ -162,7 +173,7 @@ test "silent movie clock preserves the 201ms rescue and unrebased pause" {
     try std.testing.expect(!clock.present(3, 9000));
     try std.testing.expect(!clock.present(4, 9000));
     try std.testing.expect(clock.present(5, 9000));
-    try std.testing.expectEqual(@as(u16, 0x10), clock.renderFlags());
+    try std.testing.expectEqual(RenderFlags{ .skip = true }, clock.renderFlags());
 
     var slow = try Clock.init(10, 1);
     slow.released(10);

@@ -12,6 +12,8 @@ const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
 const blood = @import("blood.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 const Snapshot = struct {
     position_bits: [3]u32,
@@ -31,10 +33,10 @@ fn check(expected: Snapshot, particle: blood.Spawn, random: u32) !void {
     const actor = particle.actor;
     const playback = actor.playback.?;
     const actual = Snapshot{
-        .position_bits = bits(actor.position),
-        .velocity_bits = bits(particle.state.velocity),
-        .flags = actor.flags,
-        .secondary_flags = actor.secondary_flags,
+        .position_bits = vectorBits(actor.position),
+        .velocity_bits = vectorBits(particle.state.velocity),
+        .flags = bits.word(actor.flags),
+        .secondary_flags = bits.word(actor.secondary_flags),
         .scale_bits = .{ @bitCast(actor.scale_x), @bitCast(actor.scale_y) },
         .height_bits = @bitCast(actor.height),
         .radius_bits = @bitCast(actor.collision_radius),
@@ -46,7 +48,7 @@ fn check(expected: Snapshot, particle: blood.Spawn, random: u32) !void {
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
             @intFromBool(playback.terminated),
         },
         .random = random,
@@ -60,7 +62,7 @@ fn point(value: [3]f32) level_module.Vec3 {
     return .{ .x = value[0], .y = value[1], .z = value[2] };
 }
 
-fn bits(value: level_module.Vec3) [3]u32 {
+fn vectorBits(value: level_module.Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -105,8 +107,8 @@ fn projectionActor(
         .costume = costume,
         .sector = 0,
         .position = fromBits(initial.position_bits),
-        .flags = initial.flags,
-        .secondary_flags = 0x800000,
+        .flags = bits.from(ActorFlags, initial.flags),
+        .secondary_flags = .{ .effect = true },
         .height = @bitCast(initial.height_bits),
         .collision_radius = @bitCast(initial.radius_bits),
         .scale_x = @bitCast(initial.scale_bits[0]),
@@ -187,7 +189,7 @@ test "blood spawn gravity contacts and removal" {
         sector_state.velocity_present = config.conveyor != null;
 
         if (config.floor_slope) |slope| {
-            sector_state.flags |= 0x40000000;
+            sector_state.flags.sloped_floor = true;
             sector_state.floor_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = slope[0], .coeff_z = slope[1], .constant = slope[2] },
@@ -267,10 +269,10 @@ test "splash construction selection sound and bound termination" {
 
     try std.testing.expectEqualStrings("smsplash.wav", sound.basename);
     try std.testing.expectEqual(@as(usize, 1), corpus.sounds.len);
-    try std.testing.expectEqualDeep(corpus.sounds[0].position_bits, bits(sound.position.?));
+    try std.testing.expectEqualDeep(corpus.sounds[0].position_bits, vectorBits(sound.position.?));
     try std.testing.expectEqualDeep(
         corpus.sounds[0].options,
-        [3]u32{ @bitCast(sound.priority.?), @bitCast(sound.volume.?), sound.flags.? },
+        [3]u32{ @bitCast(sound.priority.?), @bitCast(sound.volume.?), bits.word(sound.flags.?) },
     );
 
     try std.testing.expect(!try blood.selectSplash(&particle.actor, 1000));
@@ -371,7 +373,7 @@ test "general actor scheduler gravity and conveyors" {
         var random = config.seed;
         var particle = try blood.spawn(&costume, &random, 0, point(config.position), 1000);
 
-        particle.actor.flags = case.flags;
+        bits.setWord(&particle.actor.flags, case.flags);
         try check(case.initial, particle, random);
         try std.testing.expectEqual(
             case.stepped,
@@ -479,7 +481,7 @@ test "dynamic callbacks retain exact projectile contact stack residue" {
         };
 
         states[0].velocity_present = config.conveyor != null;
-        states[1].flags = 0x80;
+        states[1].flags = .{ .underwater = true };
 
         var scene: scene_module.Scene = undefined;
         scene.sectors = &states;
@@ -501,8 +503,8 @@ test "dynamic callbacks retain exact projectile contact stack residue" {
             .costume = &costume,
             .sector = 0,
             .position = fromBits(case.initial.position_bits),
-            .flags = case.initial.flags,
-            .secondary_flags = 0x800000,
+            .flags = bits.from(ActorFlags, case.initial.flags),
+            .secondary_flags = .{ .effect = true },
             .scale_x = @bitCast(case.initial.scale_bits[0]),
             .scale_y = @bitCast(case.initial.scale_bits[1]),
             .height = @bitCast(case.initial.height_bits),
@@ -534,8 +536,8 @@ test "dynamic callbacks retain exact projectile contact stack residue" {
         }
 
         if (!unresolved_projection) {
-            try std.testing.expectEqualDeep(case.dynamic_position_bits, bits(actor.position));
-            try std.testing.expectEqualDeep(case.dynamic_velocity_bits, bits(movement.velocity));
+            try std.testing.expectEqualDeep(case.dynamic_position_bits, vectorBits(actor.position));
+            try std.testing.expectEqualDeep(case.dynamic_velocity_bits, vectorBits(movement.velocity));
         }
     }
 }
@@ -681,13 +683,13 @@ test "player blood projection preserves proven scheduler stack words" {
         player.velocity = point(config.velocity);
 
         var packet: input.Packet = .{};
-        packet.entries[23] = .{ .value = 100, .flags = 0x20 };
+        packet.entries[23] = .{ .value = 100, .flags = .{ .unscaled = true } };
 
         for (case.player_slots) |slot| packet.entries[
             @intCast(
                 slot[0],
             )
-        ] = .{ .value = @intCast(slot[1]), .flags = @intCast(slot[2]) };
+        ] = .{ .value = @intCast(slot[1]), .flags = bits.from(input.EntryFlags, @intCast(slot[2])) };
 
         var look: input.LookState = .{};
         const control = look.control(&packet);
@@ -787,8 +789,8 @@ test "player blood projection preserves proven scheduler stack words" {
             for (projection.words, player.contact_residue.projection.words) |expected, actual| try std.testing.expectEqual(@as(?u32, expected), actual);
         }
 
-        try std.testing.expectEqualDeep(case.position_bits, bits(actor.position));
-        try std.testing.expectEqualDeep(case.velocity_bits, bits(motion.velocity));
+        try std.testing.expectEqualDeep(case.position_bits, vectorBits(actor.position));
+        try std.testing.expectEqualDeep(case.velocity_bits, vectorBits(motion.velocity));
         try std.testing.expectEqual(case.floor_cache_bits, @as(u32, @bitCast(motion.floor_cache)));
     };
 }

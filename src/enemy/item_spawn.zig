@@ -5,6 +5,7 @@
 //! object.
 
 const std = @import("std");
+const level_flags = @import("../assets/level.zig");
 
 const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -73,7 +74,7 @@ pub fn model(session: anytype, name: []const u8) !*Model {
 }
 
 pub fn bareModel(session: anytype, loaded: *const Model, place: lifecycle.Placement) !usize {
-    const object = descriptor(session, "", place, 8);
+    const object = descriptor(session, "", place, .{ .model = true });
     const state = try model_state.init(
         session.arena.allocator(),
         &.{},
@@ -81,7 +82,7 @@ pub fn bareModel(session: anytype, loaded: *const Model, place: lifecycle.Placem
         place.sector,
         null,
         loaded,
-        session.difficulty_mask >> 8,
+        session.difficulty,
         session.game_type,
     );
 
@@ -105,7 +106,7 @@ fn spawnWith(session: anytype, name: []const u8, place: lifecycle.Placement, giv
     var definition = if (bytes) |data| try Item.parse(a, data) else null;
     defer if (definition) |*value| value.deinit();
     const item = if (definition) |*value| value else null;
-    const object = descriptor(session, basename, place, 0);
+    const object = descriptor(session, basename, place, .{});
 
     if (given != null) {
         const value = item orelse return error.NetworkActorWithoutItemNotPorted;
@@ -218,7 +219,7 @@ fn spawnWith(session: anytype, name: []const u8, place: lifecycle.Placement, giv
             place.sector,
             item,
             loaded,
-            session.difficulty_mask >> 8,
+            session.difficulty,
             session.game_type,
         );
 
@@ -248,14 +249,14 @@ fn spawnWith(session: anytype, name: []const u8, place: lifecycle.Placement, giv
                     a,
                     &.{ session.object_archive, session.weapon_archive, session.system_archive },
                     value,
-                    session.difficulty_mask >> 8,
+                    session.difficulty,
                     session.game_type,
                 ),
                 .enemy, .chicken, .civilian, .slim, .sanchez => target = try Target.load(
                     a,
                     &.{ session.object_archive, session.weapon_archive, session.system_archive },
                     value,
-                    session.difficulty_mask >> 8,
+                    session.difficulty,
                 ),
                 else => {},
             }
@@ -268,7 +269,7 @@ fn spawnWith(session: anytype, name: []const u8, place: lifecycle.Placement, giv
 
     if (item == null) actor.object_id = session.allocateObjectId();
 
-    if (item != null and (session.game_type == 4 or session.game_type == 5)) actor.network_item = try a.dupe(u8, name);
+    if (item != null and session.game_type.isNetwork()) actor.network_item = try a.dupe(u8, name);
 
     const source = try session_module.appendActor(session, actor, pickup);
 
@@ -311,14 +312,14 @@ fn registerConstructor(session: anytype, definition: *const Item) !void {
         session.arena.allocator(),
         &.{ session.object_archive, session.weapon_archive, session.system_archive },
         definition,
-        session.difficulty_mask >> 8,
+        session.difficulty,
         session.animation_time,
     );
 
     if (session.active_audio) |sound| try session.sound_ledger.bind(sound);
 }
 
-fn descriptor(session: anytype, name: []const u8, place: lifecycle.Placement, flags: u32) Object {
+fn descriptor(session: anytype, name: []const u8, place: lifecycle.Placement, flags: level_flags.ObjectFlags) Object {
     return .{
         .name = name,
         .id = 0,
@@ -326,6 +327,7 @@ fn descriptor(session: anytype, name: []const u8, place: lifecycle.Placement, fl
         .position = place.position,
         .rotation = .{ .x = 0, .y = 0, .z = 0 },
         .angles = .{ 0, 0, 0 },
-        .flags = .{ flags, 0 },
+        .flags = flags,
+        .availability = .{},
     };
 }

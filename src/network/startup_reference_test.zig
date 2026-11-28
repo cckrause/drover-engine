@@ -5,6 +5,8 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
+const bits = @import("../util/bits.zig");
 const message = @import("message.zig");
 const Router = @import("router.zig").Router;
 const server_module = @import("server.zig");
@@ -34,7 +36,7 @@ fn expectServer(want: std.json.ObjectMap, server: *const server_module.Server) !
         "configuration",
     ).?.array.items) |option, value| try std.testing.expectEqual(value.integer != 0, option);
 
-    try std.testing.expectEqual(int(want, "configuration_flags"), server.configuration.flags);
+    try std.testing.expectEqual(int(want, "configuration_flags"), @as(u32, @bitCast(server.configuration.flags)));
 }
 
 fn int(object: std.json.ObjectMap, key: []const u8) u32 {
@@ -74,7 +76,7 @@ test "single-player start-up requests match the reference server" {
     var router = try Router.init(a);
     defer router.deinit();
     var server: server_module.Server = .{};
-    var game_type: u32 = 0;
+    var game_type: GameType = @enumFromInt(0);
     var mode: u32 = 0;
     var loaded = false;
     var user_messages_buffer: server_module.UserMessageBuffer = undefined;
@@ -94,11 +96,11 @@ test "single-player start-up requests match the reference server" {
                 @intCast(queue),
             )) |taken| router.release(taken);
         } else if (std.mem.eql(u8, kind, "setup")) {
-            game_type = int(op, "game_type");
+            game_type = @enumFromInt(int(op, "game_type"));
             router.own_client = int(op, "own");
             mode = int(op, "mode");
             loaded = op.get("loaded").?.bool;
-            server.configuration.flags = int(op, "flags");
+            server.configuration.flags = @bitCast(int(op, "flags"));
             server.password = @splat(0);
 
             const password = op.get("password").?.string;
@@ -132,7 +134,7 @@ test "single-player start-up requests match the reference server" {
         } else if (std.mem.eql(u8, kind, "raw")) {
             const raw = try hex(a, op.get("bytes").?.string);
             defer a.free(raw);
-            _ = try router.post(int(op, "destination"), int(op, "number"), raw);
+            _ = try router.post(int(op, "destination"), bits.from(message.Number, int(op, "number")), raw);
         } else if (std.mem.eql(u8, kind, "drain")) {
             const clock = int(op, "clock");
             const result = server_module.processRequests(

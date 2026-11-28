@@ -4,6 +4,8 @@
 //! earlier ones. This is observable - a callback can read what a deeper one
 //! left - and the layout is therefore fixed.
 
+const MessageCode = @import("../message_code.zig").MessageCode;
+const bits = @import("../util/bits.zig");
 const collision = @import("../player/collision.zig");
 const Residue = @import("../projectile/contact.zig").Residue;
 const Vec3 = @import("../assets/level.zig").Vec3;
@@ -72,7 +74,7 @@ pub const Enemy = struct {
             words[base + 4] = @bitCast(part.offset_y);
             words[base + 5] = @bitCast(part.width);
             words[base + 6] = @bitCast(part.height);
-            words[base + 7] = part.flags;
+            words[base + 7] = bits.word(part.flags);
         }
 
         for (words, 0..) |word, index| {
@@ -111,7 +113,7 @@ pub const Enemy = struct {
 
         self.write(0x14, null);
         self.write(0x18, null);
-        self.write(0x1c, 0x7d6);
+        self.write(0x1c, @intFromEnum(MessageCode.trigger));
         self.write(0x20, 4);
         self.write(0x24, 0);
         self.write(0x28, 0);

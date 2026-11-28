@@ -12,6 +12,7 @@ const network_actors = @import("../render/network_actors.zig");
 const blood = @import("blood.zig");
 const bubble = @import("bubble.zig");
 const session_module = @import("session.zig");
+const bits = @import("../util/bits.zig");
 
 pub const SplashState = struct { selection_serial: ?u64 };
 
@@ -135,7 +136,7 @@ fn run(
         }
 
         if (session.targets[index] != null) {
-            if (actor.flags & 0x41 == 0x41 and actor.secondary_flags & 0x01000000 == 0 and session.targets[index].?.next_tick <= session.animation_time) {
+            if (actor.flags.logicReady() and !actor.secondary_flags.waiting_for_start and session.targets[index].?.next_tick <= session.animation_time) {
                 const removed = try session_module.run(
                     session,
                     allocator,
@@ -161,9 +162,9 @@ fn run(
             "../script/object.zig",
         ).bound(actor.*)) @import("../script/object.zig").tick(session, index);
 
-        if (session.blood_slots[index] == null and session.general_slots[index] == null and session.pickup_slots[index] != null and actor.flags & 0x41 == 0x41 and actor.secondary_flags & 0x01000000 == 0 and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time) {
+        if (session.blood_slots[index] == null and session.general_slots[index] == null and session.pickup_slots[index] != null and actor.flags.logicReady() and !actor.secondary_flags.waiting_for_start and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time) {
             session.pickup_slots[index].?.tick(actor, session.player.position);
-            actor.flags |= 0x80000080;
+            actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
             session.syncActor(index);
         }
 
@@ -187,7 +188,7 @@ fn run(
         var world = context.world();
         world.contact_stack = .{ .residue = &session.player.contact_residue, .caller = .fragment };
 
-        const logic_due = actor.flags & 0x41 == 0x41 and actor.secondary_flags & 0x01000000 == 0 and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time;
+        const logic_due = actor.flags.logicReady() and !actor.secondary_flags.waiting_for_start and @as(u32, @bitCast(session.actor_next_update[index])) <= session.animation_time;
         const is_bubble = std.mem.eql(u8, actor.logic_name, "fx_BubbleLogic");
         const is_fragment = std.mem.eql(u8, actor.logic_name, "FX_ExplosionFragment");
         const removed = if (is_bubble)
@@ -207,11 +208,11 @@ fn run(
             u8,
             actor.logic_name,
             "misc_CorpseDispatch",
-        ))) actor.flags |= 0x80000080;
+        ))) actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
 
         if (!removed and logic_due and session.pickup_slots[index] != null) {
             session.pickup_slots[index].?.tick(actor, session.player.position);
-            actor.flags |= 0x80000080;
+            actor.flags = bits.with(actor.flags, .{ .updated = true, .changed = true });
         }
 
         session.removed_actors[index] = removed;

@@ -14,6 +14,9 @@ const Vec3 = @import("../assets/level.zig").Vec3;
 const Actor = @import("../render/objects.zig").Actor;
 const model_asset = @import("../assets/model.zig");
 const nwx = @import("../assets/nwx.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 pub const Model = struct {
     resource: []const u8,
@@ -204,7 +207,7 @@ pub fn capture(session: anytype, actor: Actor, next_update: u32) !Record {
     return .{
         .id = actor.logic_id,
         .object_id = actor.object_id,
-        .flags = actor.flags,
+        .flags = bits.word(actor.flags),
         .position = actor.position,
         .angles = .{ actor.pitch, actor.yaw, actor.roll },
         .sector = @intCast(actor.sector),
@@ -234,7 +237,7 @@ pub fn capture(session: anytype, actor: Actor, next_update: u32) !Record {
         .angle_70 = actor.head_angles[0],
         .head_yaw = actor.head_angles[1],
         .eye_height = actor.eye_height,
-        .secondary_flags = actor.secondary_flags,
+        .secondary_flags = bits.word(actor.secondary_flags),
         .vector_7c = actor.velocity,
         .vector_88 = actor.angular_velocity,
         .radius = actor.collision_radius,
@@ -296,8 +299,8 @@ pub fn hydrate(session: anytype, record: Record) !Actor {
         .pitch = record.angles[0],
         .yaw = record.angles[1],
         .roll = record.angles[2],
-        .flags = record.flags,
-        .secondary_flags = record.secondary_flags,
+        .flags = bits.from(ActorFlags, record.flags),
+        .secondary_flags = bits.from(ActorKind, record.secondary_flags),
         .scale_x = record.scale_x,
         .scale_y = record.scale_y,
         .height = record.height,

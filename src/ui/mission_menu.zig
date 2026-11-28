@@ -10,6 +10,7 @@
 //! once and reused by nested popups.
 
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
 const lab = @import("../assets/lab.zig");
 const pcx = @import("../assets/pcx.zig");
@@ -22,7 +23,7 @@ pub const width = 640;
 
 pub const height = 480;
 
-pub const Mouse = struct { x: i32 = 0, y: i32 = 0, buttons: u32 = 0 };
+pub const Mouse = struct { x: i32 = 0, y: i32 = 0, buttons: MouseButtons = .{} };
 
 pub const Key = enum { none, escape, enter, up, down, tab, back_tab };
 
@@ -50,7 +51,7 @@ pub const Control = struct {
     kind: Kind = .mission,
     selected: i32 = 0,
     mouse: Mouse = .{},
-    previous_buttons: u32 = 0,
+    previous_buttons: MouseButtons = .{},
     sound_selection: i32 = -3,
     result: ?i32 = null,
     presented: bool = false,
@@ -66,7 +67,7 @@ pub const Control = struct {
     pub fn update(self: *Control, mouse: Mouse, key: Key, first_y: i32, spacing: i32) void {
         if (self.result != null) return;
 
-        const clicked = mouse.buttons & 1 != 0 and self.previous_buttons & 1 == 0;
+        const clicked = mouse.buttons.left and !self.previous_buttons.left;
         var next: ?i32 = null;
 
         if (self.mouse.x != mouse.x or self.mouse.y != mouse.y or clicked) {
@@ -109,8 +110,8 @@ pub const Control = struct {
         return if (self.kind == .mission and self.selected == 6) "CHICKEN1.WAV" else "RIFLOUT.WAV";
     }
 
-    pub fn takeResult(self: *const Control, buttons: u32) ?i32 {
-        if (!self.presented or buttons != 0) return null;
+    pub fn takeResult(self: *const Control, buttons: MouseButtons) ?i32 {
+        if (!self.presented or buttons.any()) return null;
 
         return self.result;
     }

@@ -7,11 +7,15 @@
 //! path and still becomes an actor - nothing is substituted for it.
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const item_module = @import("../assets/item.zig");
 const level = @import("../assets/level.zig");
 const nwx = @import("../assets/nwx.zig");
 const objects = @import("objects.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = objects.ActorFlags;
+const ActorKind = objects.ActorKind;
 
 pub const Kind = enum {
     decoration,
@@ -31,8 +35,8 @@ pub const State = struct {
     sector: usize,
     position: level.Vec3,
     yaw: i16,
-    flags: u32,
-    secondary_flags: u32,
+    flags: ActorFlags,
+    secondary_flags: ActorKind,
     scale_x: f32,
     scale_y: f32,
     height: f32,
@@ -56,8 +60,8 @@ pub const State = struct {
             .sector = sector,
             .position = object.position,
             .yaw = object.angles[1],
-            .flags = 0x8000000f,
-            .secondary_flags = 0,
+            .flags = ActorFlags.new,
+            .secondary_flags = .{},
             .scale_x = 1,
             .scale_y = 1,
             .height = costume.frames[0].parts[0].height,
@@ -76,43 +80,50 @@ pub const State = struct {
 
                 result.height = selected.parts[0].height;
                 result.collision_radius = selected.parts[0].width * 0.5;
-                result.flags |= 0x40;
-                result.secondary_flags = 0x140;
+                result.flags.has_logic = true;
+                result.secondary_flags = .{ .ai_controlled = true, .enemy = true };
 
-                if (try item.?.stringValue("BOSS") != null) result.secondary_flags |= 0x200000;
+                if (try item.?.stringValue("BOSS") != null) result.secondary_flags.boss = true;
 
                 const native = try @import("../script/cmm.zig").resolve(item.?.function);
 
-                if (native == .slim or native == .farmer or native == .dynamite or native == .bob) result.secondary_flags |= 0x200000;
+                if (native == .slim or native == .farmer or native == .dynamite or native == .bob) result.secondary_flags.boss = true;
 
-                if (kind == .chicken) result.secondary_flags = 0x4040;
+                if (kind == .chicken) result.secondary_flags = .{ .ai_controlled = true, .bystander = true };
 
-                if (kind == .civilian) result.secondary_flags = 0x04004040;
+                if (kind == .civilian) result.secondary_flags = .{
+                    .ai_controlled = true,
+                    .bystander = true,
+                    .reflects_player_damage = true,
+                };
 
-                if (native == .marshal) result.secondary_flags = 0xc0;
+                if (native == .marshal) result.secondary_flags = .{ .ai_controlled = true, .takes_hits = true };
 
                 if (kind == .sanchez) {
-                    result.flags = (result.flags & ~@as(u32, 4)) | 0x100;
-                    result.secondary_flags |= 0x200000;
+                    result.flags.visible = false;
+                    result.flags.not_solid = true;
+                    result.secondary_flags.boss = true;
                 }
             },
             .inventory_object => {
-                result.flags |= 0x40;
-                result.secondary_flags = 0x400;
+                result.flags.has_logic = true;
+                result.secondary_flags = .{ .item = true };
 
+                // A TYPE replaces the pickup bit instead of adding to it.
                 if (try item.?.stringValue("TYPE")) |object_type|
                     result.secondary_flags = if (std.ascii.eqlIgnoreCase(
                         object_type,
                         "SHOOT",
-                    )) 0x2000 else 0x1000;
+                    )) .{ .used_when_shot = true } else .{ .used_when_activated = true };
             },
             .ground => {
-                result.flags |= 0x440;
-                result.secondary_flags = 0x400;
+                result.flags.has_logic = true;
+                result.flags.physics = true;
+                result.secondary_flags = .{ .item = true };
             },
             .instant => {
-                result.flags |= 0x400;
-                result.secondary_flags = 0x400;
+                result.flags.physics = true;
+                result.secondary_flags = .{ .item = true };
             },
             .node, .generator => unreachable,
         }
@@ -122,7 +133,7 @@ pub const State = struct {
             if (definition.floatValue("RADIUS")) |radius| result.collision_radius = radius;
         }
 
-        if (object.flags[0] & 0x10 != 0) result.flags |= 0x400;
+        if (object.flags.physics) result.flags.physics = true;
 
         return result;
     }
@@ -276,7 +287,7 @@ test "Hideout visible object constructors match the reference factory execution"
 
     for (source.entries) |object| {
         if (std.mem.indexOfScalar(u32, &visible_ids, object.sector_id) == null or
-            object.flags[0] & 1 != 0 or std.ascii.eqlIgnoreCase(object.name, "PLAYER")) continue;
+            object.flags.sound_only or std.ascii.eqlIgnoreCase(object.name, "PLAYER")) continue;
 
         const path = try std.fmt.allocPrint(a, "{s}.ITM", .{object.name});
         const bytes = try testResource(archives[1..], path);
@@ -306,7 +317,7 @@ test "Hideout visible object constructors match the reference factory execution"
         );
 
         const words = [_]u32{
-            object.id,                              state.flags,             state.secondary_flags,
+            object.id,                              bits.word(state.flags),  bits.word(state.secondary_flags),
             @bitCast(state.scale_x),                @bitCast(state.scale_y), @bitCast(state.height),
             state.choreography,                     state.frame,
             @as(
@@ -380,14 +391,15 @@ test "Train WOMAN1 civilian constructor and target match the reference" {
         .position = .{ .x = 0, .y = 0, .z = 0 },
         .rotation = .{ .x = 0, .y = 0, .z = 0 },
         .angles = .{ 0, 0, 0 },
-        .flags = .{ 0, 0 },
+        .flags = .{},
+        .availability = .{},
     };
 
     const state = try State.init(object, 0, &definition, &costume);
 
     try std.testing.expectEqual(Kind.civilian, try classify(&definition));
-    try std.testing.expectEqual(@as(u32, 0x8000004f), state.flags);
-    try std.testing.expectEqual(@as(u32, 0x04004040), state.secondary_flags);
+    try std.testing.expectEqual(bits.with(ActorFlags.new, .{ .has_logic = true }), state.flags);
+    try std.testing.expectEqual(@as(u32, 0x04004040), bits.word(state.secondary_flags));
     try std.testing.expectEqual(@as(u32, 0x40e92492), @as(u32, @bitCast(state.height)));
     try std.testing.expectEqual(@as(f32, 1), state.collision_radius);
     try std.testing.expectEqual(@as(u32, 0), state.choreography | state.frame);
@@ -395,10 +407,10 @@ test "Train WOMAN1 civilian constructor and target match the reference" {
 
     const angles = camera.Angles.init();
 
-    for ([_]u32{
-        0x100000,
-        0x200000,
-        0x800000,
+    for ([_]Difficulty{
+        .good,
+        .bad,
+        .ugly,
     }, [_]u32{
         0x40000000,
         0x3fc00000,

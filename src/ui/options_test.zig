@@ -611,7 +611,7 @@ test "OPTIONS frames, focus, settings and sounds match the reference" {
                 .{
                     .x = mouse[0],
                     .y = mouse[1],
-                    .buttons = @intCast(mouse[2]),
+                    .buttons = @bitCast(@as(u5, @intCast(mouse[2]))),
                     .shift = event.shift,
                 },
                 event.now,

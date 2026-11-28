@@ -6,6 +6,7 @@
 //! frame, so the order of several hits in one frame is defined.
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
 const nwx = @import("../assets/nwx.zig");
@@ -16,6 +17,8 @@ const Angles = @import("../render/backends/software/camera.zig").Angles;
 const config_module = @import("../enemy/config.zig");
 pub const controller = @import("../enemy/controller.zig");
 const weapon = @import("weapon.zig");
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 pub const Target = struct {
     native: cmm.Native = .enemy,
@@ -122,7 +125,7 @@ pub const Target = struct {
             if (self.mode == 0x800003c0) return error.UnsupportedEnemyDeathTick;
 
             self.mode = 0x800003c0;
-            actor.flags |= 0x80000100;
+            actor.flags = bits.with(actor.flags, .{ .not_solid = true, .changed = true });
             self.dead = true;
 
             if (!try self.requestDeath(actor, choreography))
@@ -153,12 +156,12 @@ pub const Target = struct {
             }
 
             if (input.shooter_position != null) {
-                if (actor.secondary_flags == 0) return error.UnsupportedEnemyRetarget;
+                if (actor.secondary_flags == ActorKind{}) return error.UnsupportedEnemyRetarget;
                 self.sight_at = now +% 2000;
             }
         }
 
-        if (actor.secondary_flags & 0x04000000 != 0) return error.UnsupportedEnemyReflectedDamage;
+        if (actor.secondary_flags.reflects_player_damage) return error.UnsupportedEnemyReflectedDamage;
     }
 
     pub fn select(self: *Target, actor: *Actor, choreography: u32) !bool {
@@ -246,7 +249,7 @@ pub const Target = struct {
         a: std.mem.Allocator,
         archives: []const lab.Archive,
         item: *const Item,
-        difficulty: u32,
+        difficulty: Difficulty,
     ) !?Target {
         const native = try cmm.resolve(item.function);
 

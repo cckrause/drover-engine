@@ -4,12 +4,17 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const recorded = @import("../testing/recorded_event.zig");
+const RecordedEvent = recorded.RecordedEvent;
 
 const lab = @import("../assets/lab.zig");
 const campaign = @import("../campaign.zig");
 const Session = @import("../render/session.zig").Session;
 const Actor = @import("../render/objects.zig").Actor;
 const interaction = @import("interaction.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 fn read(a: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(
@@ -42,7 +47,7 @@ test "actor use rays preserve filters bounds and recipient ordering" {
             yaw: i16,
             height_bits: u32,
             object_id: u32,
-            events: []interaction.Event,
+            events: []RecordedEvent,
         },
         recipients: []usize,
     };
@@ -114,8 +119,8 @@ test "actor use rays preserve filters bounds and recipient ordering" {
                     .z = value.position[2],
                 },
                 .yaw = 0,
-                .flags = value.flags,
-                .secondary_flags = value.secondary_flags,
+                .flags = bits.from(ActorFlags, value.flags),
+                .secondary_flags = bits.from(ActorKind, value.secondary_flags),
                 .scale_x = 1,
                 .scale_y = 1,
                 .height = value.height,
@@ -151,6 +156,6 @@ test "actor use rays preserve filters bounds and recipient ordering" {
         }
 
         try std.testing.expectEqualSlices(usize, case.recipients, recipients.items);
-        try std.testing.expectEqualDeep(case.ray.events, geometry.items);
+        try recorded.expectEvents(case.ray.events, geometry.items);
     }
 }

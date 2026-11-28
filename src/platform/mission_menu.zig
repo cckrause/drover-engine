@@ -18,7 +18,7 @@ pub const Result = enum { resume_game, restart, end_game, options, save, load, q
 
 pub fn mouseState() popup.Mouse {
     var mouse = popup.Mouse{};
-    mouse.buttons = c.SDL_GetMouseState(&mouse.x, &mouse.y);
+    mouse.buttons = sdl.mouseButtons(c.SDL_GetMouseState(&mouse.x, &mouse.y));
 
     return mouse;
 }
@@ -81,7 +81,7 @@ pub fn run(
 
         var mouse = mouseState();
 
-        if (left_pressed) mouse.buttons |= 1;
+        if (left_pressed) mouse.buttons.left = true;
 
         left_pressed = false;
 
@@ -94,7 +94,7 @@ pub fn run(
 
             if (screen.control.takeSound()) |name|
                 _ = try audio.play(
-                    .{ .basename = name, .priority = 64, .volume = 127, .flags = 4 },
+                    .{ .basename = name, .priority = 64, .volume = 127, .flags = .default },
                     null,
                     c.SDL_GetTicks(),
                 );

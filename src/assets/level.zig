@@ -7,6 +7,10 @@
 //! the far sector has been resolved, so wall links must be read in order.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
+const difficulty_module = @import("../difficulty.zig");
+pub const Difficulty = difficulty_module.Difficulty;
+pub const Difficulties = difficulty_module.Difficulties;
 
 pub const Vec2 = struct { x: f32, z: f32 };
 
@@ -41,6 +45,94 @@ pub const Shade = struct {
     mode: enum(u32) { grayscale = 1, tint = 2, light = 3 },
 };
 
+/// The bit layout is the engine's own; a title whose level files number
+/// these differently translates them when it loads the level.
+pub const SectorFlags = packed struct(u32) {
+    sky_ceiling: bool = false,
+    sky_floor: bool = false,
+    /// A neighbour's sky ceiling carries on into this sector, so the upper
+    /// wall between them is not drawn.
+    sky_ceiling_adjoin: bool = false,
+    /// Same for the floor and the lower wall.
+    sky_floor_adjoin: bool = false,
+    /// The sky reaches down to the horizon instead of stopping at the
+    /// plane's edge, and is drawn even when the view doesn't reach the top
+    /// or bottom of the screen.
+    sky_to_horizon: bool = false,
+    no_slope_slide: bool = false,
+    velocity_on_floor_only: bool = false,
+    /// The sector is under water; the sector above it is the surface.
+    underwater: bool = false,
+    swinging_door: bool = false,
+    door_swings_back: bool = false,
+    unused_10: bool = false,
+    /// The floor is drawn as rippling water even without a sector below.
+    rippling_floor: bool = false,
+    unused_12: u6 = 0,
+    damage_low: bool = false,
+    damage_medium: bool = false,
+    damage_high: bool = false,
+    floor_damage_low: bool = false,
+    floor_damage_medium: bool = false,
+    floor_damage_high: bool = false,
+    /// Objects and enemies that enter are removed (players aren't).
+    removes_objects: bool = false,
+    secret: bool = false,
+    full_bright_floor: bool = false,
+    /// A rail sector with a sloped floor: the cart is pulled up the slope.
+    /// Set when the scene is built.
+    rail_slope: bool = false,
+    rail: bool = false,
+    hidden_on_map: bool = false,
+    sloped_floor: bool = false,
+    sloped_ceiling: bool = false,
+
+    pub fn sloped(self: SectorFlags, ceiling: bool) bool {
+        return if (ceiling) self.sloped_ceiling else self.sloped_floor;
+    }
+};
+
+/// What a wall does. Same layout rules as `SectorFlags`.
+pub const WallFlags = packed struct(u32) {
+    mid_texture_on_adjoin: bool = false,
+    full_bright_overlay: bool = false,
+    flip_texture: bool = false,
+    /// The mid (or, on an opening, bottom) texture moves up and down with
+    /// the floor.
+    texture_follows_floor: bool = false,
+    overlay_follows_floor: bool = false,
+    translucent: bool = false,
+    moves_with_sector: bool = false,
+    scroll_top: bool = false,
+    scroll_mid: bool = false,
+    scroll_bottom: bool = false,
+    scroll_overlay: bool = false,
+    impassable: bool = false,
+    unused_12: bool = false,
+    blocks_enemies: bool = false,
+    shatters: bool = false,
+    triggers_on_shot: bool = false,
+    /// In a rail sector, a wall that doesn't steer the cart.
+    not_rail_guide: bool = false,
+    hidden_on_map: bool = false,
+    /// Shown on the map only once seen, even when the map is revealed.
+    map_only_when_seen: bool = false,
+    unused_19: u13 = 0,
+};
+
+test "flag bits sit where saves and packets expect them" {
+    try std.testing.expectEqual(@as(u32, 0x80), bits.word(SectorFlags{ .underwater = true }));
+    try std.testing.expectEqual(@as(u32, 0x800), bits.word(SectorFlags{ .rippling_floor = true }));
+    try std.testing.expectEqual(@as(u32, 0x40000), bits.word(SectorFlags{ .damage_low = true }));
+    try std.testing.expectEqual(@as(u32, 0x800000), bits.word(SectorFlags{ .floor_damage_high = true }));
+    try std.testing.expectEqual(@as(u32, 0x01000000), bits.word(SectorFlags{ .removes_objects = true }));
+    try std.testing.expectEqual(@as(u32, 0x80000000), bits.word(SectorFlags{ .sloped_ceiling = true }));
+    try std.testing.expectEqual(@as(u32, 0x800), bits.word(WallFlags{ .impassable = true }));
+    try std.testing.expectEqual(@as(u32, 0x2000), bits.word(WallFlags{ .blocks_enemies = true }));
+    try std.testing.expectEqual(@as(u32, 0x8000), bits.word(WallFlags{ .triggers_on_shot = true }));
+    try std.testing.expectEqual(@as(u32, 0x40000), bits.word(WallFlags{ .map_only_when_seen = true }));
+}
+
 pub const Wall = struct {
     id: u32,
     v1: u32,
@@ -53,7 +145,7 @@ pub const Wall = struct {
     mirror: i32,
     dadjoin: i32,
     dmirror: i32,
-    flags: u32,
+    flags: WallFlags,
     flags2: u32,
     light: i32,
 };
@@ -75,7 +167,7 @@ pub const Sector = struct {
     floor_overlay: Overlay,
     ceiling_overlay: Overlay,
     floor_offsets: []FloorOffset,
-    flags: u32,
+    flags: SectorFlags,
     flags2: u32,
     layer: f32,
     vertices: []Vec2,
@@ -258,7 +350,51 @@ pub const Object = struct {
     position: Vec3,
     rotation: Vec3,
     angles: [3]i16,
-    flags: [2]u32,
+    flags: ObjectFlags,
+    availability: ObjectAvailability,
+};
+
+pub const ObjectFlags = packed struct(u32) {
+    /// Only a sound source: no actor is made for it.
+    sound_only: bool = false,
+    unused_1: u2 = 0,
+    /// Drawn as a 3D model unless its item says otherwise.
+    model: bool = false,
+    physics: bool = false,
+    unused_5: u27 = 0,
+};
+
+pub const ObjectAvailability = packed struct(u32) {
+    unused_0: u21 = 0,
+    /// In network games, only when the host turns on its first option.
+    needs_host_option: bool = false,
+    modes: GameModes = .{},
+    difficulties: Difficulties = .{},
+};
+
+/// Network game modes, one bit each. Mode numbers count from 1 in the
+/// order of the host's list; the last mode has the lowest bit.
+pub const GameModes = packed struct(u6) {
+    deathmatch: bool = false,
+    capture_flag: bool = false,
+    tag: bool = false,
+    keep_away: bool = false,
+    carry_item: bool = false,
+    teams: bool = false,
+
+    /// The bit for network mode `mode`; mode 0 is single player, with none.
+    pub fn forMode(mode: u32) !GameModes {
+        return switch (mode) {
+            0 => .{},
+            1 => .{ .capture_flag = true },
+            2 => .{ .tag = true },
+            3 => .{ .keep_away = true },
+            4 => .{ .carry_item = true },
+            5 => .{ .teams = true },
+            6 => .{ .deathmatch = true },
+            else => error.InvalidMultiplayerMode,
+        };
+    }
 };
 
 pub const Spawn = struct {
@@ -326,7 +462,8 @@ pub const Objects = struct {
                     try angleFromDegrees(rotation.y),
                     try angleFromDegrees(rotation.z),
                 },
-                .flags = .{ try reader.u32Value(), try reader.u32Value() },
+                .flags = bits.from(ObjectFlags, try reader.u32Value()),
+                .availability = bits.from(ObjectAvailability, try reader.u32Value()),
             };
         }
 
@@ -344,21 +481,13 @@ pub const Objects = struct {
         self: *const Objects,
         allocator: std.mem.Allocator,
         level: *const Level,
-        difficulty: u32,
+        difficulty: Difficulty,
     ) ![][7]u32 {
-        const mask: u32 = switch (difficulty) {
-            0x100000 => 0x10000000,
-            0x200000 => 0x20000000,
-            0x400000 => 0x40000000,
-            0x800000 => 0x80000000,
-            else => return error.InvalidDifficulty,
-        };
-
         var starts: std.ArrayList([7]u32) = .empty;
         errdefer starts.deinit(allocator);
 
         for (self.entries) |object| {
-            if (object.flags[1] & mask == 0 or object.flags[0] & 1 != 0) continue;
+            if (!bits.any(object.availability.difficulties, difficulty.set()) or object.flags.sound_only) continue;
 
             if (level.sectorIndex(object.sector_id) == null) continue;
 
@@ -393,19 +522,12 @@ pub const Objects = struct {
         allocator: std.mem.Allocator,
         level: *const Level,
         mode: u32,
-        difficulty: u32,
+        difficulty: Difficulty,
         option0: bool,
     ) ![][7]u32 {
-        const modes = [_]u32{ 0, 0x800000, 0x1000000, 0x2000000, 0x4000000, 0x8000000, 0x400000 };
-        if (mode == 0 or mode >= modes.len) return error.InvalidMultiplayerMode;
+        if (mode == 0) return error.InvalidMultiplayerMode;
 
-        const difficulty_mask: u32 = switch (difficulty) {
-            0x100000 => 0x10000000,
-            0x200000 => 0x20000000,
-            0x400000 => 0x40000000,
-            0x800000 => 0x80000000,
-            else => return error.InvalidDifficulty,
-        };
+        const wanted: ObjectAvailability = .{ .modes = try GameModes.forMode(mode), .difficulties = difficulty.set() };
 
         const name: []const u8 = switch (mode) {
             1 => "FLAGSTAR",
@@ -419,11 +541,11 @@ pub const Objects = struct {
         errdefer starts.deinit(allocator);
 
         for (self.entries) |object| {
-            if (object.flags[1] & (modes[mode] | difficulty_mask) == 0 or (!option0 and object.flags[1] & 0x200000 != 0)) continue;
+            if (!bits.any(object.availability, wanted) or (!option0 and object.availability.needs_host_option)) continue;
 
             if (level.sectorIndex(object.sector_id) == null) continue;
 
-            if (object.flags[0] & 1 != 0 or !std.ascii.eqlIgnoreCase(
+            if (object.flags.sound_only or !std.ascii.eqlIgnoreCase(
                 object.name,
                 name,
             ) or object.sector_id == 0) continue;
@@ -652,15 +774,15 @@ fn readSector(a: std.mem.Allocator, reader: *Tokens) !Sector {
 
     try reader.token(32, 2);
 
-    const flags = try reader.u32Value();
+    const flags = bits.from(SectorFlags, try reader.u32Value());
     const flags2 = try reader.u32Value();
 
-    if (flags & 0x40000000 != 0) {
+    if (flags.sloped_floor) {
         try reader.token(33, 3);
         floor.slope = try readSlope(reader);
     }
 
-    if (flags & 0x80000000 != 0) {
+    if (flags.sloped_ceiling) {
         try reader.token(34, 3);
         ceiling.slope = try readSlope(reader);
     }
@@ -696,7 +818,7 @@ fn readSector(a: std.mem.Allocator, reader: *Tokens) !Sector {
             .mirror = try reader.i32Value(),
             .dadjoin = try reader.i32Value(),
             .dmirror = try reader.i32Value(),
-            .flags = try reader.u32Value(),
+            .flags = bits.from(WallFlags, try reader.u32Value()),
             .flags2 = try reader.u32Value(),
             .light = try reader.i32Value(),
         };
@@ -823,7 +945,7 @@ test "CD1 binary level and object records preserve first-level geometry and spaw
     try std.testing.expectEqual(@as(usize, 32), ceiling_slopes);
     try std.testing.expectEqual(@as(usize, 477), objects.entries.len);
 
-    for ([_]u32{ 0x100000, 0x200000, 0x800000 }) |difficulty| {
+    for ([_]Difficulty{ .good, .bad, .ugly }) |difficulty| {
         const starts = try objects.playerStarts(std.testing.allocator, &level, difficulty);
         defer std.testing.allocator.free(starts);
 
@@ -840,7 +962,7 @@ test "CD1 binary level and object records preserve first-level geometry and spaw
         const sector = level.sectors[spawn.sector];
 
         try std.testing.expectEqual(@as(u32, 0x36a11), sector.id);
-        try std.testing.expectEqual(@as(u32, 0x401), sector.flags);
+        try std.testing.expectEqual(SectorFlags{ .sky_ceiling = true, .unused_10 = true }, sector.flags);
         try std.testing.expectEqual(@as(f32, -3), sector.floor.height);
         try std.testing.expectEqual(@as(i32, 64), sector.floor.texture);
         try std.testing.expectEqual(@as(f32, 45), sector.ceiling.height);
@@ -908,7 +1030,7 @@ test "Miner text resources discard invalid player records before selecting spawn
     defer level.deinit();
     var objects = try Objects.parse(a, try archive.find("MINER.OBT", 0));
     defer objects.deinit();
-    const starts = try objects.playerStarts(a, &level, 0x100000);
+    const starts = try objects.playerStarts(a, &level, .good);
     defer a.free(starts);
     const spawn = try Spawn.fromStart(&level, starts[starts.len - 1]);
 
@@ -936,7 +1058,7 @@ test "Dry Gulch network start markers use its mode and sector records" {
     defer objects.deinit();
 
     for ([_]u32{ 1, 3, 5, 6 }) |mode| {
-        const starts = try objects.multiplayerStarts(a, &level, mode, 0x200000, false);
+        const starts = try objects.multiplayerStarts(a, &level, mode, .bad, false);
         defer a.free(starts);
         try std.testing.expect(starts.len != 0);
         for (starts) |record| _ = try Spawn.fromStart(&level, record);
@@ -977,12 +1099,12 @@ test "all shipped binary maps preserve both flag words and valid adjoin pairs" {
 
         for (level.sectors) |sector| {
             sectors += 1;
-            primary[0] |= sector.flags;
+            primary[0] |= bits.word(sector.flags);
             secondary[0] |= sector.flags2;
 
             for (sector.walls) |wall| {
                 walls += 1;
-                primary[1] |= wall.flags;
+                primary[1] |= bits.word(wall.flags);
                 secondary[1] |= wall.flags2;
             }
         }

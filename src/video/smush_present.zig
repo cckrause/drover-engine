@@ -26,7 +26,15 @@ pub fn screenPalette(colors: [256]u32) [256]u32 {
     return result;
 }
 
-pub fn blit(source: Bitmap, destination: Surface, flags: u32) !void {
+pub const BlitMode = packed struct(u32) {
+    /// Picks the doubling below from the clip size.
+    fit: bool = false,
+    double_height: bool = false,
+    double_size: bool = false,
+    unused_3: u29 = 0,
+};
+
+pub fn blit(source: Bitmap, destination: Surface, flags: BlitMode) !void {
     const clip = destination.clip;
     if (source.width == 0 or source.height == 0) return;
     if (source.width > 32767 or source.height > 32767 or
@@ -40,15 +48,16 @@ pub fn blit(source: Bitmap, destination: Surface, flags: u32) !void {
 
     var mode = flags;
 
-    if (mode & 1 != 0) {
-        mode &= ~@as(u32, 6);
+    if (mode.fit) {
+        mode.double_height = false;
+        mode.double_size = false;
         if (@divTrunc(clip.width, 2) < source.width) {
-            if (source.height < clip.height) mode |= 2;
-        } else mode |= 4;
+            if (source.height < clip.height) mode.double_height = true;
+        } else mode.double_size = true;
     }
 
-    const scale_y: i32 = if (mode & 6 != 0) 2 else 1;
-    const scale_x: i32 = if (mode & 4 != 0) 2 else 1;
+    const scale_y: i32 = if (mode.double_height or mode.double_size) 2 else 1;
+    const scale_x: i32 = if (mode.double_size) 2 else 1;
     var x: i32 = source.x;
     var y: i32 = source.y;
     var width: i32 = short(@as(i32, source.width) * scale_x);
@@ -136,7 +145,7 @@ test "movie copy rejects out of range padding accesses" {
                 .height = 1,
                 .clip = .{ .width = 32, .height = 1 },
             },
-            0,
+            .{},
         ),
     );
 }
@@ -201,7 +210,7 @@ test "reference CPU scaling and palette references" {
                 .width = reference.clip[2],
                 .height = reference.clip[3],
             },
-        }, reference.flags);
+        }, @bitCast(reference.flags));
 
         var actual: [32]u8 = undefined;
         var expected: [32]u8 = undefined;

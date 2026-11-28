@@ -5,6 +5,8 @@
 //! is compared only by that prefix on restore.
 
 const std = @import("std");
+const engine = @import("../audio/engine.zig");
+const bits = @import("../util/bits.zig");
 
 const stream = @import("stream.zig");
 
@@ -12,7 +14,7 @@ pub const Record = struct {
     name: []const u8,
     resource_type: u32 = 0x57415644,
     priority: u8 = 64,
-    flags: u32 = 0x10000,
+    flags: engine.Flags = .{ .effects = true },
     registered_at: u32,
     volume: u8 = 127,
     zero_tail: bool = false,
@@ -27,7 +29,7 @@ pub fn write(writer: *stream.Writer, sound: ?Record) !void {
         try writer.string(record.name);
         try writer.integer(u32, record.resource_type);
         try writer.integer(u8, record.priority);
-        try writer.integer(u32, record.flags);
+        try writer.integer(u32, bits.word(record.flags));
         try writer.integer(u32, record.registered_at);
         try writer.integer(u8, record.volume);
     }
@@ -42,7 +44,7 @@ pub fn read(reader: *stream.Reader, a: std.mem.Allocator) !?Record {
         .name = try a.dupe(u8, try reader.string(&buffer)),
         .resource_type = try reader.integer(u32),
         .priority = try reader.integer(u8),
-        .flags = try reader.integer(u32),
+        .flags = bits.from(engine.Flags, try reader.integer(u32)),
         .registered_at = try reader.integer(u32),
         .volume = try reader.integer(u8),
     };
@@ -66,10 +68,10 @@ pub fn capture(audio: anytype, name: ?[]const u8) !?Record {
         };
 
         for (audio.registration_ids.items, 0..) |registered, resource| if (registered == index) {
-            result.flags |= audio.resource_flags.items[resource];
+            result.flags = bits.with(result.flags, audio.resource_flags.items[resource]);
 
             for (audio.ambient_resources) |ambient| if (ambient == resource) {
-                result.flags |= 1;
+                result.flags.loop = true;
                 break;
             };
 

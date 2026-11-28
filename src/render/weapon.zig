@@ -60,7 +60,7 @@ pub fn position(hud: *hud_module.Hud, options: Options) !?hud_module.Rect {
 
     if (!options.three_d and hud.panel.slide != hud.panel.maximum) y +%= hud.panel.rect.height +% 1;
 
-    if (node.playback.flags & 2 == 0) {
+    if (!node.playback.flags.held) {
         const aim = if (options.scope and node.slide == node.maximum and !options.reloading) [2]i32{
             0,
             0,

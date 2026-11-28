@@ -11,6 +11,7 @@ const initial_state = @import("../render/initial_state.zig");
 const scene_module = @import("../render/scene.zig");
 const collision = @import("collision.zig");
 const Actor = @import("../render/objects.zig").Actor;
+const bits = @import("../util/bits.zig");
 
 fn hashSample(
     hash: *std.crypto.hash.sha2.Sha256,
@@ -121,9 +122,9 @@ fn checkReference(path: []const u8) !void {
 
             slope.constant = 3;
             scene.sectors[case.sector].ceiling_slope = slope;
-            scene.sectors[case.sector].flags &= ~@as(u32, 0x80000000);
+            scene.sectors[case.sector].flags.sloped_ceiling = false;
 
-            if (enabled) scene.sectors[case.sector].flags |= 0x80000000;
+            if (enabled) scene.sectors[case.sector].flags.sloped_ceiling = true;
         }
 
         const actors = try a.alloc(Actor, case.actors.len);
@@ -132,8 +133,8 @@ fn checkReference(path: []const u8) !void {
             actor.* = undefined;
             actor.sector = source.sector;
             actor.position = point(source.position);
-            actor.flags = source.flags;
-            actor.secondary_flags = source.secondary_flags;
+            bits.setWord(&actor.flags, source.flags);
+            bits.setWord(&actor.secondary_flags, source.secondary_flags);
             actor.height = source.height;
             actor.collision_radius = source.collision_radius;
         }

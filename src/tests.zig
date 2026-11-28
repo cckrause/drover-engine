@@ -6,9 +6,12 @@
 //! see testing/fixtures.zig.
 
 const std = @import("std");
+const GameType = @import("game_type.zig").GameType;
 
 test {
     _ = @import("memory/layout.zig");
+    _ = @import("actor_flags.zig");
+    _ = @import("util/bits.zig");
     _ = @import("util/fixed_list.zig");
     _ = @import("platform/MemoryBudget.zig");
     _ = @import("platform/c_memory.zig");
@@ -270,8 +273,8 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
         try std.testing.expectEqual(@as(usize, 44), @sizeOf(campaign.StartRequest));
         try std.testing.expectEqual(@as(usize, 20), @offsetOf(campaign.StartRequest, "filename"));
         try std.testing.expectEqual(@as(u32, 0), startup.request.reserved);
-        try std.testing.expectEqual(@as(u32, 0), startup.request.flags);
-        try std.testing.expectEqual(@as(u32, 1), startup.request.game_type);
+        try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(startup.request.flags)));
+        try std.testing.expectEqual(GameType.campaign, startup.request.game_type);
         try std.testing.expectEqual(@as(u32, 0), startup.request.mode);
         try std.testing.expectEqual(@as(u32, 0), startup.request.parameter);
         try std.testing.expectEqualStrings("OUTLAWS.rcs", startup.request.path());
@@ -290,7 +293,7 @@ test "CD1 story startup preserves the launch record and all nineteen campaign ev
 
         try std.testing.expectEqual(@as(u32, 1), startup.engine.scenario);
         try std.testing.expectEqual(@as(u32, 4), startup.engine.previous_scenario);
-        try std.testing.expectEqual(@as(u32, 1), startup.engine.game_type);
+        try std.testing.expectEqual(GameType.campaign, startup.engine.game_type);
         try std.testing.expectEqual(@as(u32, 0), startup.mode);
 
         for (startup.router.queues) |queue| try std.testing.expectEqual(@as(usize, 0), queue.count);

@@ -13,6 +13,7 @@ const scene_module = @import("../render/scene.zig");
 const blood = @import("blood.zig");
 const fragment = @import("explosion_fragment.zig");
 const physics = @import("physics.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     position_bits: [3]u32,
@@ -32,10 +33,10 @@ fn check(expected: Snapshot, particle: blood.Spawn, random: u32) !void {
     const actor = particle.actor;
     const playback = actor.playback.?;
     const actual = Snapshot{
-        .position_bits = bits(actor.position),
-        .velocity_bits = bits(particle.state.velocity),
-        .flags = actor.flags,
-        .secondary_flags = actor.secondary_flags,
+        .position_bits = vectorBits(actor.position),
+        .velocity_bits = vectorBits(particle.state.velocity),
+        .flags = bits.word(actor.flags),
+        .secondary_flags = bits.word(actor.secondary_flags),
         .scale_bits = .{ @bitCast(actor.scale_x), @bitCast(actor.scale_y) },
         .height_bits = @bitCast(actor.height),
         .radius_bits = @bitCast(actor.collision_radius),
@@ -47,7 +48,7 @@ fn check(expected: Snapshot, particle: blood.Spawn, random: u32) !void {
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
             @intFromBool(playback.terminated),
         },
         .random = random,
@@ -61,7 +62,7 @@ fn point(value: [3]f32) level_module.Vec3 {
     return .{ .x = value[0], .y = value[1], .z = value[2] };
 }
 
-fn bits(value: level_module.Vec3) [3]u32 {
+fn vectorBits(value: level_module.Vec3) [3]u32 {
     return .{ @bitCast(value.x), @bitCast(value.y), @bitCast(value.z) };
 }
 
@@ -146,7 +147,7 @@ test "lamp fragment bursts RNG animation and physics" {
         sector_state.velocity_present = config.conveyor != null;
 
         if (config.floor_slope) |slope| {
-            sector_state.flags |= 0x40000000;
+            sector_state.flags.sloped_floor = true;
             sector_state.floor_slope = std.mem.zeroInit(
                 scene_module.Slope,
                 .{ .coeff_x = slope[0], .coeff_z = slope[1], .constant = slope[2] },

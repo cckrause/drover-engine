@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const GameType = @import("game_type.zig").GameType;
 const lab = @import("assets/lab.zig");
 const messages_module = @import("assets/messages.zig");
 const rcp = @import("assets/rcp.zig");
@@ -21,25 +22,13 @@ const loading_display = @import("ui/loading_display.zig");
 pub const KeyQueue = @import("ui/dialog.zig").KeyQueue;
 pub const CompletionGate = @import("network/server.zig").CompletionGate;
 
-pub const Difficulty = enum(u32) {
-    good = 0x100000,
-    bad = 0x200000,
-    ugly = 0x800000,
-
-    pub fn fromSelection(index: i32) !Difficulty {
-        return switch (index) {
-            0 => .good,
-            1 => .bad,
-            2 => .ugly,
-            else => error.InvalidDifficulty,
-        };
-    }
-};
+pub const Difficulty = @import("difficulty.zig").Difficulty;
+const LevelRules = @import("player/inventory.zig").LevelRules;
 
 pub const StartRequest = extern struct {
     reserved: u32 = 0,
-    flags: u32 = 0,
-    game_type: u32 = 1,
+    flags: network_message.StartFlags = .{},
+    game_type: GameType = .campaign,
     mode: u32 = 0,
     parameter: u32 = 0,
     filename: [24]u8 = [_]u8{0} ** 24,
@@ -56,16 +45,16 @@ pub const StartRequest = extern struct {
     }
 
     pub fn initHost(basename: []const u8, mode: u32, friendly_fire: bool) !StartRequest {
-        const mode_flags = [_]u32{ 0, 1, 2, 2, 1, 1, 0 };
+        const mode_flags = @import("ui/network_lobby.zig").mode_words;
         if (mode == 0 or mode >= mode_flags.len) return error.InvalidMultiplayerMode;
         if (basename.len + 4 >= 24) return error.MultiplayerFilenameTooLong;
 
         var request: StartRequest = .{};
 
-        request.game_type = 5;
+        request.game_type = .hosting;
         request.mode = mode;
 
-        if (friendly_fire or mode_flags[mode] & 3 == 0) request.flags |= 0x80000000;
+        if (friendly_fire or !(mode_flags[mode].teams or mode_flags[mode].one_against_all)) request.flags.friendly_fire = true;
 
         @memcpy(request.filename[0..basename.len], basename);
         @memcpy(request.filename[basename.len..][0..4], ".RCM");
@@ -153,7 +142,7 @@ pub const Startup = struct {
         .badge = 1,
         .game_860 = 0,
         .game_864 = 0,
-        .game_type = 1,
+        .game_type = .campaign,
         .game_state = 0,
         .previous_game_state = 0,
         .scenario = 1,
@@ -223,7 +212,7 @@ pub const Startup = struct {
         fn critical(context: *anyopaque) anyerror!void {
             const startup = of(context).startup;
             var bytes = try network_message.serverCritical(startup.router.own_client, startup.mode);
-            try startup.router.postHereAndEveryone(0, 0x423, &bytes);
+            try startup.router.postHereAndEveryone(0, .{ .code = 0x423 }, &bytes);
         }
 
         fn objectList(context: *anyopaque) anyerror!void {
@@ -866,7 +855,7 @@ pub const Startup = struct {
 
         self.selected_level = event;
 
-        if (self.engine.game_type >= 4 and self.engine.game_type <= 6) {
+        if (self.engine.game_type.isMultiplayer()) {
             self.engine.mode_mask = @intFromEnum(self.difficulty);
             self.engine.game_860 = 0;
             self.engine.game_864 = 0;
@@ -907,7 +896,7 @@ pub const Startup = struct {
         if (self.mode >= mode_words.len) return error.InvalidMultiplayerMode;
 
         self.team = switch (result) {
-            1 => if (mode_words[self.mode] & 2 == 0) 1 else 2,
+            1 => if (!mode_words[self.mode].one_against_all) 1 else 2,
             2 => 1,
             3 => 2,
             else => return error.InvalidLobbyResult,
@@ -1208,10 +1197,10 @@ pub const Startup = struct {
 
         self.setScenario(1);
 
-        self.engine.game_type = if (record.game_type < 4 or record.game_type > 5) record.game_type else if (self.router.own_client == 1) 5 else 4;
+        self.engine.game_type = if (!record.game_type.isNetwork()) record.game_type else if (self.router.own_client == 1) .hosting else .joined;
         self.router.game_type = self.engine.game_type;
 
-        if (self.engine.game_type == 4 or self.engine.game_type == 5) {
+        if (self.engine.game_type.isNetwork()) {
             const character = networkCharacter(self.costume);
             self.player_definition = character.definition;
             self.character_code = character.code;
@@ -1289,23 +1278,6 @@ pub fn printStrings(template: []const u8, arguments: []const []const u8, out: []
     return out[0..length];
 }
 
-pub fn inventoryLevelFlags(flags: u32) u32 {
-    var result: u32 = 0;
-
-    for ([_]u32{
-        1,
-        2,
-        4,
-        8,
-        0x10,
-        0x40,
-    }, [_]u32{ 0x8000, 0x4000, 0x10000, 0x20000, 0x40000, 0x80000 }) |source, destination| {
-        if (flags & source != 0) result |= destination;
-    }
-
-    return result;
-}
-
 fn singleStory(archive: lab.Archive) ![]const u8 {
     var selected: ?[]const u8 = null;
     for (archive.front) |patch| try storyCandidates(patch, &selected);
@@ -1329,6 +1301,17 @@ fn storyCandidates(archive: lab.Archive, selected: *?[]const u8) !void {
     }
 }
 
+pub fn inventoryLevelFlags(flags: u32) LevelRules {
+    return .{
+        .drop_weapons = flags & 1 != 0,
+        .drop_ammo = flags & 2 != 0,
+        .drop_health = flags & 4 != 0,
+        .drop_fuel = flags & 8 != 0,
+        .drop_everything = flags & 0x10 != 0,
+        .release_sounds_at_end = flags & 0x40 != 0,
+    };
+}
+
 test "main-game launch record layout and difficulty masks" {
     try std.testing.expectEqual(@as(usize, 44), @sizeOf(StartRequest));
     try std.testing.expectEqual(@as(usize, 20), @offsetOf(StartRequest, "filename"));
@@ -1336,10 +1319,10 @@ test "main-game launch record layout and difficulty masks" {
     const request = try StartRequest.init("OUTLAWS");
 
     try std.testing.expectEqualStrings("OUTLAWS.rcs", request.path());
-    try std.testing.expectEqual(@as(u32, 1), request.game_type);
+    try std.testing.expectEqual(GameType.campaign, request.game_type);
     try std.testing.expectEqual(
         @as(u32, 0),
-        request.mode | request.flags | request.parameter | request.reserved,
+        request.mode | @as(u32, @bitCast(request.flags)) | request.parameter | request.reserved,
     );
 
     try std.testing.expectEqual(@as(u32, 0x800000), @intFromEnum(try Difficulty.fromSelection(2)));
@@ -1355,13 +1338,13 @@ test "v1.1.1 host request uses the reference mode table and RCM name" {
         const mode: u32 = @intCast(index);
         const request = try StartRequest.initHost("DRYGULCH", mode, false);
 
-        try std.testing.expectEqual(@as(u32, 5), request.game_type);
+        try std.testing.expectEqual(GameType.hosting, request.game_type);
         try std.testing.expectEqual(mode, request.mode);
         try std.testing.expectEqualStrings("DRYGULCH.RCM", request.path());
-        try std.testing.expectEqual(@as(u32, if (mode == 6) 0x80000000 else 0), request.flags);
+        try std.testing.expectEqual(network_message.StartFlags{ .friendly_fire = mode == 6 }, request.flags);
 
         const friendly = try StartRequest.initHost("DRYGULCH", mode, true);
-        try std.testing.expectEqual(@as(u32, 0x80000000), friendly.flags);
+        try std.testing.expectEqual(network_message.StartFlags{ .friendly_fire = true }, friendly.flags);
     }
 
     try std.testing.expectError(
@@ -1467,7 +1450,7 @@ test "host game record opens the Dry Gulch multiplayer story" {
     startup.router.session_open = true;
     try startup.beginHost(std.testing.allocator, std.testing.io, path, archive);
 
-    try std.testing.expectEqual(@as(u32, 5), startup.engine.game_type);
+    try std.testing.expectEqual(GameType.hosting, startup.engine.game_type);
     try std.testing.expectEqual(@as(u32, 6), startup.mode);
     try std.testing.expectEqualStrings("DRYGULCH.RCM", startup.request.path());
     try std.testing.expectEqualStrings("drygulch", startup.currentEvent().?.name);

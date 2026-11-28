@@ -10,7 +10,9 @@
 
 const std = @import("std");
 
+const GameType = @import("../game_type.zig").GameType;
 const messages_module = @import("../assets/messages.zig");
+const ModeRules = @import("../network/message.zig").ModeRules;
 const router_module = @import("../network/router.zig");
 const dialog = @import("dialog.zig");
 const Box = dialog.Box;
@@ -81,7 +83,15 @@ pub const records = [_]dialog.Record{
     .{ .kind = .text, .id = 10, .rect = box(5, 5, 15, 630) },
 };
 
-pub const mode_words = [_]u32{ 0, 1, 2, 2, 1, 1, 0 };
+pub const mode_words = [_]ModeRules{
+    .{},
+    .{ .teams = true },
+    .{ .one_against_all = true },
+    .{ .one_against_all = true },
+    .{ .teams = true },
+    .{ .teams = true },
+    .{},
+};
 
 pub const character_texts = [_]u32{ 0x13bd, 0x13c3, 0x13c1, 0x13c0, 0x13bf, 0x13be, 0x13c2 };
 
@@ -110,7 +120,7 @@ pub const Lobby = struct {
         switch (message) {
             .init => try self.open(d),
             .step => try d.stepFocus(id, value),
-            .focus => if (id == 3) d.setColor(4, if (value == 0) 0 else 0xffffff, 0x40000000),
+            .focus => if (id == 3) d.setColor(4, if (value == 0) 0 else 0xffffff, .{ .middle = true }),
             .activate => switch (id) {
                 1000, 1001 => {
                     d.running = false;
@@ -134,7 +144,7 @@ pub const Lobby = struct {
         self.chat[0] = 0;
 
         try d.setValue(10, .of(std.mem.sliceTo(&self.top_line, 0)), 0);
-        d.setColor(10, 0xffffff, 0);
+        d.setColor(10, 0xffffff, .{});
 
         for ([_]struct { u32, []const u8 }{
             .{ 0, "&7400" }, .{ 4, "&7401" }, .{ 1000, "&7402" }, .{ 1001, "&7402" },
@@ -147,9 +157,9 @@ pub const Lobby = struct {
 
         try d.setValue(3, .field(&self.chat), 0x50);
         d.setFont(3, &self.fonts.row);
-        d.setColor(4, 0, 0x40000000);
+        d.setColor(4, 0, .{ .middle = true });
 
-        const teams = mode_words[self.mode] & 1 != 0;
+        const teams = mode_words[self.mode].teams;
 
         for (d.widgets) |*widget| switch (widget.id) {
             1000, 6, 7 => widget.state = @intFromBool(teams),
@@ -173,7 +183,7 @@ pub const PlayerLine = struct {
 pub fn picture(mode: u32) ![]const u8 {
     if (mode >= mode_words.len) return error.InvalidMultiplayerMode;
 
-    return if (mode_words[mode] & 1 == 0) "L1D216.PCX" else "L2D216.PCX";
+    return if (!mode_words[mode].teams) "L1D216.PCX" else "L2D216.PCX";
 }
 
 pub fn showCharacter(d: *dialog.Dialog, local_messages: []const u8, costume: u32) !void {
@@ -196,7 +206,7 @@ pub fn refreshPlayers(
     router: *const router_module.Router,
     players: []const u8,
     mode: u32,
-    game_type: u32,
+    game_type: GameType,
 ) !void {
     if (mode >= mode_words.len) return error.InvalidMultiplayerMode;
 
@@ -213,10 +223,10 @@ pub fn refreshPlayers(
         var team: u32 = 0;
 
         if (client.player) |player| {
-            if (mode_words[mode] & 1 != 0) team = player.flags & 0xf else if (mode_words[mode] & 2 != 0 and player.flags & 0xf == 1) team = 1;
+            if (mode_words[mode].teams) team = player.flags.team else if (mode_words[mode].one_against_all and player.flags.team == 1) team = 1;
         }
 
-        const letter: u8 = if (client.player) |player| (if (game_type == 4 or game_type == 5) player.code else 'J') else '?';
+        const letter: u8 = if (client.player) |player| (if (game_type.isNetwork()) player.code else 'J') else '?';
         const colour: u8 = switch (team) {
             1 => 'R',
             2 => 'B',
@@ -304,16 +314,21 @@ test "Death Match lobby: texts, enabled buttons, the player list and ENTER GAME"
     }{ .{ 1000, 0 }, .{ 1001, 1 }, .{ 6, 0 }, .{ 7, 0 }, .{ 5, 1 }, .{ 8, 1 } }) |entry|
         try std.testing.expectEqual(entry[1], screen.find(entry[0]).?.state);
 
+    const waiting_stand_in: @import("../actor_flags.zig").ActorKind = .{
+        .player = true,
+        .takes_hits = true,
+        .waiting_for_start = true,
+    };
     var router = try router_module.Router.init(a);
     defer router.deinit();
 
     router.reset();
-    router.clients[1].player = .{ .code = 'J', .flags = 0x1000090 };
+    router.clients[1].player = .{ .code = 'J', .flags = waiting_stand_in };
     @memcpy(router.clients[1].name[0..6], "Player");
-    router.clients[3].player = .{ .code = 'J', .flags = 0x1000090 };
+    router.clients[3].player = .{ .code = 'J', .flags = waiting_stand_in };
     @memcpy(router.clients[3].name[0..6], "Joiner");
     router.scores[3].points = -2;
-    try refreshPlayers(a, &screen, &router, &.{ 1, 3 }, 6, 5);
+    try refreshPlayers(a, &screen, &router, &.{ 1, 3 }, 6, .hosting);
     const lines = screen.find(2).?.data.lines.items.items;
 
     try std.testing.expectEqual(@as(usize, 2), lines.len);

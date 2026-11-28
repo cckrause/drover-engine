@@ -4,11 +4,15 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const RequestFlags = @import("../audio/engine.zig").RequestFlags;
+const PlayerFlags = @import("flags.zig").PlayerFlags;
 
 const lab = @import("../assets/lab.zig");
 const lamp = @import("lamp.zig");
 const Item = @import("../assets/item.zig").Item;
 const inventory_module = @import("inventory.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 
 fn number(value: std.json.Value) f32 {
     return switch (value) {
@@ -101,7 +105,7 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
     try std.testing.expectEqualStrings("LIGHT.WAV", config.soundName());
 
     for (parsed.value.cases) |case| {
-        var inventory: inventory_module.Inventory = .{ .player_flags = case.config.flags };
+        var inventory: inventory_module.Inventory = .{ .player_flags = bits.from(PlayerFlags, case.config.flags) };
 
         if (case.config.count) |count| inventory.slots[11] = .{
             .definition = definition,
@@ -114,7 +118,7 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
         };
 
         var random = case.config.random;
-        var actor_flags: u32 = 0x8000004f;
+        var actor_flags = bits.with(ActorFlags.new, .{ .has_logic = true });
         var effects_buffer: inventory_module.EffectBuffer = undefined;
         var effects = inventory_module.Effects.init(&effects_buffer);
 
@@ -128,16 +132,16 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
                 const seconds = number(parts[1]);
 
                 if (seconds != 0) {
-                    const before = inventory.player_flags & lamp.active_flag;
+                    const before = inventory.player_flags.lamp_on;
 
                     if (parts[2].bool) try state.toggle(&inventory, &config, &effects);
 
                     try state.consume(&inventory, seconds);
 
-                    if (before != inventory.player_flags & lamp.active_flag)
+                    if (before != inventory.player_flags.lamp_on)
                         actor_flags = lamp.actorFlags(
                             actor_flags,
-                            inventory.player_flags & lamp.active_flag != 0,
+                            inventory.player_flags.lamp_on,
                         );
                 }
             } else if (std.mem.eql(u8, name, "render")) {
@@ -147,8 +151,8 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
             } else return error.UnknownLampReferenceAction;
 
             const actual = [_]u32{
-                inventory.player_flags,
-                actor_flags,
+                bits.word(inventory.player_flags),
+                bits.word(actor_flags),
                 @bitCast(state.fuel_elapsed),
                 state.flicker_time,
                 random,
@@ -194,7 +198,7 @@ test "portable lamp matches input, fuel, fade and shared-random execution" {
 
                 try std.testing.expectEqual(@as(?i32, 64), effect.sound.priority);
                 try std.testing.expectEqual(@as(?i32, 127), effect.sound.volume);
-                try std.testing.expectEqual(@as(?u32, 0), effect.sound.flags);
+                try std.testing.expectEqual(@as(?RequestFlags, .{}), effect.sound.flags);
             }
         }
     }

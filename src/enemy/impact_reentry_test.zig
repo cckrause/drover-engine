@@ -15,6 +15,7 @@ const nwx = @import("../assets/nwx.zig");
 const inventory = @import("../player/inventory.zig");
 const weapon = @import("../player/weapon.zig");
 const scene = @import("../render/scene.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     health_bits: u32,
@@ -83,7 +84,7 @@ const Capture = struct {
         shot: weapon.Shot,
     ) !void {
         const self: *@This() = @ptrCast(@alignCast(raw));
-        try std.testing.expect(actor.flags & 0x80000100 == 0x80000100);
+        try std.testing.expect(actor.flags.not_solid and actor.flags.changed);
 
         try self.shots.append(
             self.allocator,
@@ -173,7 +174,7 @@ const PacketCapture = struct {
 
 fn expectState(expected: Snapshot, target: Target, actor: Actor, session: *Session) !void {
     try std.testing.expectEqual(expected.health_bits, @as(u32, @bitCast(target.damage.health)));
-    try std.testing.expectEqualDeep(expected.velocity_bits, bits(target.damage.velocity));
+    try std.testing.expectEqualDeep(expected.velocity_bits, vectorBits(target.damage.velocity));
     try std.testing.expectEqual(expected.mode, target.mode);
     try std.testing.expectEqual(expected.previous_mode, target.previous_mode);
     try std.testing.expectEqual(expected.anger_bits, @as(u32, @bitCast(target.anger)));
@@ -181,11 +182,11 @@ fn expectState(expected: Snapshot, target: Target, actor: Actor, session: *Sessi
     try std.testing.expectEqual(expected.attack_at, target.attack_at);
     try std.testing.expectEqual(expected.sight_at, target.sight_at);
     try std.testing.expectEqual(expected.next_tick, target.next_tick);
-    try std.testing.expectEqual(expected.flags, actor.flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
     try std.testing.expectEqual(expected.height_bits, @as(u32, @bitCast(actor.height)));
     try std.testing.expectEqualDeep(expected.playback, playbackWords(target.playback));
     try std.testing.expectEqual(expected.random, session.contact_state.random);
-    try std.testing.expectEqualDeep(expected.position_bits, bits(actor.position));
+    try std.testing.expectEqualDeep(expected.position_bits, vectorBits(actor.position));
     try std.testing.expectEqual(expected.yaw, actor.yaw);
     try std.testing.expectEqual(expected.timer, target.ai.deadline);
     try std.testing.expectEqual(expected.destroy != 0, target.ai.remove);
@@ -205,12 +206,12 @@ fn playbackWords(p: nwx.Playback) [8]u32 {
         p.choreography,
         p.next_frame,
         p.frame,
-        p.flags,
+        bits.word(p.flags),
         @intFromBool(p.terminated),
     };
 }
 
-fn bits(v: level.Vec3) [3]u32 {
+fn vectorBits(v: level.Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -363,7 +364,7 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
             session.arena.allocator(),
             &archives,
             &item,
-            0x100000,
+            .good,
         )).?;
 
         session.targets[source].?.playback.last_time = 1000;
@@ -443,9 +444,9 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
                 const actual = slot.?;
 
                 try std.testing.expect(actual.costume == session.costumes.get(native.name).?);
-                try std.testing.expectEqualDeep(native.position_bits, bits(actual.position));
-                try std.testing.expectEqual(native.flags, actual.flags);
-                try std.testing.expectEqual(native.secondary_flags, actual.secondary_flags);
+                try std.testing.expectEqualDeep(native.position_bits, vectorBits(actual.position));
+                try std.testing.expectEqual(native.flags, bits.word(actual.flags));
+                try std.testing.expectEqual(native.secondary_flags, bits.word(actual.secondary_flags));
                 try std.testing.expectEqual(native.height_bits, @as(u32, @bitCast(actual.height)));
                 try std.testing.expectEqual(
                     native.radius_bits,
@@ -461,10 +462,10 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
                 const sound = effect.sound;
 
                 try std.testing.expectEqualStrings(native.name, sound.basename);
-                try std.testing.expectEqualDeep(native.position_bits, bits(sound.position.?));
+                try std.testing.expectEqualDeep(native.position_bits, vectorBits(sound.position.?));
                 try std.testing.expectEqualDeep(
                     native.options,
-                    [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), sound.flags.? },
+                    [3]u32{ @intCast(sound.priority.?), @intCast(sound.volume.?), bits.word(sound.flags.?) },
                 );
             }
         }
@@ -577,7 +578,7 @@ test "alternating player and enemy pellets share the shared random stream" {
             costume,
         )).actor(costume);
 
-        var target = (try Target.load(a, &archives, &item, 0x100000)).?;
+        var target = (try Target.load(a, &archives, &item, .good)).?;
 
         target.mode = 1;
         target.anger = 7;

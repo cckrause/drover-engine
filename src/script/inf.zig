@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const item = @import("../assets/item.zig");
 const level_module = @import("../assets/level.zig");
 const texture = @import("../assets/texture.zig");
@@ -20,6 +21,27 @@ const scene_module = @import("../render/scene.zig");
 const geometry = @import("inf_geometry.zig");
 const Router = @import("../network/router.zig").Router;
 const FixedList = @import("../util/fixed_list.zig").FixedList;
+const bits = @import("../util/bits.zig");
+const ActorKind = @import("../actor_flags.zig").ActorKind;
+const Difficulties = level_module.Difficulties;
+const inf_flags = @import("inf_flags.zig");
+pub const Events = inf_flags.Events;
+pub const ObjectRule = inf_flags.ObjectRule;
+pub const TriggerFlags = inf_flags.TriggerFlags;
+pub const TriggerKind = inf_flags.TriggerKind;
+pub const ElevatorFlags = inf_flags.ElevatorFlags;
+pub const ElevatorState = inf_flags.ElevatorState;
+
+/// Who sets off a trigger or elevator unless the script says otherwise.
+const player_only: ActorKind = .{ .player = true };
+/// Everything, for messages the script sends itself.
+const anyone: ActorKind = bits.from(ActorKind, 0xffffffff);
+/// Morphing elevators and automatic doors also answer to kind bit 9, which
+/// nothing in the engine sets.
+const opens_morphing: ActorKind = .{ .player = true, .unused_9 = true };
+/// What opens an automatic door: nudges, plus three event bits nothing
+/// raises.
+const automatic_door_events: Events = .{ .nudge_front = true, .nudge_back = true, .unused_10 = 7 };
 
 pub const Kind = enum(u32) {
     ceiling = 0,
@@ -41,8 +63,9 @@ pub const Target = struct { sector: ?usize = null, wall: ?usize = null, object: 
 
 pub const Message = struct {
     target: Target = .{},
-    code: u32 = 0x7d6,
-    event_mask: u32 = 0,
+    code: MessageCode = .trigger,
+    /// No events means it isn't filtered by event.
+    event_mask: Events = .{},
     arg1: i32 = 0,
     arg2: i32 = 0,
 };
@@ -73,12 +96,12 @@ pub const Elevator = struct {
     value: f32,
     internal_value: f32 = 0,
     vector: level_module.Vec2 = .{ .x = 0, .z = 0 },
-    flags: u32 = 0xf00000,
+    flags: ElevatorFlags = .{},
     sounds: [3]?[]const u8 = .{ null, null, null },
     loop_sound: bool = false,
-    event_mask: u32 = 0,
-    entity_mask: u32 = 0x10,
-    runtime_flags: u32 = 2,
+    event_mask: Events = .{},
+    entity_mask: ActorKind = player_only,
+    runtime_flags: ElevatorState = .{ .enabled = true },
     deleted: bool = false,
     start: usize = 0,
     automatic_door: bool = false,
@@ -86,15 +109,15 @@ pub const Elevator = struct {
 
 pub const Client = struct {
     target: Target,
-    mask: u32,
-    code: u32 = 0,
+    mask: Events,
+    code: MessageCode = @enumFromInt(0),
     arg1: i32 = 0,
     arg2: i32 = 0,
 };
 
 pub const Trigger = struct {
     target: Target,
-    flags: u32,
+    flags: TriggerFlags,
     clients: std.ArrayList(Client) = .empty,
     message: Message = .{},
     object_id: u32 = 0,
@@ -105,20 +128,20 @@ pub const Trigger = struct {
     movie: ?[]const u8 = null,
     next_level: ?[]const u8 = null,
     spawn: ?Target = null,
-    event_mask: u32 = 0xffffffff,
-    entity_mask: u32 = 0x10,
+    event_mask: Events = .all,
+    entity_mask: ActorKind = player_only,
     deleted: bool = false,
 };
 
 pub const Event = struct {
     sector: usize,
     wall: ?usize = null,
-    mask: u32,
-    entity_mask: u32 = 0x10,
+    mask: Events,
+    entity_mask: ActorKind = player_only,
     from_player: bool = true,
     object_id: u32 = 0,
     inventory_ids: []const u32 = &.{},
-    game_mode_mask: u32 = 0x200000,
+    game_mode_mask: Difficulties = .{ .bad = true },
     now_ms: u32,
 };
 
@@ -131,7 +154,7 @@ pub const Effect = union(enum) {
         priority: u8 = 64,
         source: ?usize = null,
         volume: u8 = 127,
-        flags: u32 = 0,
+        flags: audio_engine.RequestFlags = .{},
         occlusion_applied: bool = false,
         listener: ?audio_engine.Listener = null,
         delivered: bool = false,
@@ -140,7 +163,7 @@ pub const Effect = union(enum) {
     wall_frame: struct {
         sector: usize,
         wall: ?usize,
-        code: u32,
+        code: MessageCode,
         arg1: i32 = 0,
         instance: ?usize = null,
     },
@@ -148,7 +171,7 @@ pub const Effect = union(enum) {
 };
 
 pub const Pending = union(enum) {
-    message: struct { value: Message, entity_mask: u32 },
+    message: struct { value: Message, entity_mask: ActorKind },
     actor_impulse: @FieldType(Effect, "actor_impulse"),
 };
 
@@ -188,7 +211,7 @@ pub const TickContext = struct {
     world: ?*geometry.World = null,
     now_ms: u32 = 0,
     inventory_ids: []const u32 = &.{},
-    game_mode_mask: u32 = 0x200000,
+    game_mode_mask: Difficulties = .{ .bad = true },
 };
 
 pub const StartupContext = struct {
@@ -228,8 +251,8 @@ pub const DbLink = struct {
     target: Target,
     kind: enum { elevator, trigger, atx },
     index: usize,
-    event_mask: u32,
-    entity_mask: u32,
+    event_mask: Events,
+    entity_mask: ActorKind,
 };
 
 pub const MovieHost = struct {
@@ -259,7 +282,7 @@ pub const Runtime = struct {
     inventory: ?*@import("../player/inventory.zig").Inventory = null,
     object_host: ?struct {
         context: *anyopaque,
-        send: *const fn (*anyopaque, u32, u32) anyerror!void,
+        send: *const fn (*anyopaque, u32, MessageCode) anyerror!void,
     } = null,
     unlink_host: ?struct {
         context: *anyopaque,
@@ -299,7 +322,7 @@ pub const Runtime = struct {
 
             if (elevator.deleted or elevator.sector != sector or (elevator.kind != .floor_ceiling and elevator.kind != kind)) continue;
 
-            if (elevator.runtime_flags & 1 == 0) return 0;
+            if (!elevator.runtime_flags.moving) return 0;
 
             const current = if (elevator.kind == .ceiling) level.sectors[sector].ceiling.height else level.sectors[sector].floor.height;
             const difference: f32 = if (elevator.target) |target| @floatCast(
@@ -405,7 +428,7 @@ pub const Runtime = struct {
         var classes: std.ArrayList(Class) = .empty;
 
         for (level.sectors, 0..) |sector, index| {
-            if (sector.flags & 0x100 == 0) continue;
+            if (!sector.flags.swinging_door) continue;
 
             if (sector.walls.len == 0) return error.InvalidInfAutomaticDoor;
 
@@ -416,8 +439,8 @@ pub const Runtime = struct {
                 .speed = @bitCast(@as(u32, 0x45471000)),
                 .value = 0,
                 .vector = sector.vertices[sector.walls[0].v1],
-                .event_mask = 0x1c30,
-                .entity_mask = 0x210,
+                .event_mask = automatic_door_events,
+                .entity_mask = opens_morphing,
                 .automatic_door = true,
             };
 
@@ -425,7 +448,7 @@ pub const Runtime = struct {
             const angle: f32 = @bitCast(@as(u32, 0x4571c000));
             try elevator.stops.append(
                 a,
-                .{ .value = if (sector.flags & 0x200 == 0) angle else -angle, .delay = -1 },
+                .{ .value = if (sector.flags.door_swings_back) -angle else angle, .delay = -1 },
             );
 
             const choice = nearest(randomFloat(random, 4.9));
@@ -442,13 +465,9 @@ pub const Runtime = struct {
             elevator.sounds[2] = "DOORCLS.WAV";
 
             for (sector.walls) |*wall| {
-                wall.flags |= 0x40;
+                wall.flags.moves_with_sector = true;
 
-                if (wall.adjoin >= 0) level.sectors[
-                    @intCast(
-                        wall.adjoin,
-                    )
-                ].walls[@intCast(wall.mirror)].flags |= 0x40;
+                if (wall.adjoin >= 0) level.sectors[@intCast(wall.adjoin)].walls[@intCast(wall.mirror)].flags.moves_with_sector = true;
             }
 
             try finishStartup(
@@ -468,7 +487,7 @@ pub const Runtime = struct {
 
         for (level.sectors, 0..) |sector, sector_index| {
             for (sector.walls, 0..) |wall, wall_index| {
-                if (wall.flags & 0x4000 == 0) continue;
+                if (!wall.flags.shatters) continue;
 
                 if (wall.adjoin < 0 or wall.mirror < 0) return error.DoorWallMissingMirror;
 
@@ -482,16 +501,18 @@ pub const Runtime = struct {
 
                     if (exists) continue;
 
-                    level.sectors[owner.sector.?].walls[owner.wall.?].flags |= 0x8800;
+                    const glass = &level.sectors[owner.sector.?].walls[owner.wall.?];
+                    glass.flags.impassable = true;
+                    glass.flags.triggers_on_shot = true;
 
                     try classes.append(a, .{ .trigger = triggers.items.len });
                     try triggers.append(
                         a,
                         .{
                             .target = owner,
-                            .flags = 0x80f00001,
-                            .event_mask = 0x8100,
-                            .entity_mask = 0x30,
+                            .flags = .init(.glass),
+                            .event_mask = .{ .shot_front = true, .blast = true },
+                            .entity_mask = .{ .player = true, .projectile = true },
                         },
                     );
                 }
@@ -554,7 +575,9 @@ pub const Runtime = struct {
         var abandoned_sequence = false;
 
         if (scene) |existing| for (level.sectors, existing.sectors) |sector, *state| {
-            for (sector.walls, state.walls) |wall, *found| found.flags |= wall.flags & 0x40;
+            for (sector.walls, state.walls) |wall, *found| {
+                if (wall.flags.moves_with_sector) found.flags.moves_with_sector = true;
+            }
         };
 
         while (try lines.next()) |line| {
@@ -633,7 +656,7 @@ pub const Runtime = struct {
                     if (elevator.kind == .velocity_x or elevator.kind == .velocity_y or elevator.kind == .velocity_z) {
                         if (scene orelse if (context.world) |world| world.scene else null) |state| {
                             state.sectors[elevator.sector].velocity_present = true;
-                            state.sectors[elevator.sector].runtime_flags |= 1;
+                            state.sectors[elevator.sector].runtime_flags.changed = true;
                         }
                     }
 
@@ -668,31 +691,34 @@ pub const Runtime = struct {
                     active = .{ .elevator = elevators.items.len };
                     try elevators.append(a, elevator);
                 } else if (eq(class, "TRIGGER")) {
-                    const trigger_type: u32 = if (target.?.wall == null) blk: {
+                    const trigger_kind: TriggerKind = if (target.?.wall == null) blk: {
                         if (!eq(subtype, "STANDARD")) return error.UnsupportedSectorTrigger;
-                        break :blk 0x08000000;
+                        break :blk .sector;
                     } else if (eq(
                         subtype,
                         "STANDARD",
-                    )) 0x04000000 else if (eq(
+                    )) .wall else if (eq(
                         subtype,
                         "SINGLE",
-                    )) 0x40000000 else if (eq(
+                    )) .single else if (eq(
                         subtype,
                         "SWITCH1",
-                    )) 0x10000000 else if (eq(
+                    )) .switch_once else if (eq(
                         subtype,
                         "TOGGLE",
-                    )) 0x20000000 else return error.UnsupportedInfTrigger;
+                    )) .toggle else return error.UnsupportedInfTrigger;
+                    // Switch-like triggers answer only to nudges, from the
+                    // player or a projectile.
+                    const switch_like = @intFromEnum(trigger_kind) >= @intFromEnum(TriggerKind.switch_once);
 
                     active = .{ .trigger = triggers.items.len };
                     try triggers.append(
                         a,
                         .{
                             .target = target.?,
-                            .flags = trigger_type | 0xf00001,
-                            .event_mask = if (trigger_type >= 0x10000000) 0x30 else 0xffffffff,
-                            .entity_mask = if (trigger_type >= 0x10000000) 0x30 else 0x10,
+                            .flags = .init(trigger_kind),
+                            .event_mask = if (switch_like) Events.nudge else Events.all,
+                            .entity_mask = if (switch_like) .{ .player = true, .projectile = true } else player_only,
                         },
                     );
                 } else {
@@ -793,17 +819,17 @@ pub const Runtime = struct {
         scene: *scene_module.Scene,
     ) void {
         for (self.elevators) |elevator| {
-            scene.sectors[elevator.sector].runtime_flags |= 1;
+            scene.sectors[elevator.sector].runtime_flags.changed = true;
 
-            for (elevator.slaves.items) |slave| scene.sectors[slave.sector].runtime_flags |= 1;
+            for (elevator.slaves.items) |slave| scene.sectors[slave.sector].runtime_flags.changed = true;
 
             if (elevator.kind == .velocity_x or elevator.kind == .velocity_y or elevator.kind == .velocity_z) scene.sectors[elevator.sector].velocity_present = true;
 
             if (@intFromEnum(elevator.kind) <= 5 or elevator.kind == .floor_ceiling) {
                 for (level.sectors[elevator.sector].walls, scene.sectors[elevator.sector].walls) |wall, *state| {
-                    state.runtime_flags |= 0x04000000;
+                    state.runtime_flags.moved_by_elevator = true;
 
-                    if (elevator.automatic_door) state.runtime_flags |= 4;
+                    if (elevator.automatic_door) state.runtime_flags.flags_changed = true;
 
                     if (wall.adjoin >= 0) {
                         const mirror = &scene.sectors[
@@ -812,9 +838,9 @@ pub const Runtime = struct {
                             )
                         ].walls[@intCast(wall.mirror)];
 
-                        mirror.runtime_flags |= 0x04000000;
+                        mirror.runtime_flags.moved_by_elevator = true;
 
-                        if (elevator.automatic_door) mirror.runtime_flags |= 4;
+                        if (elevator.automatic_door) mirror.runtime_flags.flags_changed = true;
                     }
                 }
             }
@@ -822,9 +848,9 @@ pub const Runtime = struct {
 
         for (self.triggers) |trigger| if (trigger.target.sector) |sector| {
             if (trigger.target.wall) |wall|
-                scene.sectors[sector].walls[wall].runtime_flags |= 1
+                scene.sectors[sector].walls[wall].runtime_flags.changed = true
             else
-                scene.sectors[sector].runtime_flags |= 1;
+                scene.sectors[sector].runtime_flags.changed = true;
         };
     }
 
@@ -847,7 +873,7 @@ pub const Runtime = struct {
     pub fn postSystem(self: *Runtime, message: Message) !void {
         const router = self.router orelse return error.MissingNetworkRouter;
         var bytes = network_message.words(
-            message.code,
+            @intFromEnum(message.code),
             router.own_client,
             .{ 0, @bitCast(message.arg1), @bitCast(message.arg2) },
         );
@@ -859,7 +885,7 @@ pub const Runtime = struct {
             network_message.addressWord(1, @truncate(router.own_client)),
         );
 
-        try router.postHereAndEveryone(0x100800, message.code, &bytes);
+        try router.postHereAndEveryone(0x100800, .{ .code = @intCast(@intFromEnum(message.code)) }, &bytes);
     }
 
     pub fn flushQueued(
@@ -868,7 +894,7 @@ pub const Runtime = struct {
         scene: ?*scene_module.Scene,
         now_ms: u32,
         inventory_ids: []const u32,
-        game_mode_mask: u32,
+        game_mode_mask: Difficulties,
     ) anyerror!void {
         self.movie_elapsed = 0;
         var index: usize = 0;
@@ -889,7 +915,7 @@ pub const Runtime = struct {
                         continue;
                     }
 
-                    if (message.code == 0x7df or message.code == 0x7e0) {
+                    if (message.code == .set_bits or message.code == .clear_bits) {
                         try changeBits(
                             level,
                             scene orelse return error.MissingInfScene,
@@ -916,8 +942,8 @@ pub const Runtime = struct {
                         0,
                     );
 
-                    if (self.restored_links.len == 0 and delivery.entity_mask != 0 and (message.event_mask == 0 or message.event_mask & 0x2000 != 0) and
-                        (message.code == 0x7d7 or message.code == 0x7d8 or message.code == 0x7da or (message.code >= 0x7e7 and message.code <= 0x7ea)))
+                    if (self.restored_links.len == 0 and bits.word(delivery.entity_mask) != 0 and (bits.word(message.event_mask) == 0 or message.event_mask.script) and
+                        message.code.movesWallFrame())
                         try self.effects.append(.{
                             .wall_frame = .{
                                 .sector = message.target.sector.?,
@@ -993,7 +1019,7 @@ pub const Runtime = struct {
         );
     }
 
-    fn enqueue(self: *Runtime, message: Message, entity_mask: u32) !void {
+    fn enqueue(self: *Runtime, message: Message, entity_mask: ActorKind) !void {
         if (self.message_log) |log| try log.append(message);
 
         if (message.target.sector == null and message.target.object == null) {
@@ -1014,25 +1040,10 @@ pub const Runtime = struct {
 
         const sector = &level.sectors[index];
         const state = &scene.sectors[index];
-        var primary: *u32 = undefined;
-        var runtime: *u32 = undefined;
-        var source: *u32 = undefined;
-        const dirty: u32 = if (message.target.wall) |wall_index| blk: {
-            if (wall_index >= sector.walls.len) return error.InvalidInfWallIndex;
+        if (message.target.wall) |wall_index| if (wall_index >= sector.walls.len) return error.InvalidInfWallIndex;
 
-            primary = &state.walls[wall_index].flags;
-            runtime = &state.walls[wall_index].runtime_flags;
-            source = &sector.walls[wall_index].flags;
-
-            break :blk 4;
-        } else blk: {
-            primary = &state.flags;
-            runtime = &state.runtime_flags;
-            source = &sector.flags;
-            break :blk 8;
-        };
-
-        const bits: u32 = @bitCast(message.arg2);
+        const changed: u32 = @bitCast(message.arg2);
+        const set = message.code == .set_bits;
 
         if (marks) |hook| try hook.call(
             if (message.target.wall) |wall| .{
@@ -1040,12 +1051,19 @@ pub const Runtime = struct {
             } else .{ .sector_flags = index },
         );
 
-        runtime.* |= dirty;
-        const destination = if (message.arg1 == 1) primary else runtime;
+        // The "changed" bit goes on first, so a script clearing runtime
+        // flags can clear it again.
+        if (message.target.wall) |wall_index| {
+            const wall = &state.walls[wall_index];
 
-        if (message.code == 0x7df) destination.* |= bits else destination.* &= ~bits;
-
-        source.* = primary.*;
+            wall.runtime_flags.flags_changed = true;
+            if (message.arg1 == 1) changeFlags(&wall.flags, changed, set) else changeFlags(&wall.runtime_flags, changed, set);
+            sector.walls[wall_index].flags = wall.flags;
+        } else {
+            state.runtime_flags.flags_changed = true;
+            if (message.arg1 == 1) changeFlags(&state.flags, changed, set) else changeFlags(&state.runtime_flags, changed, set);
+            sector.flags = state.flags;
+        }
     }
 
     fn dispatch(
@@ -1085,9 +1103,9 @@ pub const Runtime = struct {
                         depth,
                     ),
                     .atx => {
-                        if (message.event_mask != 0 and message.event_mask & link.event_mask == 0) continue;
+                        if (bits.word(message.event_mask) != 0 and !bits.any(message.event_mask, link.event_mask)) continue;
 
-                        if (ev.entity_mask & link.entity_mask == 0) continue;
+                        if (!bits.any(ev.entity_mask, link.entity_mask)) continue;
 
                         try self.effects.append(.{
                             .wall_frame = .{
@@ -1126,8 +1144,8 @@ pub const Runtime = struct {
             .elevator => |index| {
                 const elevator = &self.elevators[index];
                 if (elevator.deleted or message.target.wall != null or elevator.sector != message.target.sector.?) return;
-                if (message.event_mask != 0 and message.event_mask & elevator.event_mask == 0) return;
-                if (ev.entity_mask & elevator.entity_mask == 0) return;
+                if (bits.word(message.event_mask) != 0 and !bits.any(message.event_mask, elevator.event_mask)) return;
+                if (!bits.any(ev.entity_mask, elevator.entity_mask)) return;
 
                 refreshValue(level, elevator);
                 try self.elevatorMessage(level, elevator, message, ev);
@@ -1135,8 +1153,8 @@ pub const Runtime = struct {
             .trigger => |index| {
                 const trigger = &self.triggers[index];
                 if (trigger.deleted or trigger.target.sector != message.target.sector or trigger.target.wall != message.target.wall) return;
-                if (message.event_mask != 0 and message.event_mask & trigger.event_mask == 0) return;
-                if (ev.entity_mask & trigger.entity_mask == 0) return;
+                if (bits.word(message.event_mask) != 0 and !bits.any(message.event_mask, trigger.event_mask)) return;
+                if (!bits.any(ev.entity_mask, trigger.entity_mask)) return;
 
                 try self.triggerMessage(level, scene, trigger, message, ev, depth);
             },
@@ -1151,7 +1169,7 @@ pub const Runtime = struct {
         ev: Event,
     ) !void {
         self.task_time = ev.now_ms;
-        if (message.code == 0x66) {
+        if (message.code == .remove) {
             elevator.deleted = true;
 
             if (self.unlink_host) |host| host.unlinked(
@@ -1162,30 +1180,27 @@ pub const Runtime = struct {
             return;
         }
 
-        if (message.code == 0x7dd) {
-            elevator.runtime_flags |= 2;
+        if (message.code == .master_on) {
+            elevator.runtime_flags.enabled = true;
             return;
         }
 
-        if (elevator.runtime_flags & 2 == 0) return;
+        if (!elevator.runtime_flags.enabled) return;
 
         switch (message.code) {
-            0x7d6 => {
-                if (ev.game_mode_mask & elevator.flags & 0xf00000 == 0) return;
+            .trigger => {
+                if (!bits.any(ev.game_mode_mask, elevator.flags.difficulties)) return;
 
                 const object: u32 = @bitCast(message.arg2);
                 var owned_ids: [25]u32 = undefined;
                 const inventory_ids = self.inventoryIds(&owned_ids, ev.inventory_ids);
-                if (!passesObject(
-                    elevator.flags,
-                    elevator.object_id,
-                    elevator.excluded_object,
-                    object,
-                    message.arg1 != 0,
-                    inventory_ids,
-                    0x1000000,
-                    0x2000000,
-                )) {
+                if (!passesObject(.{
+                    .rule = elevator.flags.object,
+                    .required = elevator.object_id,
+                    .excluded = elevator.excluded_object,
+                    .required_in_inventory = elevator.flags.required_in_inventory,
+                    .excluded_in_inventory = elevator.flags.excluded_in_inventory,
+                }, object, message.arg1 != 0, inventory_ids)) {
                     try self.inventoryUseSound(object, message.arg1 != 0, ev.inventory_ids, false);
                     return;
                 }
@@ -1205,18 +1220,18 @@ pub const Runtime = struct {
                 }
 
                 try self.inventoryUseSound(object, message.arg1 != 0, ev.inventory_ids, true);
-                try self.toggleObject(&elevator.flags, elevator.object_id, object);
+                elevator.flags.object = try self.toggleObject(elevator.flags.object, elevator.object_id, object);
             },
-            0x7d7 => {
+            .next_stop => {
                 if (elevator.next_time < ev.now_ms) self.selectRelative(elevator, 1);
                 try self.start(level, elevator, ev.now_ms);
             },
-            0x7d8 => {
+            .previous_stop => {
                 if (ev.now_ms < elevator.next_time) self.selectRelative(elevator, -1);
                 self.selectRelative(elevator, -1);
                 try self.start(level, elevator, ev.now_ms);
             },
-            0x7da => {
+            .goto_stop => {
                 if (elevator.stops.items.len == 0) return error.InvalidInfStop;
 
                 const selected = if (message.arg1 < 0) elevator.stops.items.len - 1 else @as(
@@ -1230,13 +1245,13 @@ pub const Runtime = struct {
                     elevator.target = selected;
                     try self.start(level, elevator, ev.now_ms);
 
-                    if (elevator.runtime_flags & 1 != 0) {
+                    if (elevator.runtime_flags.moving) {
                         try self.stopSounds(level, elevator);
-                        elevator.runtime_flags &= ~@as(u32, 1);
+                        elevator.runtime_flags.moving = false;
                     }
                 }
             },
-            0x7de => elevator.runtime_flags &= ~@as(u32, 2),
+            .master_off => elevator.runtime_flags.enabled = false,
             else => {},
         }
     }
@@ -1262,7 +1277,7 @@ pub const Runtime = struct {
                         .mode = .once,
                         .priority = 64,
                         .volume = 127,
-                        .flags = 4,
+                        .flags = .default,
                     },
                 });
 
@@ -1290,21 +1305,27 @@ pub const Runtime = struct {
         return buffer[0..count];
     }
 
-    fn toggleObject(self: *Runtime, flags: *u32, required: u32, object: u32) !void {
-        if (required == 0 or required != object) return;
+    /// The rule after `object` was used: a one-time or toggling requirement
+    /// flips, and a used-up item leaves the inventory.
+    fn toggleObject(self: *Runtime, current: ObjectRule, required: u32, object: u32) !ObjectRule {
+        if (required == 0 or required != object) return current;
 
-        if (flags.* & 0x20000 != 0) {
-            flags.* ^= 0x10000;
-            flags.* &= ~@as(u32, 0x20000);
+        var rule = current;
+
+        if (rule.required_once) {
+            rule.required = !rule.required;
+            rule.required_once = false;
         }
 
-        if (flags.* & 0x40000 != 0) flags.* ^= 0x10000;
+        if (rule.required_toggles) rule.required = !rule.required;
 
-        if (flags.* & 0x80000 != 0) {
+        if (rule.uses_up_item) {
             const inventory = self.inventory orelse return error.MissingInfInventory;
             const selected = inventory.selected;
             if (selected != 0 and inventory.slots[selected] != null) try inventory.remove(selected);
         }
+
+        return rule;
     }
 
     fn triggerMessage(
@@ -1317,40 +1338,37 @@ pub const Runtime = struct {
         depth: usize,
     ) anyerror!void {
         switch (message.code) {
-            0x66 => {
+            .remove => {
                 trigger.deleted = true;
                 if (self.unlink_host) |host| host.unlinked(host.context, trigger.target);
             },
-            0x7a => if (trigger.flags & 0xff000000 == 0x10000000) {
-                try self.triggerWallMessage(level, trigger, 0x7ea, ev, depth);
-                trigger.flags |= 1;
+            .reset_switch => if (trigger.flags.kind == .switch_once) {
+                try self.triggerWallMessage(level, trigger, .switch_frame, ev, depth);
+                trigger.flags.enabled = true;
             },
-            0x7dd => trigger.flags |= 1,
-            0x7de => trigger.flags &= ~@as(u32, 1),
-            0x7d6 => {
-                if (trigger.flags & 1 == 0 or ev.game_mode_mask & trigger.flags & 0xf00000 == 0) return;
+            .master_on => trigger.flags.enabled = true,
+            .master_off => trigger.flags.enabled = false,
+            .trigger => {
+                if (!trigger.flags.enabled or !bits.any(ev.game_mode_mask, trigger.flags.difficulties)) return;
 
                 const object: u32 = @bitCast(message.arg2);
                 var owned_ids: [25]u32 = undefined;
-                if (!passesObject(
-                    trigger.flags,
-                    trigger.object_id,
-                    trigger.excluded_object,
-                    object,
-                    true,
-                    self.inventoryIds(&owned_ids, ev.inventory_ids),
-                    0x1000,
-                    0x2000,
-                )) return;
+                if (!passesObject(.{
+                    .rule = trigger.flags.object,
+                    .required = trigger.object_id,
+                    .excluded = trigger.excluded_object,
+                    .required_in_inventory = trigger.flags.required_in_inventory,
+                    .excluded_in_inventory = trigger.flags.excluded_in_inventory,
+                }, object, true, self.inventoryIds(&owned_ids, ev.inventory_ids))) return;
 
                 if (trigger.sound) |name| try self.effects.append(.{
                     .sound = .{ .name = name, .mode = .once },
                 });
 
-                for (trigger.clients.items) |client| if (message.event_mask & client.mask != 0) {
+                for (trigger.clients.items) |client| if (bits.any(message.event_mask, client.mask)) {
                     var outgoing = trigger.message;
                     outgoing.target = client.target;
-                    try self.enqueue(outgoing, 0xffffffff);
+                    try self.enqueue(outgoing, anyone);
                 };
 
                 if (trigger.movie) |name| {
@@ -1358,19 +1376,19 @@ pub const Runtime = struct {
                     self.movie_elapsed +%= try host.play(host.context, name, 1);
                 }
 
-                const subtype = trigger.flags & 0xff000000;
+                const kind = trigger.flags.kind;
 
-                if (subtype >= 0x10000000 and subtype <= 0x40000000) {
+                if (kind.changesWall()) {
                     try self.triggerWallMessage(
                         level,
                         trigger,
-                        if (subtype == 0x10000000) 0x7ea else 0x7e7,
+                        if (kind == .switch_once) .switch_frame else .next_frame,
                         ev,
                         depth,
                     );
 
-                    if (subtype != 0x20000000) trigger.flags &= ~@as(u32, 1);
-                } else if (subtype == 0x80000000) {
+                    if (kind != .toggle) trigger.flags.enabled = false;
+                } else if (kind == .glass) {
                     try self.breakWall(
                         level,
                         scene orelse return error.MissingInfScene,
@@ -1378,12 +1396,12 @@ pub const Runtime = struct {
                         true,
                     );
 
-                    trigger.entity_mask = 0;
+                    trigger.entity_mask = .{};
                 }
 
-                try self.toggleObject(&trigger.flags, trigger.object_id, object);
+                trigger.flags.object = try self.toggleObject(trigger.flags.object, trigger.object_id, object);
 
-                if (trigger.flags & 2 != 0) try network_server.requestEndLevel(
+                if (trigger.flags.ends_level) try network_server.requestEndLevel(
                     self.router orelse return error.MissingNetworkRouter,
                 );
             },
@@ -1401,18 +1419,19 @@ pub const Runtime = struct {
         const sector = target.sector orelse return error.InvalidInfClient;
         const index = target.wall orelse return error.InvalidInfWallIndex;
         const wall = level.sectors[sector].walls[index];
-        if (scene.sectors[sector].walls[index].flags & 0x4000 == 0) return;
+        if (!scene.sectors[sector].walls[index].flags.shatters) return;
         if (wall.adjoin < 0 or wall.mirror < 0) return error.DoorWallMissingMirror;
 
         const other: Target = .{ .sector = @intCast(wall.adjoin), .wall = @intCast(wall.mirror) };
 
         for ([_]Target{ target, other }) |owner|
-            try self.enqueue(.{ .target = owner, .code = 0x7e7, .event_mask = 0x2000 }, 0xffffffff);
+            try self.enqueue(.{ .target = owner, .code = .next_frame, .event_mask = .{ .script = true } }, anyone);
 
         for ([_]Target{ target, other }) |owner| {
             const state = &scene.sectors[owner.sector.?].walls[owner.wall.?];
-            state.flags &= ~@as(u32, 0x4800);
-            state.runtime_flags |= 4;
+            state.flags.shatters = false;
+            state.flags.impassable = false;
+            state.runtime_flags.flags_changed = true;
             level.sectors[owner.sector.?].walls[owner.wall.?].flags = state.flags;
         }
 
@@ -1424,7 +1443,7 @@ pub const Runtime = struct {
                 @intCast(index),
             );
 
-            _ = try router.post(0, 0x422 | 0x80000000, &bytes);
+            _ = try router.post(0, .{ .code = 0x422, .must_arrive = true }, &bytes);
         }
     }
 
@@ -1432,7 +1451,7 @@ pub const Runtime = struct {
         self: *Runtime,
         level: *level_module.Level,
         trigger: *Trigger,
-        code: u32,
+        code: MessageCode,
         ev: Event,
         depth: usize,
     ) anyerror!void {
@@ -1440,8 +1459,8 @@ pub const Runtime = struct {
         _ = ev;
         _ = depth;
 
-        const outgoing = Message{ .target = trigger.target, .code = code, .event_mask = 0x2000 };
-        try self.enqueue(outgoing, 0xffffffff);
+        const outgoing = Message{ .target = trigger.target, .code = code, .event_mask = .{ .script = true } };
+        try self.enqueue(outgoing, anyone);
     }
 
     fn selectRelative(_: *Runtime, elevator: *Elevator, delta: i32) void {
@@ -1463,7 +1482,7 @@ pub const Runtime = struct {
         elevator: *Elevator,
         now: u32,
     ) !void {
-        if (elevator.runtime_flags & 1 != 0) return;
+        if (elevator.runtime_flags.moving) return;
 
         if (elevator.target) |target| if (elevator.value != elevator.stops.items[target].value) {
             try self.sound(level, elevator, 0, .once);
@@ -1472,7 +1491,7 @@ pub const Runtime = struct {
 
         self.elevator_clock = 0;
         elevator.next_time = now;
-        elevator.runtime_flags |= 1;
+        elevator.runtime_flags.moving = true;
     }
 
     fn sound(
@@ -1493,7 +1512,7 @@ pub const Runtime = struct {
                 .z = point.z,
             };
 
-            const flags: u32 = if (mode == .loop or mode == .update) 1 else 0;
+            const flags: audio_engine.RequestFlags = .{ .loop = mode == .loop or mode == .update };
             var volume: u8 = 127;
             const context = self.audio;
 
@@ -1548,7 +1567,7 @@ pub const Runtime = struct {
         context: TickContext,
     ) anyerror!void {
         if (context.world) |world| for (self.elevators) |elevator| {
-            if (elevator.deleted or elevator.runtime_flags & 2 == 0 or elevator.next_time >= now_ms) continue;
+            if (elevator.deleted or !elevator.runtime_flags.enabled or elevator.next_time >= now_ms) continue;
 
             if (elevator.kind != .morph_move and elevator.kind != .morph_spin) continue;
 
@@ -1564,7 +1583,7 @@ pub const Runtime = struct {
         var delay: u32 = 2000;
 
         for (self.elevators) |*elevator| {
-            if (elevator.deleted or elevator.runtime_flags & 2 == 0) continue;
+            if (elevator.deleted or !elevator.runtime_flags.enabled) continue;
 
             refreshValue(level, elevator);
 
@@ -1573,9 +1592,9 @@ pub const Runtime = struct {
                 continue;
             }
 
-            if (elevator.runtime_flags & 1 == 0) try self.start(level, elevator, now_ms);
+            if (!elevator.runtime_flags.moving) try self.start(level, elevator, now_ms);
 
-            if (elevator.runtime_flags & 1 != 0) {
+            if (elevator.runtime_flags.moving) {
                 if (!elevator.loop_sound) try self.sound(level, elevator, 1, .loop);
                 if (elevator.loop_sound) try self.sound(level, elevator, 1, .update);
             }
@@ -1591,19 +1610,16 @@ pub const Runtime = struct {
             const stop_index = elevator.target orelse return error.InvalidInfStop;
             const stop = elevator.stops.items[stop_index];
 
-            if (elevator.runtime_flags & 1 != 0 and stop.delay != 0) try self.stopSounds(
+            if (elevator.runtime_flags.moving and stop.delay != 0) try self.stopSounds(
                 level,
                 elevator,
             );
 
-            if (stop.delay == 0) elevator.runtime_flags |= 1 else elevator.runtime_flags &= ~@as(
-                u32,
-                1,
-            );
+            elevator.runtime_flags.moving = stop.delay == 0;
 
-            if (elevator.runtime_flags & 4 != 0) {
+            if (elevator.runtime_flags.short_wait) {
                 elevator.next_time = now_ms +% 1000;
-                elevator.runtime_flags &= ~@as(u32, 4);
+                elevator.runtime_flags.short_wait = false;
             } else if (stop.delay == -2) {
                 elevator.deleted = true;
                 continue;
@@ -1614,7 +1630,7 @@ pub const Runtime = struct {
 
             for (stop.messages.items) |message| {
                 delay = 0;
-                try self.enqueue(message, 0xffffffff);
+                try self.enqueue(message, anyone);
             }
 
             self.selectRelative(elevator, 1);
@@ -1672,7 +1688,7 @@ pub const Runtime = struct {
                 sector.ambient = nearest(elevator.value);
 
                 if (context.world) |world| {
-                    world.scene.sectors[elevator.sector].runtime_flags |= 1;
+                    world.scene.sectors[elevator.sector].runtime_flags.changed = true;
                     if (world.marks) |marks| try marks.call(.{ .light = elevator.sector });
                 }
 
@@ -1680,7 +1696,7 @@ pub const Runtime = struct {
                     level.sectors[slave.sector].ambient +%= change;
 
                     if (context.world) |world| {
-                        world.scene.sectors[slave.sector].runtime_flags |= 1;
+                        world.scene.sectors[slave.sector].runtime_flags.changed = true;
                         if (world.marks) |marks| try marks.call(.{ .light = slave.sector });
                     }
                 }
@@ -1720,11 +1736,11 @@ pub const Runtime = struct {
 
                 try scrollPlane(level, elevator.sector, ceiling, dx, dz, context.textures);
 
-                if (context.world) |world| world.scene.sectors[elevator.sector].runtime_flags |= 1;
+                if (context.world) |world| world.scene.sectors[elevator.sector].runtime_flags.changed = true;
 
                 for (elevator.slaves.items) |slave| {
                     try scrollPlane(level, slave.sector, ceiling, dx, dz, context.textures);
-                    if (context.world) |world| world.scene.sectors[slave.sector].runtime_flags |= 1;
+                    if (context.world) |world| world.scene.sectors[slave.sector].runtime_flags.changed = true;
                 }
             },
             .morph_move, .morph_spin => try self.morph(elevator, delta, seconds, context),
@@ -1929,7 +1945,7 @@ fn changeVelocity(
     velocity.y += change.y;
     velocity.z += change.z;
 
-    if (world) |context| context.scene.sectors[sector].runtime_flags |= 1;
+    if (world) |context| context.scene.sectors[sector].runtime_flags.changed = true;
 }
 
 fn shortAngle(value: f64) !i16 {
@@ -2031,16 +2047,16 @@ fn construct(level: *level_module.Level, sector: usize, subtype: []const u8) !El
     if (kind == .floor or kind == .floor_ceiling or kind == .morph_move or kind == .morph_spin or kind == .scroll_wall) result.mode = 0;
 
     if (kind == .morph_move or kind == .morph_spin) {
-        result.entity_mask = 0x210;
-        result.event_mask = 0xffffffff;
+        result.entity_mask = opens_morphing;
+        result.event_mask = .all;
     }
 
-    if (eq(subtype, "MORPH_MOVE2") or eq(subtype, "MORPH_SPIN2")) result.flags |= 7;
+    if (eq(subtype, "MORPH_MOVE2") or eq(subtype, "MORPH_SPIN2")) result.flags.unused_0 |= 7;
 
     if (eq(subtype, "EXPLODE")) {
         result.speed = 0;
-        result.entity_mask = 0xffffffff;
-        result.event_mask = 0x40;
+        result.entity_mask = anyone;
+        result.event_mask = .{ .explosion = true };
     }
 
     return result;
@@ -2220,29 +2236,34 @@ fn parseElevator(
     } else if (eq(
         key,
         "EVENT_MASK:",
-    )) e.event_mask = try mask(
+    )) e.event_mask = bits.from(Events, try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "ENTITY_MASK:",
     ) or eq(
         key,
         "OBJECT_MASK:",
-    )) e.entity_mask = try mask(
+    )) e.entity_mask = bits.from(ActorKind, try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "FLAGS:",
-    )) e.flags |= try mask(
+    )) bits.setWord(&e.flags, bits.word(e.flags) | try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "MASTER:",
-    )) e.runtime_flags &= ~@as(u32, 2) else if (eq(key, "OBJECT:") or eq(key, "OBJECT_EXCLUDE:")) {
+    )) e.runtime_flags.enabled = false else if (eq(key, "OBJECT:") or eq(key, "OBJECT_EXCLUDE:")) {
         const excluded = eq(key, "OBJECT_EXCLUDE:");
         const id = try unsigned(words.next());
         if (excluded) e.excluded_object = id else e.object_id = id;
-        try objectFlags(&e.flags, words, if (excluded) 0x2000000 else 0x1000000);
+        const setting = try objectFlags(e.flags.object, words);
+
+        e.flags.object = setting.rule;
+        if (setting.in_inventory) {
+            if (excluded) e.flags.excluded_in_inventory = true else e.flags.required_in_inventory = true;
+        }
     } else if (eq(key, "SOUND:")) {
         const slot = try unsigned(words.next());
         if (slot < 1 or slot > 3) return error.InvalidInfSoundSlot;
@@ -2269,14 +2290,14 @@ fn parseTrigger(
 ) !void {
     if (eq(key, "CLIENT:")) {
         const target = try parseTarget(level, words.next() orelse return error.MissingInfClient);
-        const event_mask = if (words.next()) |raw| try mask(raw) else 0xffffffff;
+        const event_mask = if (words.next()) |raw| bits.from(Events, try mask(raw)) else Events.all;
         try t.clients.append(a, .{ .target = target, .mask = event_mask });
     } else if (eq(key, "MESSAGE:")) {
         const saved = words.*;
 
         if (words.next()) |name| {
             if (eq(name, "END_LEVEL")) {
-                t.flags |= 2;
+                t.flags.ends_level = true;
                 return;
             }
 
@@ -2293,35 +2314,42 @@ fn parseTrigger(
     } else if (eq(
         key,
         "EVENT:",
-    )) t.message.event_mask = try mask(
+    )) t.message.event_mask = bits.from(Events, try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "EVENT_MASK:",
-    )) t.event_mask = try mask(
+    )) t.event_mask = bits.from(Events, try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "ENTITY_MASK:",
     ) or eq(
         key,
         "OBJECT_MASK:",
-    )) t.entity_mask = try mask(
+    )) t.entity_mask = bits.from(ActorKind, try mask(
         words.next(),
-    ) else if (eq(
+    )) else if (eq(
         key,
         "MASTER:",
-    )) t.flags &= ~@as(u32, 1) else if (eq(key, "OBJECT:") or eq(key, "OBJECT_EXCLUDE:")) {
+    )) t.flags.enabled = false else if (eq(key, "OBJECT:") or eq(key, "OBJECT_EXCLUDE:")) {
         const excluded = eq(key, "OBJECT_EXCLUDE:");
         const id = try unsigned(words.next());
 
         if (excluded) t.excluded_object = id else t.object_id = id;
 
-        try objectFlags(&t.flags, words, if (excluded) 0x2000 else 0x1000);
+        const setting = try objectFlags(t.flags.object, words);
 
-        if (t.target.wall == null and t.flags & 0x80000 != 0) {
-            t.flags &= ~@as(u32, 0x80000);
-            t.flags |= 0x10000;
+        t.flags.object = setting.rule;
+        if (setting.in_inventory) {
+            if (excluded) t.flags.excluded_in_inventory = true else t.flags.required_in_inventory = true;
+        }
+
+        // A sector trigger has no item to use up; it requires the object
+        // instead.
+        if (t.target.wall == null and t.flags.object.uses_up_item) {
+            t.flags.object.uses_up_item = false;
+            t.flags.object.required = true;
         }
     } else if (eq(key, "SOUND:")) {
         const name = words.next() orelse return error.MissingInfSound;
@@ -2336,38 +2364,38 @@ fn parseMessage(words: *std.mem.TokenIterator(u8, .any)) !Message {
     if (eq(
         name,
         "TRIGGER",
-    )) message.code = 0x7d6 else if (eq(
+    )) message.code = .trigger else if (eq(
         name,
         "NEXT_STOP",
-    )) message.code = 0x7d7 else if (eq(
+    )) message.code = .next_stop else if (eq(
         name,
         "PREV_STOP",
-    )) message.code = 0x7d8 else if (eq(
+    )) message.code = .previous_stop else if (eq(
         name,
         "GOTO_STOP",
-    )) message.code = 0x7da else if (eq(
+    )) message.code = .goto_stop else if (eq(
         name,
         "MASTER_ON",
-    )) message.code = 0x7dd else if (eq(
+    )) message.code = .master_on else if (eq(
         name,
         "MASTER_OFF",
-    )) message.code = 0x7de else if (eq(
+    )) message.code = .master_off else if (eq(
         name,
         "SET_BITS",
-    )) message.code = 0x7df else if (eq(
+    )) message.code = .set_bits else if (eq(
         name,
         "CLEAR_BITS",
-    )) message.code = 0x7e0 else if (eq(
+    )) message.code = .clear_bits else if (eq(
         name,
         "USER_MSG",
-    )) message.code = 0x7e5 else return error.UnsupportedInfMessage;
+    )) message.code = .user else return error.UnsupportedInfMessage;
 
-    if (message.code == 0x7df or message.code == 0x7e0) {
+    if (message.code == .set_bits or message.code == .clear_bits) {
         message.arg1 = atoi(words.next() orelse return error.MissingInfMessageArgument);
         message.arg2 = atoi(words.next() orelse return error.MissingInfMessageArgument);
-    } else if (message.code == 0x7da or message.code == 0x7e5) {
+    } else if (message.code == .goto_stop or message.code == .user) {
         message.arg1 = atoi(words.next() orelse return error.MissingInfMessageArgument);
-    } else if (words.next()) |raw| message.event_mask = try mask(raw);
+    } else if (words.next()) |raw| message.event_mask = bits.from(Events, try mask(raw));
 
     return message;
 }
@@ -2395,34 +2423,49 @@ fn parseTarget(level: *const level_module.Level, raw: []const u8) !Target {
     return .{ .sector = try findSector(level, raw) };
 }
 
-fn objectFlags(flags: *u32, words: *std.mem.TokenIterator(u8, .any), auto: u32) !void {
-    if (words.next()) |raw| {
-        if (eq(raw, "AUTO")) flags.* |= auto else {
-            const bits = try mask(raw);
-            flags.* |= bits & 0x90000;
+/// Reads what follows OBJECT: or OBJECT_EXCLUDE:: a rule number, AUTO, or
+/// both. AUTO sets `in_inventory`. A toggling requirement wins over a
+/// one-time one.
+fn objectFlags(rule: ObjectRule, words: *std.mem.TokenIterator(u8, .any)) !ObjectSetting {
+    var result: ObjectSetting = .{ .rule = rule };
 
-            if (bits & 0x40000 != 0) flags.* |= 0x40000 else flags.* |= bits & 0x20000;
+    const raw = words.next() orelse {
+        result.rule.required = true;
+        return result;
+    };
 
-            if (words.next()) |mode| {
-                if (!eq(mode, "AUTO")) return error.InvalidInfObjectMode;
-                flags.* |= auto;
-            }
-        }
-    } else flags.* |= 0x10000;
+    if (eq(raw, "AUTO")) {
+        result.in_inventory = true;
+        return result;
+    }
+
+    const value = ObjectRule.fromScript(try mask(raw));
+
+    result.rule = bits.with(result.rule, bits.only(value, .{ .required = true, .uses_up_item = true }));
+
+    if (value.required_toggles) result.rule.required_toggles = true else if (value.required_once) result.rule.required_once = true;
+
+    if (words.next()) |mode| {
+        if (!eq(mode, "AUTO")) return error.InvalidInfObjectMode;
+        result.in_inventory = true;
+    }
+
+    return result;
 }
 
-fn passesObject(
-    flags: u32,
+const ObjectSetting = struct { rule: ObjectRule, in_inventory: bool = false };
+
+const ObjectCheck = struct {
+    rule: ObjectRule,
     required: u32,
     excluded: u32,
-    object: u32,
-    from_player: bool,
-    inventory: []const u32,
-    require_auto: u32,
-    exclude_auto: u32,
-) bool {
-    if (required != 0 and flags & 0x10000 != 0 and object != required and !(from_player and flags & require_auto != 0 and std.mem.indexOfScalar(u32, inventory, required) != null)) return false;
-    if (excluded != 0 and (object == excluded or (from_player and flags & exclude_auto != 0 and std.mem.indexOfScalar(u32, inventory, excluded) != null))) return false;
+    required_in_inventory: bool,
+    excluded_in_inventory: bool,
+};
+
+fn passesObject(check: ObjectCheck, object: u32, from_player: bool, inventory: []const u32) bool {
+    if (check.required != 0 and check.rule.required and object != check.required and !(from_player and check.required_in_inventory and std.mem.indexOfScalar(u32, inventory, check.required) != null)) return false;
+    if (check.excluded != 0 and (object == check.excluded or (from_player and check.excluded_in_inventory and std.mem.indexOfScalar(u32, inventory, check.excluded) != null))) return false;
 
     return true;
 }
@@ -2467,7 +2510,14 @@ fn scrollWalls(
         };
 
         for (surfaces, 0..) |surface, i| {
-            if (wall.flags & (@as(u32, 0x80) << @as(u5, @intCast(i))) == 0) continue;
+            const scrolls = [_]bool{
+                wall.flags.scroll_top,
+                wall.flags.scroll_mid,
+                wall.flags.scroll_bottom,
+                wall.flags.scroll_overlay,
+            };
+
+            if (!scrolls[i]) continue;
 
             if (surface.texture < 0 or surface.texture >= textures.len) return error.MissingInfScrollTexture;
 
@@ -2483,13 +2533,29 @@ fn scrollWalls(
     }
 }
 
+/// A script's set or clear on a flag word. Scripts name raw bits, so any
+/// bit can change, not only the ones the engine has names for.
+fn changeFlags(flags: anytype, changed: u32, set: bool) void {
+    const Flags = @TypeOf(flags.*);
+    const picked = bits.from(Flags, changed);
+
+    flags.* = if (set) bits.with(flags.*, picked) else bits.without(flags.*, picked);
+}
+
 fn markScrollWalls(
     level: *const level_module.Level,
     scene: *scene_module.Scene,
     sector: usize,
 ) void {
-    for (level.sectors[sector].walls, scene.sectors[sector].walls) |wall, *state| if (wall.flags & 0x780 != 0) {
-        state.runtime_flags |= 1;
+    const scrolling = level_module.WallFlags{
+        .scroll_top = true,
+        .scroll_mid = true,
+        .scroll_bottom = true,
+        .scroll_overlay = true,
+    };
+
+    for (level.sectors[sector].walls, scene.sectors[sector].walls) |wall, *state| if (bits.any(wall.flags, scrolling)) {
+        state.runtime_flags.changed = true;
     };
 }
 
@@ -2622,8 +2688,8 @@ test "movie trigger blocks before switch and completion mutations" {
         var triggers = [_]Trigger{
             .{
                 .target = .{ .sector = 20 },
-                .flags = flags,
-                .message = .{ .code = 0x7da, .event_mask = 0x2000, .arg1 = 7 },
+                .flags = bits.from(TriggerFlags, flags),
+                .message = .{ .code = .goto_stop, .event_mask = .{ .script = true }, .arg1 = 7 },
                 .movie = "RAM.SAN",
             },
         };
@@ -2645,7 +2711,7 @@ test "movie trigger blocks before switch and completion mutations" {
         runtime.router = &router;
         try triggers[0].clients.append(
             runtime.arena.allocator(),
-            .{ .target = .{ .sector = 21 }, .mask = 0x30 },
+            .{ .target = .{ .sector = 21 }, .mask = .{ .nudge_front = true, .nudge_back = true } },
         );
 
         var messages = std.array_list.Managed(Message).init(a);
@@ -2660,7 +2726,7 @@ test "movie trigger blocks before switch and completion mutations" {
 
                 try std.testing.expectEqualStrings("RAM.SAN", name);
                 try std.testing.expectEqual(@as(u32, 1), movie_flags);
-                try std.testing.expectEqual(self.flags, self.runtime.triggers[0].flags);
+                try std.testing.expectEqual(self.flags, bits.word(self.runtime.triggers[0].flags));
                 try std.testing.expectEqual(
                     @as(usize, 0),
                     self.runtime.router.?.queues[network_message.Queue.server].count,
@@ -2681,9 +2747,9 @@ test "movie trigger blocks before switch and completion mutations" {
         var capture = Capture{ .runtime = &runtime, .flags = flags };
 
         runtime.movie_host = .{ .context = &capture, .play = Capture.play };
-        try runtime.event(&level, .{ .sector = 20, .mask = 0x20, .now_ms = 100 });
+        try runtime.event(&level, .{ .sector = 20, .mask = .{ .nudge_back = true }, .now_ms = 100 });
         runtime.message_log = &messages;
-        try runtime.flushQueued(&level, null, 101, &.{}, 0xf00000);
+        try runtime.flushQueued(&level, null, 101, &.{}, .all);
 
         const events = case.object.get("events").?.array.items;
         var movie_count: usize = 0;
@@ -2719,12 +2785,12 @@ test "movie trigger blocks before switch and completion mutations" {
 
                 try std.testing.expectEqual(
                     @as(u32, @intCast(expected.object.get("code").?.integer)),
-                    actual.code,
+                    @intFromEnum(actual.code),
                 );
 
                 try std.testing.expectEqual(
                     @as(u32, @intCast(expected.object.get("event").?.integer)),
-                    actual.event_mask,
+                    bits.word(actual.event_mask),
                 );
 
                 try std.testing.expectEqual(
@@ -2744,14 +2810,14 @@ test "movie trigger blocks before switch and completion mutations" {
 
         try std.testing.expectEqual(
             @as(u32, @intCast(case.object.get("result_flags").?.integer)),
-            triggers[0].flags,
+            bits.word(triggers[0].flags),
         );
     }
 
     var trigger: Trigger = .{
         .target = .{ .sector = 20 },
-        .flags = 0x08f00001,
-        .message = .{ .code = 0x7da, .arg1 = 7 },
+        .flags = .init(.sector),
+        .message = .{ .code = .goto_stop, .arg1 = 7 },
     };
 
     var words = std.mem.tokenizeAny(u8, "TRIGGER_MOVIE ram.san", " \t\r");
@@ -2760,7 +2826,7 @@ test "movie trigger blocks before switch and completion mutations" {
     defer a.free(trigger.movie.?);
 
     try std.testing.expectEqualStrings("RAM.SAN", trigger.movie.?);
-    try std.testing.expectEqual(@as(u32, 0x7da), trigger.message.code);
+    try std.testing.expectEqual(MessageCode.goto_stop, trigger.message.code);
     try std.testing.expectEqual(@as(i32, 7), trigger.message.arg1);
 }
 
@@ -2841,7 +2907,7 @@ test "velocity controllers preserve constructor and primary slave arithmetic" {
         try std.testing.expectEqual(sample.speed_bits, @as(u32, @bitCast(elevator.speed)));
         try std.testing.expectEqual(sample.value_bits, @as(u32, @bitCast(elevator.value)));
 
-        for (scene.sectors) |*state| state.runtime_flags = 0;
+        for (scene.sectors) |*state| state.runtime_flags = .{};
 
         var world = geometry.World{
             .level = &level,
@@ -2872,7 +2938,7 @@ test "velocity controllers preserve constructor and primary slave arithmetic" {
                     },
                 );
 
-                try std.testing.expectEqual(flags, state.runtime_flags);
+                try std.testing.expectEqual(flags, bits.word(state.runtime_flags));
             }
         }
     }
@@ -2977,8 +3043,8 @@ test "breakable wall triggers and both-sided destruction match sequences" {
 
         walls[0].adjoin = 1;
         walls[1].adjoin = 0;
-        walls[0].flags = 0x4001;
-        walls[1].flags = 0x4001;
+        walls[0].flags = .{ .mid_texture_on_adjoin = true, .shatters = true };
+        walls[1].flags = .{ .mid_texture_on_adjoin = true, .shatters = true };
 
         var sectors = [_]level_module.Sector{std.mem.zeroes(level_module.Sector)} ** 2;
         var states = [_]scene_module.WallState{std.mem.zeroes(scene_module.WallState)} ** 2;
@@ -3017,18 +3083,18 @@ test "breakable wall triggers and both-sided destruction match sequences" {
         try std.testing.expectEqual(@as(usize, 2), runtime.triggers.len);
 
         for (0..2) |i| {
-            states[i].flags = sample.initial.walls[i][0];
-            states[i].runtime_flags = sample.initial.walls[i][1];
+            bits.setWord(&states[i].flags, sample.initial.walls[i][0]);
+            bits.setWord(&states[i].runtime_flags, sample.initial.walls[i][1]);
             walls[i].flags = states[i].flags;
 
             try std.testing.expectEqual(
                 sample.initial.triggers[i].flags,
-                runtime.triggers[i].flags,
+                bits.word(runtime.triggers[i].flags),
             );
 
             try std.testing.expectEqual(
                 sample.initial.triggers[i].masks,
-                [2]u32{ runtime.triggers[i].event_mask, runtime.triggers[i].entity_mask },
+                [2]u32{ bits.word(runtime.triggers[i].event_mask), bits.word(runtime.triggers[i].entity_mask) },
             );
         }
 
@@ -3042,29 +3108,29 @@ test "breakable wall triggers and both-sided destruction match sequences" {
             try runtime.dispatch(
                 &level,
                 &scene,
-                .{ .target = .{ .sector = frame.target, .wall = 0 }, .event_mask = sample.event },
+                .{ .target = .{ .sector = frame.target, .wall = 0 }, .event_mask = bits.from(Events, sample.event) },
                 .{
                     .sector = frame.target,
                     .wall = 0,
-                    .mask = sample.event,
-                    .entity_mask = sample.entity,
+                    .mask = bits.from(Events, sample.event),
+                    .entity_mask = bits.from(ActorKind, sample.entity),
                     .now_ms = 16,
                 },
                 0,
             );
 
-            try runtime.flushQueued(&level, &scene, 16, &.{}, 0x200000);
+            try runtime.flushQueued(&level, &scene, 16, &.{}, .{ .bad = true });
 
             for (0..2) |i| {
                 try std.testing.expectEqual(
                     frame.walls[i],
-                    [2]u32{ states[i].flags, states[i].runtime_flags },
+                    [2]u32{ bits.word(states[i].flags), bits.word(states[i].runtime_flags) },
                 );
 
-                try std.testing.expectEqual(frame.triggers[i].flags, runtime.triggers[i].flags);
+                try std.testing.expectEqual(frame.triggers[i].flags, bits.word(runtime.triggers[i].flags));
                 try std.testing.expectEqual(
                     frame.triggers[i].masks,
-                    [2]u32{ runtime.triggers[i].event_mask, runtime.triggers[i].entity_mask },
+                    [2]u32{ bits.word(runtime.triggers[i].event_mask), bits.word(runtime.triggers[i].entity_mask) },
                 );
             }
 
@@ -3076,8 +3142,8 @@ test "breakable wall triggers and both-sided destruction match sequences" {
                     actual.target.sector,
                 );
 
-                try std.testing.expectEqual(expected.message, actual.code);
-                try std.testing.expectEqual(expected.event, actual.event_mask);
+                try std.testing.expectEqual(expected.message, @intFromEnum(actual.code));
+                try std.testing.expectEqual(expected.event, bits.word(actual.event_mask));
                 try std.testing.expectEqual(expected.arg1, actual.arg1);
                 try std.testing.expectEqual(expected.arg2, actual.arg2);
             }
@@ -3152,8 +3218,9 @@ test "INF wall and sector bit messages match every flag bit" {
     defer runtime.deinit();
 
     for (parsed.value.cases) |sample| {
-        const primary = if (sample.wall) &states[0].flags else &sector_states[0].flags;
-        const secondary = if (sample.wall) &states[0].runtime_flags else &sector_states[0].runtime_flags;
+        // The reference speaks in raw words, so look at the flags that way.
+        const primary: *u32 = if (sample.wall) @ptrCast(&states[0].flags) else @ptrCast(&sector_states[0].flags);
+        const secondary: *u32 = if (sample.wall) @ptrCast(&states[0].runtime_flags) else @ptrCast(&sector_states[0].runtime_flags);
 
         primary.* = sample.initial[0];
         secondary.* = sample.initial[1];
@@ -3162,7 +3229,7 @@ test "INF wall and sector bit messages match every flag bit" {
             a,
             "{s} {d} {d}",
             .{
-                if (sample.code == 0x7df) "SET_BITS" else "CLEAR_BITS",
+                if (sample.code == @intFromEnum(MessageCode.set_bits)) "SET_BITS" else "CLEAR_BITS",
                 sample.selector,
                 sample.mask,
             },
@@ -3173,16 +3240,16 @@ test "INF wall and sector bit messages match every flag bit" {
         var message = try parseMessage(&words);
 
         message.target = .{ .sector = 0, .wall = if (sample.wall) @as(usize, 0) else null };
-        message.event_mask = 0x40000000;
+        message.event_mask = .{ .unused_16 = 0x4000 };
 
-        try runtime.enqueue(message, 0);
+        try runtime.enqueue(message, .{});
         try std.testing.expectEqual(sample.queued, [2]u32{ primary.*, secondary.* });
-        try runtime.flushQueued(&level, &scene, 16, &.{}, 0);
+        try runtime.flushQueued(&level, &scene, 16, &.{}, .{});
 
         try std.testing.expectEqual(sample.result, [2]u32{ primary.*, secondary.* });
         try std.testing.expectEqual(
             primary.*,
-            if (sample.wall) walls[0].flags else sectors[0].flags,
+            if (sample.wall) bits.word(walls[0].flags) else bits.word(sectors[0].flags),
         );
     }
 
@@ -3227,12 +3294,12 @@ test "INF trigger flag messages join the current FIFO without link filtering" {
 
     defer runtime.deinit();
 
-    try runtime.event(&level, .{ .sector = 0, .mask = 0x10, .now_ms = 10 });
-    try std.testing.expectEqual(@as(u32, 0), states[0].flags);
-    try runtime.flushQueued(&level, &scene, 11, &.{}, 0x200000);
+    try runtime.event(&level, .{ .sector = 0, .mask = .{ .nudge_front = true }, .now_ms = 10 });
+    try std.testing.expectEqual(@as(u32, 0), bits.word(states[0].flags));
+    try runtime.flushQueued(&level, &scene, 11, &.{}, .{ .bad = true });
 
-    try std.testing.expectEqual(@as(u32, 0x8000), states[0].flags);
-    try std.testing.expectEqual(@as(u32, 4), states[0].runtime_flags);
+    try std.testing.expectEqual(@as(u32, 0x8000), bits.word(states[0].flags));
+    try std.testing.expectEqual(@as(u32, 4), bits.word(states[0].runtime_flags));
     try std.testing.expectEqual(@as(usize, 0), runtime.pending.items.len);
 }
 
@@ -3338,7 +3405,7 @@ test "INF reference FIFO drain and shared task wake phases" {
     for (runtime.elevators, 0..) |*elevator, i| {
         elevator.* = try construct(&level, i, if (i == 2) "SCROLL_WALL" else "MOVE_CEILING");
         elevator.speed = if (i == 0) 20 else 60;
-        elevator.event_mask = if (i == 0) 0x30 else 0;
+        elevator.event_mask = if (i == 0) Events.nudge else Events{};
 
         try elevator.stops.appendSlice(mem, stops[i]);
         try finishStartup(a, &level, elevator, null, &angles, &.{}, 0, &lists);
@@ -3346,12 +3413,12 @@ test "INF reference FIFO drain and shared task wake phases" {
 
     try runtime.elevators[1].stops.items[1].messages.append(
         mem,
-        .{ .target = .{ .sector = 2 }, .code = 0x7d7 },
+        .{ .target = .{ .sector = 2 }, .code = .next_stop },
     );
 
     try runtime.elevators[2].stops.items[3].messages.append(
         mem,
-        .{ .target = .{ .sector = 1 }, .code = 0x7da },
+        .{ .target = .{ .sector = 1 }, .code = .goto_stop },
     );
 
     const direction = angles.sinCos(4096);
@@ -3362,17 +3429,17 @@ test "INF reference FIFO drain and shared task wake phases" {
         &.{
             .{
                 .target = .{ .sector = 3 },
-                .flags = 0x40f00001,
-                .event_mask = 0x30,
-                .entity_mask = 0x10,
-                .message = .{ .code = 0x7da, .arg1 = 1 },
+                .flags = .init(.single),
+                .event_mask = Events.nudge,
+                .entity_mask = player_only,
+                .message = .{ .code = .goto_stop, .arg1 = 1 },
             },
         },
     );
 
     try runtime.triggers[0].clients.append(
         mem,
-        .{ .target = .{ .sector = 1 }, .mask = 0xffffffff },
+        .{ .target = .{ .sector = 1 }, .mask = .all },
     );
 
     runtime.classes = try mem.dupe(
@@ -3391,16 +3458,16 @@ test "INF reference FIFO drain and shared task wake phases" {
     for (parsed.value.samples) |sample| {
         if (eq(sample.phase, "drain")) {
             log.clearRetainingCapacity();
-            try runtime.flushQueued(&level, null, sample.now, &.{}, 0x200000);
+            try runtime.flushQueued(&level, null, sample.now, &.{}, .{ .bad = true });
         } else if (eq(sample.phase, "activate")) {
             try runtime.event(
                 &level,
-                .{ .sector = 0, .mask = 0x10, .from_player = false, .now_ms = sample.now },
+                .{ .sector = 0, .mask = .{ .nudge_front = true }, .from_player = false, .now_ms = sample.now },
             );
 
             try runtime.event(
                 &level,
-                .{ .sector = 3, .mask = 0x10, .from_player = false, .now_ms = sample.now },
+                .{ .sector = 3, .mask = .{ .nudge_front = true }, .from_player = false, .now_ms = sample.now },
             );
         } else if (eq(sample.phase, "task")) {
             const seconds: f32 = @floatCast(
@@ -3421,7 +3488,7 @@ test "INF reference FIFO drain and shared task wake phases" {
 
         try std.testing.expectEqual(sample.task_time, runtime.task_time);
         try std.testing.expectEqual(sample.queued, runtime.pending.items.len);
-        try std.testing.expectEqual(sample.trigger_flags, runtime.triggers[0].flags);
+        try std.testing.expectEqual(sample.trigger_flags, bits.word(runtime.triggers[0].flags));
 
         for ([_]State{
             sample.elevators.TOOLSEC,
@@ -3431,15 +3498,15 @@ test "INF reference FIFO drain and shared task wake phases" {
             try std.testing.expectEqual(expected.value_bits, @as(u32, @bitCast(actual.value)));
             try std.testing.expectEqual(expected.next_time, actual.next_time);
             try std.testing.expectEqual(expected.target, actual.target.?);
-            try std.testing.expectEqual(expected.flags, actual.runtime_flags);
+            try std.testing.expectEqual(expected.flags, bits.word(actual.runtime_flags));
         }
 
         try std.testing.expectEqual(sample.messages.len, log.items.len);
 
         for (sample.messages, log.items) |expected, actual| {
             try std.testing.expectEqualStrings(expected.target, names[actual.target.sector.?]);
-            try std.testing.expectEqual(expected.message, actual.code);
-            try std.testing.expectEqual(expected.event, actual.event_mask);
+            try std.testing.expectEqual(expected.message, @intFromEnum(actual.code));
+            try std.testing.expectEqual(expected.event, bits.word(actual.event_mask));
             try std.testing.expectEqual(expected.arg1, actual.arg1);
             try std.testing.expectEqual(expected.arg2, actual.arg2);
         }
@@ -3517,7 +3584,7 @@ test "INF reference selected item success and failure requests" {
                     .value = 0,
                     .target = 0,
                     .next_time = 0xffffffff,
-                    .flags = 0xf00000 | sample.extra_flags,
+                    .flags = bits.from(ElevatorFlags, 0xf00000 | sample.extra_flags),
                 },
             },
         );
@@ -3537,16 +3604,16 @@ test "INF reference selected item success and failure requests" {
             &level,
             elevator,
             .{
-                .code = 0x7d6,
+                .code = .trigger,
                 .arg1 = if (sample.arg1_nonzero) 1 else 0,
                 .arg2 = @bitCast(sample.object_id),
             },
-            .{ .sector = 0, .mask = 0x10, .now_ms = 1000, .inventory_ids = inventory[0..count] },
+            .{ .sector = 0, .mask = .{ .nudge_front = true }, .now_ms = 1000, .inventory_ids = inventory[0..count] },
         );
 
         try std.testing.expectEqual(sample.next_time, elevator.next_time);
-        try std.testing.expectEqual(sample.runtime_flags, elevator.runtime_flags);
-        try std.testing.expectEqual(sample.flags, elevator.flags);
+        try std.testing.expectEqual(sample.runtime_flags, bits.word(elevator.runtime_flags));
+        try std.testing.expectEqual(sample.flags, bits.word(elevator.flags));
 
         var observed: usize = 0;
 
@@ -3689,7 +3756,7 @@ test "INF reference scalar stepping and ordered scheduler states" {
                 .value = input.current,
                 .step = input.step != 0,
                 .next_time = input.next_time,
-                .runtime_flags = input.flags,
+                .runtime_flags = bits.from(ElevatorState, input.flags),
                 .vector = .{ .x = input.minimum, .z = input.maximum },
                 .target = if (input.stops.len == 0) null else 0,
             };
@@ -3720,7 +3787,7 @@ test "INF reference scalar stepping and ordered scheduler states" {
 
             try std.testing.expectEqual(expected.value_bits, @as(u32, @bitCast(e.value)));
             try std.testing.expectEqual(expected.next_time, e.next_time);
-            try std.testing.expectEqual(expected.flags, e.runtime_flags);
+            try std.testing.expectEqual(expected.flags, bits.word(e.runtime_flags));
             try std.testing.expectEqual(expected.target, e.target);
             try std.testing.expectEqual(expected.random, random);
 
@@ -3803,8 +3870,8 @@ test "INF reference scalar stepping and ordered scheduler states" {
                 try runtime.elevatorMessage(
                     &level,
                     &runtime.elevators[0],
-                    .{ .code = code, .arg1 = sample.event.arg1, .arg2 = sample.event.arg2 },
-                    .{ .sector = 0, .mask = 0, .now_ms = sample.event.now },
+                    .{ .code = @enumFromInt(code), .arg1 = sample.event.arg1, .arg2 = sample.event.arg2 },
+                    .{ .sector = 0, .mask = .{}, .now_ms = sample.event.now },
                 );
             } else {
                 try runtime.runTask(
@@ -3898,10 +3965,10 @@ test "INF reference trigger filtering and one-shot state" {
 
         var trigger = Trigger{
             .target = .{ .sector = 3, .wall = 0 },
-            .flags = sequence.flags,
+            .flags = bits.from(TriggerFlags, sequence.flags),
             .object_id = sequence.required,
             .excluded_object = sequence.excluded,
-            .message = .{ .code = 0x7da, .event_mask = 0x2000, .arg1 = 1 },
+            .message = .{ .code = .goto_stop, .event_mask = .{ .script = true }, .arg1 = 1 },
         };
 
         for ([_]u32{
@@ -3910,7 +3977,7 @@ test "INF reference trigger filtering and one-shot state" {
             0xffffffff,
         }, 0..) |client_mask, i| try trigger.clients.append(
             runtime.arena.allocator(),
-            .{ .target = .{ .sector = i }, .mask = client_mask },
+            .{ .target = .{ .sector = i }, .mask = bits.from(Events, client_mask) },
         );
 
         for (sequence.samples) |sample| {
@@ -3920,15 +3987,15 @@ test "INF reference trigger filtering and one-shot state" {
                 null,
                 &trigger,
                 .{
-                    .code = sample.event.message,
-                    .event_mask = sample.event.mask,
+                    .code = @enumFromInt(sample.event.message),
+                    .event_mask = bits.from(Events, sample.event.mask),
                     .arg2 = @bitCast(sample.event.object_id),
                 },
-                .{ .sector = 3, .wall = 0, .mask = sample.event.mask, .now_ms = 1 },
+                .{ .sector = 3, .wall = 0, .mask = bits.from(Events, sample.event.mask), .now_ms = 1 },
                 0,
             );
 
-            try std.testing.expectEqual(sample.flags, trigger.flags);
+            try std.testing.expectEqual(sample.flags, bits.word(trigger.flags));
             try std.testing.expectEqual(sample.messages.len, log.items.len);
 
             for (sample.messages, log.items) |expected, actual| {
@@ -3939,8 +4006,8 @@ test "INF reference trigger filtering and one-shot state" {
                 )) 3 else try std.fmt.parseInt(usize, expected.target[6..], 10);
 
                 try std.testing.expectEqual(expected_target, actual.target.sector.?);
-                try std.testing.expectEqual(expected.message, actual.code);
-                try std.testing.expectEqual(expected.event, actual.event_mask);
+                try std.testing.expectEqual(expected.message, @intFromEnum(actual.code));
+                try std.testing.expectEqual(expected.event, bits.word(actual.event_mask));
                 try std.testing.expectEqual(expected.arg1, actual.arg1);
                 try std.testing.expectEqual(expected.arg2, actual.arg2);
             }
@@ -4000,16 +4067,16 @@ test "Hideout INF constructors, filtered activation and held ceiling movement" {
 
     const sector = try findSector(&level, "C1");
 
-    try runtime.event(&level, .{ .sector = sector, .mask = 0x10, .now_ms = 10 });
-    try runtime.flushQueued(&level, null, 10, &.{}, 0x200000);
+    try runtime.event(&level, .{ .sector = sector, .mask = .{ .nudge_front = true }, .now_ms = 10 });
+    try runtime.flushQueued(&level, null, 10, &.{}, .{ .bad = true });
 
     try std.testing.expectEqual(@as(usize, 0), runtime.effects.items.len);
-    try runtime.event(&level, .{ .sector = sector, .mask = 0x20, .now_ms = 10 });
+    try runtime.event(&level, .{ .sector = sector, .mask = .{ .nudge_back = true }, .now_ms = 10 });
     var random: u32 = 0x742389ac;
     try runtime.advance(&level, 10, 0.25, .{ .random = &random, .world = &world });
     try std.testing.expectEqual(@as(f32, 17.1), level.sectors[sector].ceiling.height);
 
-    try runtime.flushQueued(&level, null, 11, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 11, &.{}, .{ .bad = true });
     try runtime.advance(&level, 11, 0.25, .{ .random = &random, .world = &world });
 
     try std.testing.expectEqual(@as(f32, 17.1), level.sectors[sector].ceiling.height);
@@ -4091,11 +4158,11 @@ test "INF reference automatic door constructors" {
             [2]u32{ @bitCast(actual.vector.x), @bitCast(actual.vector.z) },
         );
 
-        try std.testing.expectEqual(expected.flags, actual.flags);
-        try std.testing.expectEqual(expected.runtime_flags, actual.runtime_flags);
+        try std.testing.expectEqual(expected.flags, bits.word(actual.flags));
+        try std.testing.expectEqual(expected.runtime_flags, bits.word(actual.runtime_flags));
         try std.testing.expectEqual(expected.next_time, actual.next_time);
-        try std.testing.expectEqual(expected.event_mask, actual.event_mask);
-        try std.testing.expectEqual(expected.entity_mask, actual.entity_mask);
+        try std.testing.expectEqual(expected.event_mask, bits.word(actual.event_mask));
+        try std.testing.expectEqual(expected.entity_mask, bits.word(actual.entity_mask));
         try std.testing.expectEqual(expected.stops.len, actual.stops.items.len);
 
         for (expected.stops, actual.stops.items) |stop, found| {
@@ -4119,12 +4186,15 @@ test "INF reference automatic door constructors" {
     for (parsed.value.walls) |expected| {
         try std.testing.expectEqual(
             expected.flags,
-            level.sectors[expected.sector].walls[expected.wall].flags,
+            bits.word(level.sectors[expected.sector].walls[expected.wall].flags),
         );
 
         try std.testing.expectEqual(
             expected.runtime_flags,
-            scene.sectors[expected.sector].walls[expected.wall].runtime_flags & 0x04000004,
+            bits.word(bits.only(scene.sectors[expected.sector].walls[expected.wall].runtime_flags, .{
+                .flags_changed = true,
+                .moved_by_elevator = true,
+            })),
         );
     }
 }
@@ -4250,10 +4320,10 @@ test "INF reference AHEAD pixel scrolling and single wrap" {
             for (expected) |wall| {
                 const actual = l.sectors[sector].walls[wall.index];
 
-                try std.testing.expectEqual(wall.flags, actual.flags);
+                try std.testing.expectEqual(wall.flags, bits.word(actual.flags));
                 try std.testing.expectEqual(
                     wall.runtime_flags,
-                    sc.sectors[sector].walls[wall.index].runtime_flags,
+                    bits.word(sc.sectors[sector].walls[wall.index].runtime_flags),
                 );
 
                 for (wall.surfaces, [_]level_module.TextureRef{
@@ -4279,7 +4349,7 @@ test "INF reference AHEAD pixel scrolling and single wrap" {
         }
     };
 
-    for (parsed.value.initial.walls) |wall| scene.sectors[elevator.sector].walls[wall.index].runtime_flags = wall.runtime_flags;
+    for (parsed.value.initial.walls) |wall| bits.setWord(&scene.sectors[elevator.sector].walls[wall.index].runtime_flags, wall.runtime_flags);
 
     try Check.walls(&level, &scene, textures, elevator.sector, parsed.value.initial.walls);
     try std.testing.expectEqual(
@@ -4362,13 +4432,13 @@ test "INF reference Train floor and ceiling scrolling" {
                 .z = @bitCast(initial.offset_bits[1]),
             };
 
-            states[i].runtime_flags = initial.runtime_flags;
+            bits.setWord(&states[i].runtime_flags, initial.runtime_flags);
             textures[i] = .{
                 .width = initial.dimensions[0],
                 .height = initial.dimensions[1],
                 .pixels = &.{},
                 .height_shift = 0,
-                .flags = 0,
+                .flags = .{},
             };
         }
 
@@ -4430,7 +4500,7 @@ test "INF reference Train floor and ceiling scrolling" {
                     [2]u32{ @bitCast(plane.offset.x), @bitCast(plane.offset.z) },
                 );
 
-                try std.testing.expectEqual(expected.runtime_flags, states[i].runtime_flags);
+                try std.testing.expectEqual(expected.runtime_flags, bits.word(states[i].runtime_flags));
 
                 const untouched = if (ceiling) sectors[i].floor else sectors[i].ceiling;
 
@@ -4491,17 +4561,17 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     const initial = try runtime.checkpoint(a);
     defer initial.deinit(a);
 
-    try runtime.event(&level, .{ .sector = trigger, .wall = wall, .mask = 0x10, .now_ms = 10 });
-    try runtime.enqueue(.{ .target = .{ .sector = window }, .code = 0x7de }, 0xffffffff);
-    try runtime.flushQueued(&level, null, 11, &.{}, 0x200000);
+    try runtime.event(&level, .{ .sector = trigger, .wall = wall, .mask = .{ .nudge_front = true }, .now_ms = 10 });
+    try runtime.enqueue(.{ .target = .{ .sector = window }, .code = .master_off }, anyone);
+    try runtime.flushQueued(&level, null, 11, &.{}, .{ .bad = true });
 
-    try std.testing.expectEqual(@as(u32, 0), runtime.elevators[window_index].runtime_flags);
+    try std.testing.expectEqual(ElevatorState{}, runtime.elevators[window_index].runtime_flags);
     try std.testing.expectEqual(@as(u32, 0xffffffff), runtime.elevators[window_index].next_time);
     try std.testing.expectEqual(@as(usize, 0), runtime.pending.items.len);
 
     try runtime.restore(initial);
-    try runtime.event(&level, .{ .sector = trigger, .wall = wall, .mask = 0x10, .now_ms = 20 });
-    try runtime.flushQueued(&level, null, 21, &.{}, 0x200000);
+    try runtime.event(&level, .{ .sector = trigger, .wall = wall, .mask = .{ .nudge_front = true }, .now_ms = 20 });
+    try runtime.flushQueued(&level, null, 21, &.{}, .{ .bad = true });
 
     try std.testing.expectEqual(@as(u32, 21), runtime.elevators[window_index].next_time);
     try std.testing.expectEqual(@as(u32, 21), runtime.task_time);
@@ -4516,7 +4586,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     try std.testing.expectEqual(@as(usize, 1), runtime.pending.items.len);
     try std.testing.expectEqual(ahead, runtime.pending.items[0].message.value.target.sector.?);
 
-    try runtime.flushQueued(&level, null, 23, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 23, &.{}, .{ .bad = true });
     try std.testing.expectEqual(@as(u32, 23), runtime.elevators[ahead_index].next_time);
     try runtime.advance(&level, 23, 0.1, .{ .random = &random, .world = &world });
     try std.testing.expectEqual(@as(f32, 0), runtime.elevators[ahead_index].value);
@@ -4524,13 +4594,13 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     const brass = try findSector(&level, "MHBRASS");
     try runtime.event(
         &level,
-        .{ .sector = brass, .mask = 0x10, .now_ms = 30, .inventory_ids = &.{101} },
+        .{ .sector = brass, .mask = .{ .nudge_front = true }, .now_ms = 30, .inventory_ids = &.{101} },
     );
 
     const queued = try runtime.checkpoint(a);
     defer queued.deinit(a);
 
-    try runtime.flushQueued(&level, null, 31, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 31, &.{}, .{ .bad = true });
     try std.testing.expectEqual(@as(usize, 0), runtime.effects.items.len);
     const system = (try router.read(network_message.Queue.server)).?;
 
@@ -4559,7 +4629,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(network_message.Queue.server));
     try runtime.restore(queued);
     try std.testing.expectEqual(@as(usize, 1), runtime.pending.items.len);
-    try runtime.flushQueued(&level, null, 33, &.{101}, 0x200000);
+    try runtime.flushQueued(&level, null, 33, &.{101}, .{ .bad = true });
     try std.testing.expectEqual(@as(?[]u8, null), try router.read(network_message.Queue.server));
 
     runtime.effects.clearRetainingCapacity();
@@ -4574,7 +4644,7 @@ test "INF local router phases preserve Hideout chains and delivery inventory" {
     defer impulse.deinit(a);
 
     try std.testing.expectEqual(@as(usize, 0), runtime.effects.items.len);
-    try runtime.flushQueued(&level, null, 34, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 34, &.{}, .{ .bad = true });
 
     try std.testing.expectEqual(@as(usize, 1), runtime.effects.items.len);
     try std.testing.expect(runtime.effects.items[0] == .actor_impulse);
@@ -4638,10 +4708,10 @@ test "Train initial sliding doors and queued END_LEVEL match startup" {
     }
 
     const finish = for (runtime.triggers) |*trigger| {
-        if (trigger.flags & 2 != 0) break trigger;
+        if (trigger.flags.ends_level) break trigger;
     } else return error.MissingTrainEndTrigger;
 
-    try std.testing.expectEqual(@as(u32, 0x7d6), finish.message.code);
+    try std.testing.expectEqual(MessageCode.trigger, finish.message.code);
     const event_value = Event{
         .sector = finish.target.sector.?,
         .wall = finish.target.wall,
@@ -4649,15 +4719,15 @@ test "Train initial sliding doors and queued END_LEVEL match startup" {
         .now_ms = 10,
     };
 
-    finish.flags &= ~@as(u32, 1);
+    finish.flags.enabled = false;
 
     try runtime.event(&level, event_value);
-    try runtime.flushQueued(&level, null, 10, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 10, &.{}, .{ .bad = true });
 
-    finish.flags |= 1;
+    finish.flags.enabled = true;
 
     try runtime.event(&level, event_value);
-    try runtime.flushQueued(&level, null, 11, &.{}, 0x200000);
+    try runtime.flushQueued(&level, null, 11, &.{}, .{ .bad = true });
 
     const trigger = (try router.read(network_message.Queue.server)).?;
 
@@ -4926,7 +4996,7 @@ test "INF blocked Hideout door matches rollback timeout and queued impulse" {
     var scene = try scene_module.Scene.init(a, &level, &angles);
     const originals = try a.alloc([]const level_module.Vec2, level.sectors.len);
     const saved_walls = try a.alloc([]scene_module.WallState, level.sectors.len);
-    const saved_flags = try a.alloc(u32, level.sectors.len);
+    const saved_flags = try a.alloc(scene_module.SectorRuntimeFlags, level.sectors.len);
 
     for (level.sectors, scene.sectors, originals, saved_walls, saved_flags) |sector, state, *vertices, *walls, *flags| {
         vertices.* = try a.dupe(level_module.Vec2, sector.vertices);
@@ -5010,7 +5080,7 @@ test "INF blocked Hideout door matches rollback timeout and queued impulse" {
 
             for (sample.impulses, runtime.pending.items) |expected, pending| {
                 try std.testing.expectEqual(@as(u32, 0x801), expected.target);
-                try std.testing.expectEqual(@as(u32, 0x7d2), expected.code);
+                try std.testing.expectEqual(@as(u32, @intFromEnum(MessageCode.push)), expected.code);
 
                 const impulse = pending.actor_impulse;
 
@@ -5047,7 +5117,7 @@ test "INF blocked Hideout door matches rollback timeout and queued impulse" {
 
             for (sample.changes) |change| {
                 try std.testing.expectEqual(
-                    saved_flags[change.sector] | change.runtime_flags,
+                    bits.with(saved_flags[change.sector], bits.from(scene_module.SectorRuntimeFlags, change.runtime_flags)),
                     scene.sectors[change.sector].runtime_flags,
                 );
 
@@ -5068,7 +5138,7 @@ test "INF blocked Hideout door matches rollback timeout and queued impulse" {
                         @as(u32, @bitCast(actual.length)),
                     );
 
-                    try std.testing.expectEqual(expected.runtime_flags, actual.runtime_flags);
+                    try std.testing.expectEqual(expected.runtime_flags, bits.word(actual.runtime_flags));
                 }
             }
         }

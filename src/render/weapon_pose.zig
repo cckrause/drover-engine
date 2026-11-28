@@ -89,12 +89,12 @@ fn contains(
 
     const state = scene.sectors[sector];
     const source = level.sectors[sector];
-    const ceiling = if (state.flags & 0x80000000 != 0) height(
+    const ceiling = if (state.flags.sloped_ceiling) height(
         state.ceiling_slope orelse return error.MissingViewSlope,
         point,
     ) else source.ceiling.height;
 
-    const floor = if (state.flags & 0x40000000 != 0) height(
+    const floor = if (state.flags.sloped_floor) height(
         state.floor_slope orelse return error.MissingViewSlope,
         point,
     ) else source.floor.height;

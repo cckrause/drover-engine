@@ -243,6 +243,7 @@ test "Town and Train missions load actors and advance at every difficulty" {
                 .good => 90,
                 .bad => 94,
                 .ugly => 84,
+                .unpicked => unreachable,
             };
 
             try std.testing.expectEqual(total, session.enemy_shared.total_enemies);

@@ -10,6 +10,8 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
+
 /// Selections may nest this deep on one instance. Callbacks run game code
 /// that selects again in the middle of a command, so nesting stays on the
 /// call stack and this bounds it. No shipped sprite set nests at all; a
@@ -19,7 +21,7 @@ pub const max_selection_depth = 32;
 pub const Cell = struct {
     width: u32,
     height: u32,
-    flags: u32,
+    flags: CellFlags,
     pixels: []const u8,
     encoded: []const u8 = &.{},
 };
@@ -32,7 +34,39 @@ pub const Part = struct {
     offset_y: f32,
     width: f32,
     height: f32,
-    flags: u32,
+    flags: PartFlags,
+};
+
+pub const CellFlags = packed struct(u32) {
+    /// Stored column by column; otherwise row by row.
+    columns: bool = false,
+    unused_1: u3 = 0,
+    /// Colour 0 is see-through.
+    transparent: bool = false,
+    /// The lowest colours blend with what is behind.
+    translucent: bool = false,
+    unused_6: u26 = 0,
+};
+
+pub const PartFlags = packed struct(u32) {
+    unused_0: u8 = 0,
+    mirrored: bool = false,
+    unused_9: u23 = 0,
+};
+
+pub const PlaybackFlags = packed struct(u32) {
+    playing: bool = false,
+    /// Stopped on its current frame by a hold command.
+    held: bool = false,
+    /// A new sequence was selected during this step.
+    reselected: bool = false,
+    unused_3: u29 = 0,
+
+    pub fn start(self: *PlaybackFlags) void {
+        self.playing = true;
+        self.reselected = true;
+        self.held = false;
+    }
 };
 
 pub const Frame = struct { offset_x: f32, offset_y: f32, parts: []const Part };
@@ -51,7 +85,7 @@ pub const Playback = struct {
     choreography: u32 = 0,
     next_frame: u32 = 0,
     frame: u32 = 0,
-    flags: u32 = 1,
+    flags: PlaybackFlags = .{ .playing = true },
     terminated: bool = false,
     command_budget: ?*usize = null,
     /// How many selections are running inside each other on this instance,
@@ -120,7 +154,7 @@ pub const Playback = struct {
             @as(i32, @as(i16, @truncate(@as(i32, @bitCast(directions)) -% turns -% 1))),
         );
 
-        self.flags = (self.flags | 5) & ~@as(u32, 2);
+        self.flags.start();
 
         if (comptime @TypeOf(
             context,
@@ -141,7 +175,7 @@ pub const Playback = struct {
 
         const old_flags = self.flags;
 
-        if (self.flags & 1 == 0 or self.flags & 2 != 0) {
+        if (!self.flags.playing or self.flags.held) {
             self.last_time = now;
         } else {
             var choreography = try self.selected(costume);
@@ -174,7 +208,7 @@ pub const Playback = struct {
                     }
 
                     var arguments: i32 = @as(i16, @bitCast(try self.word(choreography)));
-                    self.flags &= ~@as(u32, 4);
+                    self.flags.reselected = false;
 
                     switch (opcode) {
                         0xfff5, 0xfff6 => {
@@ -189,7 +223,7 @@ pub const Playback = struct {
                             }
                         },
                         0xfff9 => {
-                            self.flags |= 2;
+                            self.flags.held = true;
                             remaining = 0;
 
                             if (comptime @TypeOf(
@@ -249,7 +283,8 @@ pub const Playback = struct {
                         },
                         0xffff => {
                             remaining = 0;
-                            self.flags &= ~@as(u32, 5);
+                            self.flags.playing = false;
+                            self.flags.reselected = false;
 
                             if (comptime @TypeOf(
                                 context,
@@ -258,7 +293,7 @@ pub const Playback = struct {
                         else => return error.InvalidNwxCommand,
                     }
 
-                    if (self.flags & 4 != 0) {
+                    if (self.flags.reselected) {
                         arguments = 0;
                         remaining = 0;
                         choreography = try self.selected(costume);
@@ -276,7 +311,7 @@ pub const Playback = struct {
             }
         }
 
-        self.flags = (self.flags & ~@as(u32, 4)) | (old_flags & 4);
+        self.flags.reselected = old_flags.reselected;
     }
 
     fn selected(self: Playback, costume: *const Costume) !Choreography {
@@ -339,13 +374,13 @@ pub const Costume = struct {
             const size = try r.word();
             const width = try r.word();
             const height = try r.word();
-            const flags = try r.word();
+            const flags = bits.from(CellFlags, try r.word());
             if (width > 0x7fff or height > 0x7fff) return error.InvalidNwxCellDimensions;
 
             const source = try r.take(size);
             const pixels = try a.alloc(u8, @as(usize, width) * height);
 
-            if (flags & 1 != 0) {
+            if (flags.columns) {
                 if (width > source.len / 4) return error.TruncatedNwx;
 
                 for (0..width) |x| {
@@ -402,7 +437,7 @@ pub const Costume = struct {
 
                 const raw_x = try r.signed();
                 const raw_y = try r.signed();
-                const flags = try r.word();
+                const flags = bits.from(PartFlags, try r.word());
                 const cell = cells[index];
                 const unit: f64 = @as(f32, @bitCast(@as(u32, 0x3d924925)));
                 const denominator = 14.0 / @as(f64, scale);
@@ -663,7 +698,7 @@ test "NWX cells, frames and choreography match the reference loader" {
         );
 
         for (costume.cells) |cell| {
-            hashWords(&hash, &.{ cell.width, cell.height, cell.flags });
+            hashWords(&hash, &.{ cell.width, cell.height, bits.word(cell.flags) });
             hash.update(cell.pixels);
         }
 
@@ -683,7 +718,7 @@ test "NWX cells, frames and choreography match the reference loader" {
                     @bitCast(part.offset_y),
                     @bitCast(part.width),
                     @bitCast(part.height),
-                    part.flags,
+                    bits.word(part.flags),
                 },
             );
         }
@@ -873,7 +908,7 @@ test "inventory and weapon NWX rows match pixels" {
         var hash = std.crypto.hash.sha2.Sha256.init(.{});
 
         for (costume.cells) |cell| {
-            hashWords(&hash, &.{ cell.width, cell.height, cell.flags });
+            hashWords(&hash, &.{ cell.width, cell.height, bits.word(cell.flags) });
             hash.update(cell.pixels);
         }
 
@@ -946,9 +981,9 @@ test "unbound WAX playback matches 768 reference steps" {
 
             if (i == 64) now -= 150;
 
-            if (i == 32) playback.flags |= 2;
+            if (i == 32) playback.flags.held = true;
 
-            if (i == 38) playback.flags &= ~@as(u32, 2);
+            if (i == 38) playback.flags.held = false;
 
             try playback.advance(&costume, if (i == 96) 3 else 0, now);
             hashWords(
@@ -960,7 +995,7 @@ test "unbound WAX playback matches 768 reference steps" {
                     playback.choreography,
                     playback.next_frame,
                     playback.frame,
-                    playback.flags,
+                    bits.word(playback.flags),
                 },
             );
         }
@@ -1033,7 +1068,7 @@ test "bound WAX playback reads on when its logic ignores termination" {
 
     try std.testing.expect(!playback.terminated);
     try std.testing.expectEqual(@as(u32, 9), playback.frame);
-    try std.testing.expectEqual(@as(u32, 4), playback.flags);
+    try std.testing.expectEqual(PlaybackFlags{ .reselected = true }, playback.flags);
     try std.testing.expectEqual(
         @as(i16, 62),
         costume.choreographies[21].frames[playback.direction * costume.choreographies[21].frames_per_direction + playback.frame],

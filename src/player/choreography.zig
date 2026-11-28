@@ -9,6 +9,10 @@
 const std = @import("std");
 
 const item_asset = @import("../assets/item.zig");
+const bits = @import("../util/bits.zig");
+const player_flags = @import("flags.zig");
+const PlayerFlags = player_flags.PlayerFlags;
+const Pose = player_flags.Pose;
 
 pub const Table = struct {
     stand: i16 = 0,
@@ -54,31 +58,40 @@ pub const Input = struct {
     run: bool,
 };
 
-pub fn select(flags: *u32, table: Table, input: Input) ?i16 {
+/// Picks the pose sequence for this update, or null when the one already
+/// playing stays. Each pose plays once until another replaces it, so the
+/// flags remember which one was chosen last.
+pub fn select(flags: *PlayerFlags, table: Table, input: Input) ?i16 {
     if (input.dead) {
-        if (flags.* & 0x1000 != 0) return null;
-        flags.* |= 0x1000;
+        if (flags.dying) return null;
+        flags.dying = true;
         return table.die;
     }
 
     const still = @as(u32, @bitCast(input.speed)) & 0x7fffffff == 0;
     if (!input.crouch and !input.low_ceiling) {
-        flags.* &= ~@as(u32, 0x380);
-        if (still) return pick(flags, 0x10, 0x60, table.stand);
-        if (input.run) return pick(flags, 0x40, 0x30, table.run);
-        return pick(flags, 0x20, 0x50, table.walk);
+        flags.pose = bits.without(flags.pose, Pose.crouching);
+        if (still) return pick(flags, .{ .stand = true }, table.stand);
+        if (input.run) return pick(flags, .{ .run = true }, table.run);
+        return pick(flags, .{ .walk = true }, table.walk);
     }
 
-    flags.* &= ~@as(u32, 0x70);
-    if (still) return pick(flags, 0x80, 0x300, table.crouch_stand);
-    if (input.run) return pick(flags, 0x200, 0x180, table.crouch_stand);
+    flags.pose = bits.without(flags.pose, Pose.standing);
+    if (still) return pick(flags, .{ .crouch_stand = true }, table.crouch_stand);
+    // Crouch-running replays the crouch-stand sequence.
+    if (input.run) return pick(flags, .{ .crouch_run = true }, table.crouch_stand);
 
-    return pick(flags, 0x100, 0x280, table.crouch_walk);
+    return pick(flags, .{ .crouch_walk = true }, table.crouch_walk);
 }
 
-fn pick(flags: *u32, bit: u32, others: u32, value: i16) ?i16 {
-    if (flags.* & bit != 0) return null;
-    flags.* = flags.* & ~others | bit;
+/// Sets `pose` in place of the other poses of the same group, unless it is
+/// already set.
+fn pick(flags: *PlayerFlags, pose: Pose, value: i16) ?i16 {
+    if (bits.any(flags.pose, pose)) return null;
+
+    const group = if (bits.any(pose, Pose.standing)) Pose.standing else Pose.crouching;
+
+    flags.pose = bits.with(bits.without(flags.pose, group), pose);
 
     return value;
 }
@@ -95,15 +108,15 @@ test "player choreography choice follows" {
     };
 
     const Case = struct {
-        flags: u32,
+        flags: PlayerFlags,
         input: Input,
-        flags_after: u32,
+        flags_after: PlayerFlags,
         chosen: ?i16,
     };
 
     const cases = [_]Case{
         .{
-            .flags = 4 | 0x380,
+            .flags = .{ .on_ground = true, .pose = .{ .crouch_stand = true, .crouch_walk = true, .crouch_run = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -111,11 +124,11 @@ test "player choreography choice follows" {
                 .speed = 0,
                 .run = false,
             },
-            .flags_after = 4 | 0x10,
+            .flags_after = .{ .on_ground = true, .pose = .{ .stand = true } },
             .chosen = 100,
         },
         .{
-            .flags = 4 | 0x10 | 0x80,
+            .flags = .{ .on_ground = true, .pose = .{ .stand = true, .crouch_stand = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -123,11 +136,11 @@ test "player choreography choice follows" {
                 .speed = -0.0,
                 .run = true,
             },
-            .flags_after = 4 | 0x10,
+            .flags_after = .{ .on_ground = true, .pose = .{ .stand = true } },
             .chosen = null,
         },
         .{
-            .flags = 4 | 0x10 | 0x20,
+            .flags = .{ .on_ground = true, .pose = .{ .stand = true, .walk = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -135,11 +148,11 @@ test "player choreography choice follows" {
                 .speed = 3,
                 .run = false,
             },
-            .flags_after = 4 | 0x10 | 0x20,
+            .flags_after = .{ .on_ground = true, .pose = .{ .stand = true, .walk = true } },
             .chosen = null,
         },
         .{
-            .flags = 4 | 0x10,
+            .flags = .{ .on_ground = true, .pose = .{ .stand = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -147,11 +160,11 @@ test "player choreography choice follows" {
                 .speed = 3,
                 .run = false,
             },
-            .flags_after = 4 | 0x20,
+            .flags_after = .{ .on_ground = true, .pose = .{ .walk = true } },
             .chosen = 101,
         },
         .{
-            .flags = 4 | 0x20,
+            .flags = .{ .on_ground = true, .pose = .{ .walk = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -159,11 +172,11 @@ test "player choreography choice follows" {
                 .speed = 3,
                 .run = true,
             },
-            .flags_after = 4 | 0x40,
+            .flags_after = .{ .on_ground = true, .pose = .{ .run = true } },
             .chosen = 102,
         },
         .{
-            .flags = 4,
+            .flags = .{ .on_ground = true },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -171,11 +184,11 @@ test "player choreography choice follows" {
                 .speed = std.math.nan(f32),
                 .run = false,
             },
-            .flags_after = 4 | 0x20,
+            .flags_after = .{ .on_ground = true, .pose = .{ .walk = true } },
             .chosen = 101,
         },
         .{
-            .flags = 4 | 0x70,
+            .flags = .{ .on_ground = true, .pose = .{ .stand = true, .walk = true, .run = true } },
             .input = .{
                 .dead = false,
                 .crouch = true,
@@ -183,11 +196,11 @@ test "player choreography choice follows" {
                 .speed = 0,
                 .run = false,
             },
-            .flags_after = 4 | 0x80,
+            .flags_after = .{ .on_ground = true, .pose = .{ .crouch_stand = true } },
             .chosen = 103,
         },
         .{
-            .flags = 4 | 0x80,
+            .flags = .{ .on_ground = true, .pose = .{ .crouch_stand = true } },
             .input = .{
                 .dead = false,
                 .crouch = false,
@@ -195,11 +208,11 @@ test "player choreography choice follows" {
                 .speed = 2,
                 .run = false,
             },
-            .flags_after = 4 | 0x100,
+            .flags_after = .{ .on_ground = true, .pose = .{ .crouch_walk = true } },
             .chosen = 104,
         },
         .{
-            .flags = 4 | 0x100,
+            .flags = .{ .on_ground = true, .pose = .{ .crouch_walk = true } },
             .input = .{
                 .dead = false,
                 .crouch = true,
@@ -207,11 +220,11 @@ test "player choreography choice follows" {
                 .speed = 2,
                 .run = true,
             },
-            .flags_after = 4 | 0x200,
+            .flags_after = .{ .on_ground = true, .pose = .{ .crouch_run = true } },
             .chosen = 103,
         },
         .{
-            .flags = 4 | 0x200 | 0x80,
+            .flags = .{ .on_ground = true, .pose = .{ .crouch_stand = true, .crouch_run = true } },
             .input = .{
                 .dead = false,
                 .crouch = true,
@@ -219,11 +232,11 @@ test "player choreography choice follows" {
                 .speed = 2,
                 .run = true,
             },
-            .flags_after = 4 | 0x200 | 0x80,
+            .flags_after = .{ .on_ground = true, .pose = .{ .crouch_stand = true, .crouch_run = true } },
             .chosen = null,
         },
         .{
-            .flags = 4 | 0x20,
+            .flags = .{ .on_ground = true, .pose = .{ .walk = true } },
             .input = .{
                 .dead = true,
                 .crouch = true,
@@ -231,11 +244,11 @@ test "player choreography choice follows" {
                 .speed = 0,
                 .run = false,
             },
-            .flags_after = 4 | 0x20 | 0x1000,
+            .flags_after = .{ .on_ground = true, .pose = .{ .walk = true }, .dying = true },
             .chosen = 106,
         },
         .{
-            .flags = 4 | 0x1000,
+            .flags = .{ .on_ground = true, .dying = true },
             .input = .{
                 .dead = true,
                 .crouch = true,
@@ -243,7 +256,7 @@ test "player choreography choice follows" {
                 .speed = 0,
                 .run = false,
             },
-            .flags_after = 4 | 0x1000,
+            .flags_after = .{ .on_ground = true, .dying = true },
             .chosen = null,
         },
     };

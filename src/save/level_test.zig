@@ -11,6 +11,7 @@ const camera = @import("../render/backends/software/camera.zig");
 const scene_module = @import("../render/scene.zig");
 const saved = @import("level.zig");
 const stream = @import("stream.zig");
+const bits = @import("../util/bits.zig");
 
 test "geometry save records restore field order and offset quirk" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -76,8 +77,8 @@ test "geometry save records restore field order and offset quirk" {
         const state = &scene.sectors[case.index];
 
         if (std.mem.eql(u8, case.kind, "sector")) {
-            state.flags = case.flags;
-            state.runtime_flags = case.runtime;
+            bits.setWord(&state.flags, case.flags);
+            bits.setWord(&state.runtime_flags, case.runtime);
 
             inline for (.{
                 "floor",

@@ -10,6 +10,7 @@ const Item = @import("../assets/item.zig").Item;
 const nwx = @import("../assets/nwx.zig");
 const object_state = @import("../render/object_state.zig");
 const objects = @import("../render/objects.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     position_bits: [3]u32,
@@ -32,8 +33,8 @@ fn check(expected: Snapshot, actor: objects.Actor) !void {
         },
     );
 
-    try std.testing.expectEqual(expected.flags, actor.flags);
-    try std.testing.expectEqual(expected.secondary_flags, actor.secondary_flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
+    try std.testing.expectEqual(expected.secondary_flags, bits.word(actor.secondary_flags));
     try std.testing.expectEqual(
         expected.scale_bits,
         [2]u32{ @bitCast(actor.scale_x), @bitCast(actor.scale_y) },
@@ -53,7 +54,7 @@ fn check(expected: Snapshot, actor: objects.Actor) !void {
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
         },
     );
 
@@ -121,7 +122,8 @@ test "enemy drop constructors and unbound playback match the reference" {
                 .position = .{ .x = 1.5, .y = 0, .z = 1.5 },
                 .rotation = .{ .x = 0, .y = 0, .z = 0 },
                 .angles = .{ 0, 0, 0 },
-                .flags = .{ 0, 0 },
+                .flags = .{},
+                .availability = .{},
             },
             0,
             &item,

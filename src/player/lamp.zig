@@ -8,10 +8,9 @@
 const std = @import("std");
 const Item = @import("../assets/item.zig").Item;
 const inventory_module = @import("inventory.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
 const Inventory = inventory_module.Inventory;
 const weapon = @import("weapon.zig");
-
-pub const active_flag: u32 = 0x20000000;
 
 pub const Config = struct {
     sound: [16]u8 = @splat(0),
@@ -46,13 +45,13 @@ pub const State = struct {
         config: *const Config,
         effects: *inventory_module.Effects,
     ) !void {
-        if (inventory.player_flags & active_flag == 0) {
-            if (fuelSlot(inventory) == null or inventory.player_flags & 0x8000 != 0) return;
+        if (!inventory.player_flags.lamp_on) {
+            if (fuelSlot(inventory) == null or inventory.player_flags.underwater) return;
 
             const name = config.soundName();
 
             if (name.len != 0) try effects.append(.{
-                .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = 0 },
+                .sound = .{ .basename = name, .priority = 64, .volume = 127, .flags = .{} },
             });
 
             self.fade = 0;
@@ -60,7 +59,7 @@ pub const State = struct {
             self.fading_out = false;
             self.force_depth = true;
             self.depth_bias = 0;
-            inventory.player_flags |= active_flag;
+            inventory.player_flags.lamp_on = true;
         } else self.turnOff(inventory);
     }
 
@@ -68,7 +67,7 @@ pub const State = struct {
         const elapsed = @as(f64, self.fuel_elapsed) + seconds;
 
         self.fuel_elapsed = @floatCast(elapsed);
-        if (elapsed < 1 or inventory.player_flags & active_flag == 0) return;
+        if (elapsed < 1 or !inventory.player_flags.lamp_on) return;
 
         if (fuelSlot(inventory)) |slot| {
             const remaining = inventory.slots[slot].?.count -% 1;
@@ -119,7 +118,7 @@ pub const State = struct {
     fn turnOff(self: *State, inventory: *Inventory) void {
         self.fading_in = false;
         self.fading_out = true;
-        inventory.player_flags &= ~active_flag;
+        inventory.player_flags.lamp_on = false;
     }
 
     fn flicker(self: *State, now: u32, random: *u32) void {
@@ -145,11 +144,15 @@ pub const State = struct {
     }
 };
 
-pub fn actorFlags(flags: u32, active: bool) u32 {
-    return if (active) (flags | 0x80000010) & ~@as(
-        u32,
-        8,
-    ) else (flags & ~@as(u32, 0x10)) | 0x80000008;
+/// A lit lamp makes the player glow instead of taking the light around.
+pub fn actorFlags(flags: ActorFlags, active: bool) ActorFlags {
+    var result = flags;
+
+    result.glowing = active;
+    result.shaded = !active;
+    result.changed = true;
+
+    return result;
 }
 
 fn fuelSlot(inventory: *const Inventory) ?usize {

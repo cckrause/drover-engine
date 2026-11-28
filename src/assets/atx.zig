@@ -9,6 +9,7 @@
 //! STOP still stops the script.
 
 const std = @import("std");
+const MessageCode = @import("../message_code.zig").MessageCode;
 const FixedList = @import("../util/fixed_list.zig").FixedList;
 
 /// Textures and sounds one advance may report: more than ten seconds of
@@ -93,12 +94,21 @@ pub const Animation = struct {
 
 pub const Event = union(enum) { texture: usize, sound: usize };
 
+pub const StateFlags = packed struct(u16) {
+    on_sector: bool = false,
+    on_wall: bool = false,
+    unused_2: u6 = 0,
+    /// Waiting at a stop instruction for a message.
+    stopped: bool = false,
+    unused_9: u7 = 0,
+};
+
 pub const State = struct {
     rate: i32 = 12,
     pc: u32 = 0,
     displayed: u32 = 1000,
     last_tick: u32 = 0,
-    flags: u16,
+    flags: StateFlags,
 
     pub fn tick(self: *State, program: Animation, now: u32, events: *Events) !void {
         if (now < self.last_tick) return error.AtxClockMovedBackwards;
@@ -114,21 +124,21 @@ pub const State = struct {
     pub fn message(
         self: *State,
         program: Animation,
-        code: u32,
+        code: MessageCode,
         arg1: i32,
         now: u32,
         events: *Events,
     ) !void {
         const destination: i32 = switch (code) {
-            0x7d7, 0x7e7, 0x7ea => -1,
-            0x7d8, 0x7e9 => -2,
-            0x7da, 0x7e8 => arg1,
+            .next_stop, .next_frame, .switch_frame => -1,
+            .previous_stop, .previous_frame => -2,
+            .goto_stop, .goto_frame => arg1,
             else => return,
         };
 
-        if (self.flags & 0x100 == 0) return;
+        if (!self.flags.stopped) return;
 
-        self.flags &= ~@as(u16, 0x100);
+        self.flags.stopped = false;
 
         if (destination == -2) {
             self.pc -%= 1;
@@ -151,7 +161,7 @@ pub const State = struct {
         const last: u32 = @intCast(program.instructions.len - 1);
         var controls: ControlSteps = .{};
 
-        while (remaining != 0 and (amount < 0 or self.flags & 0x100 == 0)) {
+        while (remaining != 0 and (amount < 0 or !self.flags.stopped)) {
             if (self.pc >= program.instructions.len) return error.InvalidAtxInstructionIndex;
 
             if (program.instructions[self.pc] == .texture) {
@@ -172,7 +182,7 @@ pub const State = struct {
                     self.pc = chosen -% 1;
                 },
                 .stop => {
-                    self.flags |= 0x100;
+                    self.flags.stopped = true;
                     remaining = 0;
                     self.pc -%= 1;
                 },

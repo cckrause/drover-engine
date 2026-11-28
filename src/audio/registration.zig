@@ -5,7 +5,10 @@
 //! kept with their clocks and replayed once the device arrives.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 const Runtime = @import("runtime.zig").Runtime;
+const engine = @import("engine.zig");
 const Registration = @import("runtime.zig").Registration;
 const Item = @import("../assets/item.zig").Item;
 const lab = @import("../assets/lab.zig");
@@ -50,7 +53,7 @@ pub const Ledger = struct {
         name: []const u8,
         priority: u8,
         now: u32,
-        flags: u32,
+        flags: engine.Flags,
     ) !void {
         return self.appendRegistration(a, name, priority, now, flags, false);
     }
@@ -61,7 +64,7 @@ pub const Ledger = struct {
         name: []const u8,
         now: u32,
     ) !void {
-        return self.appendRegistration(a, name, 64, now, 0, true);
+        return self.appendRegistration(a, name, 64, now, .{}, true);
     }
 
     pub fn bind(self: *Ledger, audio: *Runtime) !void {
@@ -102,7 +105,7 @@ pub const Ledger = struct {
                     );
 
                 handle.id = id;
-                audio.registrations.items[id].flags |= record.flags & ~@as(u32, 0x10000);
+                audio.registrations.items[id].flags = bits.with(audio.registrations.items[id].flags, bits.without(record.flags, .{ .effects = true }));
             },
             .release => |index| if (self.handles.items[index].id) |id| audio.releaseRegistration(
                 id,
@@ -187,7 +190,7 @@ pub const Ledger = struct {
         name: []const u8,
         priority: u8,
         now: u32,
-        flags: u32,
+        flags: engine.Flags,
         default_pickup: bool,
     ) !void {
         try self.handles.ensureUnusedCapacity(a, 1);
@@ -197,7 +200,7 @@ pub const Ledger = struct {
             .name = try a.dupe(u8, name),
             .priority = priority,
             .registered_at = now,
-            .flags = 0x10000 | flags,
+            .flags = bits.with(flags, .{ .effects = true }),
         });
 
         self.handles.appendAssumeCapacity(.{
@@ -236,7 +239,7 @@ pub fn startup(ledger: *Ledger, a: std.mem.Allocator, system: lab.Archive, now: 
             'H' => 107,
             'M' => 64,
             else => 1,
-        }, now, 0);
+        }, now, .{});
     }
 
     var global = try Item.parse(a, try system.find("OUTLAWS.ITM", 0));
@@ -274,7 +277,7 @@ pub fn initial(session: anytype, cid: *const Item, now: u32, retained_audio: ?*R
             name,
             107,
             now,
-        ) else try ledger.append(a, "hornblo4.wav", 107, now, 0);
+        ) else try ledger.append(a, "hornblo4.wav", 107, now, .{});
 
         if (try level_item.stringValue(
             "SND_BLUEWON",
@@ -284,25 +287,25 @@ pub fn initial(session: anytype, cid: *const Item, now: u32, retained_audio: ?*R
             name,
             107,
             now,
-        ) else try ledger.append(a, "hornblo1.wav", 107, now, 0);
+        ) else try ledger.append(a, "hornblo1.wav", 107, now, .{});
 
         try field(ledger, a, &level_item, "SND_DOCWON", 107, now);
         try field(ledger, a, &level_item, "SND_TAGTRANS", 107, now);
     } else {
-        try ledger.append(a, "hornblo4.wav", 107, now, 0);
-        try ledger.append(a, "hornblo1.wav", 107, now, 0);
+        try ledger.append(a, "hornblo4.wav", 107, now, .{});
+        try ledger.append(a, "hornblo1.wav", 107, now, .{});
     }
 
     var sanchez_created = false;
 
     for (session.objects.entries) |object| {
-        if (object.flags[1] & session.difficulty_mask == 0 or session.level.sectorIndex(
+        if (!bits.any(object.availability.difficulties, session.difficulty.set()) or session.level.sectorIndex(
             object.sector_id,
         ) == null) continue;
 
-        if (object.flags[0] & 1 != 0) {
+        if (object.flags.sound_only) {
             const name = try std.fmt.allocPrint(a, "{s}.wav", .{object.name});
-            try ledger.append(a, name, 64, now, 1);
+            try ledger.append(a, name, 64, now, .{ .loop = true });
             continue;
         }
 
@@ -319,7 +322,7 @@ pub fn initial(session: anytype, cid: *const Item, now: u32, retained_audio: ?*R
             sanchez_created = true;
         }
 
-        try actor(ledger, a, &archives, &definition, session.difficulty_mask >> 8, now);
+        try actor(ledger, a, &archives, &definition, session.difficulty, now);
     }
 
     const inf_name = try std.fmt.allocPrint(a, "{s}.INF", .{session.level_name});
@@ -406,11 +409,11 @@ pub fn player(session: anytype, cid: *const Item, now: u32) !void {
     inline for (voices, 0..) |voice, index| {
         const name = try a.dupe(u8, (try cid.stringValue(voice[0])) orelse voice[1]);
         session.player_sound_names[index] = name;
-        try ledger.append(a, name, 107, now, 0);
+        try ledger.append(a, name, 107, now, .{});
     }
 
     session.player_sound_names[19] = "jetpack.wav";
-    try ledger.append(a, "jetpack.wav", 107, now, 1);
+    try ledger.append(a, "jetpack.wav", 107, now, .{ .loop = true });
 }
 
 pub fn playerBlips(session: anytype, now: u32) !void {
@@ -430,11 +433,11 @@ pub fn restoreOpen(session: anytype, now: u32) !void {
     try startup(ledger, a, session.system_archive, now);
     ledger.phase = .level;
 
-    for (fx_sounds) |entry| try ledger.append(a, entry.name, entry.priority, now, 0);
+    for (fx_sounds) |entry| try ledger.append(a, entry.name, entry.priority, now, .{});
 
-    try ledger.append(a, "get.wav", 1, now, 0);
-    try ledger.append(a, "cashopen.wav", 30, now, 0);
-    try ledger.append(a, "cashcls.wav", 30, now, 0);
+    try ledger.append(a, "get.wav", 1, now, .{});
+    try ledger.append(a, "cashopen.wav", 30, now, .{});
+    try ledger.append(a, "cashcls.wav", 30, now, .{});
 
     for (session.texture_animations.programs, 0..) |program, index| if (program) |value| {
         if (!@import(
@@ -456,7 +459,7 @@ pub fn restoreOpen(session: anytype, now: u32) !void {
             "NULL",
         )) try basename(ledger, a, sector.floor_sound, 1, now);
 
-        if (sector.flags & 0x100 != 0 and !doors_seen) {
+        if (sector.flags.swinging_door and !doors_seen) {
             doors_seen = true;
             ledger.phase = .doors;
 
@@ -468,7 +471,7 @@ pub fn restoreOpen(session: anytype, now: u32) !void {
                 "door5.wav",
                 "doorcls.wav",
                 "locked.wav",
-            }) |name| try ledger.append(a, name, 12, now, 0);
+            }) |name| try ledger.append(a, name, 12, now, .{});
 
             ledger.phase = .level;
         }
@@ -489,7 +492,7 @@ pub fn actor(
     a: std.mem.Allocator,
     archives: []const lab.Archive,
     item: *const Item,
-    difficulty: u32,
+    difficulty: Difficulty,
     now: u32,
 ) !void {
     if (std.mem.eql(u8, item.function, "shot_ProjectileDispatch")) {
@@ -547,7 +550,7 @@ pub fn actor(
                     "GENERATE",
                 ) orelse return error.GeneratorMissingGeneratee;
 
-                try ledger.append(a, name[0..@min(name.len, 14)], 1, now, 0);
+                try ledger.append(a, name[0..@min(name.len, 14)], 1, now, .{});
             }
         },
         else => {},
@@ -585,7 +588,7 @@ pub fn enemySounds(
         configuration.hit_sound,
         configuration.die_sound,
     }) |name|
-        if (name.len != 0) try ledger.append(a, name, 107, now, 0);
+        if (name.len != 0) try ledger.append(a, name, 107, now, .{});
 }
 
 pub fn projectileTemplate(
@@ -611,7 +614,7 @@ pub fn projectileTemplate(
         "EXPLODE_SOUND",
     }, 0..) |key, index| if (try item.stringValue(key)) |value| {
         sounds[index] = try std.fmt.allocPrint(a, "{s}.wav", .{value});
-        try ledger.append(a, sounds[index].?, 0, now, 0);
+        try ledger.append(a, sounds[index].?, 0, now, .{});
     };
 
     try ledger.projectile_sounds.append(a, sounds);
@@ -654,7 +657,7 @@ pub fn basename(
     now: u32,
 ) !void {
     var buffer: [256]u8 = undefined;
-    try ledger.append(a, try std.fmt.bufPrint(&buffer, "{s}.wav", .{name}), priority, now, 0);
+    try ledger.append(a, try std.fmt.bufPrint(&buffer, "{s}.wav", .{name}), priority, now, .{});
 }
 
 fn infSounds(ledger: *Ledger, a: std.mem.Allocator, bytes: []const u8, now: u32) !void {
@@ -673,10 +676,10 @@ fn infSounds(ledger: *Ledger, a: std.mem.Allocator, bytes: []const u8, now: u32)
         } else if (std.ascii.eqlIgnoreCase(key, "SOUND:")) {
             if (elevator) _ = words.next() orelse return error.MissingInfSound;
             const name = words.next() orelse return error.MissingInfSound;
-            if (!std.ascii.isDigit(name[0])) try ledger.append(a, name, 12, now, 0);
+            if (!std.ascii.isDigit(name[0])) try ledger.append(a, name, 12, now, .{});
         } else if (elevator and std.ascii.eqlIgnoreCase(key, "PAGE:")) {
             _ = words.next() orelse return error.MissingInfSound;
-            try ledger.append(a, words.next() orelse return error.MissingInfSound, 127, now, 0);
+            try ledger.append(a, words.next() orelse return error.MissingInfSound, 127, now, .{});
         }
     }
 }
@@ -703,7 +706,7 @@ fn taunts(
         "ALERT_TAUNTS",
     }) |field_name| if (try item.stringValue(field_name)) |list| {
         var tokens = std.mem.tokenizeAny(u8, list, ", ");
-        while (tokens.next()) |name| try ledger.append(a, name, 1, now, 0);
+        while (tokens.next()) |name| try ledger.append(a, name, 1, now, .{});
     };
 }
 
@@ -851,7 +854,7 @@ test "constructor sound registrations preserve order priority and names" {
     const Corpus = struct {
         executable_sha256: []const u8,
         results_sha256: []const u8,
-        cases: []struct { kind: []const u8, name: []const u8, sounds: []Registration },
+        cases: []struct { kind: []const u8, name: []const u8, sounds: []RecordedRegistration },
     };
 
     const corpus = (try std.json.parseFromSlice(Corpus, a, json, .{})).value;
@@ -889,7 +892,7 @@ test "constructor sound registrations preserve order priority and names" {
             const path = try std.fmt.allocPrint(a, "{s}.ITM", .{case.name});
             var definition = try Item.parse(a, (try find(&archives, path)).?);
             defer definition.deinit();
-            try actor(&ledger, a, &archives, &definition, 0x100000, 1000);
+            try actor(&ledger, a, &archives, &definition, .good, 1000);
         }
 
         var unique: std.ArrayList(Registration) = .empty;
@@ -902,9 +905,35 @@ test "constructor sound registrations preserve order priority and names" {
             }
         }
 
-        try std.testing.expectEqualDeep(case.sounds, unique.items);
+        try std.testing.expectEqual(case.sounds.len, unique.items.len);
+
+        for (case.sounds, unique.items) |expected, actual| try std.testing.expectEqualDeep(
+            expected,
+            RecordedRegistration.of(actual),
+        );
     }
 }
+
+/// A registration as fixtures record it, with its flags as a number.
+const RecordedRegistration = struct {
+    name: []const u8,
+    resource_type: u32 = 0x57415644,
+    priority: u8 = 64,
+    flags: u32 = 0x10000,
+    registered_at: u32,
+    volume: u8 = 127,
+
+    fn of(value: Registration) RecordedRegistration {
+        return .{
+            .name = value.name,
+            .resource_type = value.resource_type,
+            .priority = value.priority,
+            .flags = bits.word(value.flags),
+            .registered_at = value.registered_at,
+            .volume = value.volume,
+        };
+    }
+};
 
 test "enemy template sound ownership is cached across repeated constructors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -984,7 +1013,7 @@ test "enemy template sound ownership is cached across repeated constructors" {
                 a,
                 &archives,
                 &definition,
-                0x100000,
+                .good,
                 1000 + @as(u32, @intCast(stage)),
             );
 
@@ -1032,7 +1061,7 @@ test "releasing registered sounds needs no new storage" {
         "one.wav",
         "two.wav",
         "three.wav",
-    }, 0..) |name, now| try ledger.append(a, name, 64, @intCast(now), 0);
+    }, 0..) |name, now| try ledger.append(a, name, 64, @intCast(now), .{});
 
     const reserved = ledger.operations.capacity;
 
@@ -1054,7 +1083,7 @@ test "a ledger copy that fails part way through keeps nothing" {
     for ([_][]const u8{
         "one.wav",
         "two.wav",
-    }) |name| try ledger.append(std.testing.allocator, name, 64, 0, 0);
+    }) |name| try ledger.append(std.testing.allocator, name, 64, 0, .{});
 
     try std.testing.expect(ledger.releaseIfOwned("one.wav"));
     const Copy = struct {
@@ -1073,7 +1102,7 @@ test "a registration that cannot be stored keeps nothing" {
         fn run(a: std.mem.Allocator) !void {
             var ledger: Ledger = .{};
             defer ledger.deinit(a);
-            try ledger.append(a, "one.wav", 64, 0, 0);
+            try ledger.append(a, "one.wav", 64, 0, .{});
             try ledger.replaceDefaultPickup(a, "two.wav", 1);
         }
     };

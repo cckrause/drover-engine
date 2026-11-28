@@ -10,6 +10,7 @@
 //! check what it was given.
 
 const std = @import("std");
+const MouseButtons = @import("../mouse_buttons.zig").MouseButtons;
 
 const lab = @import("../assets/lab.zig");
 const pcx = @import("../assets/pcx.zig");
@@ -24,6 +25,24 @@ pub const width = 640;
 pub const height = 480;
 
 pub const cancel_id: u32 = 0x10000;
+
+pub const TextLayout = packed struct(u32) {
+    alignment: TextAlignment = .{},
+    unused_28: u2 = 0,
+    /// Centred top to bottom.
+    middle: bool = false,
+    keep: bool = false,
+};
+
+/// Left unless one of these is set; centring wins over right.
+pub const TextAlignment = packed struct(u28) {
+    centered: bool = false,
+    right: bool = false,
+    unused_2: u26 = 0,
+};
+
+/// Set on a toggle button's activation value, above the toggle state.
+const toggled: u32 = 0x80000000;
 
 const plain_keys = keyTable(
     "0000313233343536373839302d3d080971776572747975696f705b5d0a006173646667686a6b6c3b2760005c7a786376626e6d2c2e2f002a0020000000000000000000000000000000002d0800002b000000000000000000000000000000000000000000000000000000000000000000303132333435363738392d2a2f2b2e00",
@@ -110,7 +129,7 @@ pub const Text = struct {
     text: ?[]u8 = null,
     table: i32 = 0,
     color: i32 = -1,
-    alignment: u32 = 1,
+    alignment: TextAlignment = .{ .centered = true },
     middle: bool = true,
 };
 
@@ -189,7 +208,7 @@ pub const Widget = struct {
 pub const Input = struct {
     x: i32 = 0,
     y: i32 = 0,
-    buttons: u32 = 0,
+    buttons: MouseButtons = .{},
     shift: bool = false,
 };
 
@@ -232,7 +251,7 @@ pub const Dialog = struct {
     palette_dirty: bool = true,
     running: bool = true,
     result: i32 = 0,
-    buttons: u32 = 0,
+    buttons: MouseButtons = .{},
     captured: i32 = -1,
     mouse_x: i32 = 0,
     mouse_y: i32 = 0,
@@ -465,11 +484,11 @@ pub const Dialog = struct {
         }
     }
 
-    pub fn setLit(self: *Dialog, id: u32, flags: u32) void {
+    pub fn setLit(self: *Dialog, id: u32, lit: bool) void {
         const widget = self.find(id) orelse return;
 
         switch (widget.data) {
-            .list => |*list| list.lit = flags & 1 != 0,
+            .list => |*list| list.lit = lit,
             else => {},
         }
     }
@@ -491,16 +510,18 @@ pub const Dialog = struct {
         widget.font_height = font.height;
     }
 
-    pub fn setColor(self: *Dialog, id: u32, color: i32, flags: i32) void {
+    /// A negative colour keeps the current one, and so does a layout with
+    /// `keep` set.
+    pub fn setColor(self: *Dialog, id: u32, color: i32, layout: TextLayout) void {
         const widget = self.find(id) orelse return;
 
         switch (widget.data) {
             .text => |*text| {
                 if (color >= 0) text.color = color;
 
-                if (flags >= 0) {
-                    text.middle = flags & 0x40000000 != 0;
-                    text.alignment = @as(u32, @bitCast(flags)) & 0xfffffff;
+                if (!layout.keep) {
+                    text.middle = layout.middle;
+                    text.alignment = layout.alignment;
                 }
             },
             else => {},
@@ -644,7 +665,7 @@ pub const Dialog = struct {
 
         const buttons = input.buttons;
 
-        if (previous_x != self.mouse_x or self.mouse_y != previous_y or buttons != 0) {
+        if (previous_x != self.mouse_x or self.mouse_y != previous_y or buttons.any()) {
             if (self.captured == -1) {
                 for (self.widgets) |*widget| if (widget.contains(self.mouse_x, self.mouse_y)) {
                     try self.motion(widget, @max(self.mouse_x - widget.rect.left - 2, 0));
@@ -655,8 +676,8 @@ pub const Dialog = struct {
             }
         }
 
-        if (buttons & 1 == 0) {
-            if (self.buttons & 1 != 0 and self.captured != -1) {
+        if (!buttons.left) {
+            if (self.buttons.left and self.captured != -1) {
                 endPress(&self.widgets[@intCast(self.captured)]);
 
                 for (self.widgets, 0..) |*widget, i| if (widget.contains(
@@ -668,7 +689,7 @@ pub const Dialog = struct {
 
                 self.captured = -1;
             }
-        } else if (self.buttons & 1 == 0) {
+        } else if (!self.buttons.left) {
             for (self.widgets, 0..) |*widget, i| if (widget.contains(self.mouse_x, self.mouse_y)) {
                 if (try self.press(
                     widget,
@@ -850,7 +871,7 @@ pub const Dialog = struct {
                     self,
                     .activate,
                     widget.id,
-                    @bitCast(@as(u32, @bitCast(button.toggle)) | 0x80000000),
+                    @bitCast(@as(u32, @bitCast(button.toggle)) | toggled),
                 );
             },
             else => {},
@@ -1365,13 +1386,12 @@ fn drawWidget(screen: draw.Surface, widget: *Widget, display: *const [256]u32) !
 
             if (text.middle) top = top - @divTrunc(widget.font_height, 2) + @divTrunc(r.height, 2);
 
-            const x = switch (text.alignment & 3) {
-                0 => r.left,
-                2 => r.width + r.left,
-                else => @divTrunc(r.width, 2) + r.left,
+            const alignment: Font.Alignment = if (text.alignment.centered) .center else if (text.alignment.right) .right else .left;
+            const x = switch (alignment) {
+                .left => r.left,
+                .right => r.width + r.left,
+                .center => @divTrunc(r.width, 2) + r.left,
             };
-
-            const alignment: Font.Alignment = if (text.alignment & 1 != 0) .center else if (text.alignment & 2 != 0) .right else .left;
 
             try widget.font.drawClipped(
                 screen.pixels,

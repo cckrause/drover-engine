@@ -41,14 +41,14 @@ pub fn linkWall(session: anytype, sector: usize, wall: usize) !void {
         .{ .wall = .{ .sector = sector, .wall = wall } },
     );
 
-    state.runtime_flags |= 8;
+    state.runtime_flags.number_changed = true;
 }
 
 pub fn linkSector(session: anytype, sector: usize) !void {
     const state = &session.scene.sectors[sector];
     if (state.number != 0) return;
     state.number = try session.database.give(session.router.own_client, .{ .sector = sector });
-    state.runtime_flags |= 0x10;
+    state.runtime_flags.number_changed = true;
 }
 
 pub fn unlink(session: anytype, sector: usize, wall: ?usize, now: u32) void {
@@ -61,7 +61,7 @@ pub fn unlink(session: anytype, sector: usize, wall: ?usize, now: u32) void {
         session.database.free(state.number, now);
 
         state.number = 0;
-        state.runtime_flags |= 8;
+        state.runtime_flags.number_changed = true;
     } else {
         const state = &session.scene.sectors[sector];
         if (state.number == 0) return;
@@ -69,7 +69,7 @@ pub fn unlink(session: anytype, sector: usize, wall: ?usize, now: u32) void {
         session.database.free(state.number, now);
 
         state.number = 0;
-        state.runtime_flags |= 0x10;
+        state.runtime_flags.number_changed = true;
     }
 }
 
@@ -86,7 +86,7 @@ pub fn freeActor(session: anytype, source: usize) !void {
     session.database.free(number, session.animation_time);
     session.actor_numbers[source] = 0;
 
-    if (session.game_type == 4 or session.game_type == 5) try @import(
+    if (session.game_type.isNetwork()) try @import(
         "network_actors.zig",
     ).postDelete(session.router, number);
 }
@@ -146,21 +146,21 @@ pub fn geometry(session: anytype, geometry_classes: usize) !void {
 
 pub fn restoreSector(session: anytype, sector: usize) !void {
     const state = &session.scene.sectors[sector];
-    if (state.runtime_flags & 0x10 == 0 or state.number != 0) return;
+    if (!state.runtime_flags.number_changed or state.number != 0) return;
     state.number = try session.database.give(session.router.own_client, .{ .sector = sector });
-    state.runtime_flags |= 0x10;
+    state.runtime_flags.number_changed = true;
 }
 
 pub fn restoreWall(session: anytype, sector: usize, wall: usize) !void {
     const state = &session.scene.sectors[sector].walls[wall];
-    if (state.runtime_flags & 8 == 0 or session.scene.sectors[sector].number != 0) return;
+    if (!state.runtime_flags.number_changed or session.scene.sectors[sector].number != 0) return;
 
     state.number = try session.database.give(
         session.router.own_client,
         .{ .wall = .{ .sector = sector, .wall = wall } },
     );
 
-    state.runtime_flags |= 8;
+    state.runtime_flags.number_changed = true;
 }
 
 pub fn restoreGenerators(session: anytype) !void {

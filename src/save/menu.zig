@@ -5,6 +5,7 @@
 //! the row it is already on.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const lab = @import("../assets/lab.zig");
 const pcx = @import("../assets/pcx.zig");
@@ -60,7 +61,8 @@ pub const Control = struct {
         const moved = mouse.x != self.mouse.x or mouse.y != self.mouse.y;
 
         self.mouse = mouse;
-        if (mouse.buttons > 1) {
+        // Any button but the left one cancels.
+        if (bits.without(mouse.buttons, .{ .left = true }).any()) {
             self.result = .cancel;
             return;
         }
@@ -71,15 +73,15 @@ pub const Control = struct {
         var next: ?i32 = null;
         var scan = input.scan;
 
-        if ((moved and (self.mode == .load or !self.editing)) or mouse.buttons & 1 != 0) {
+        if ((moved and (self.mode == .load or !self.editing)) or mouse.buttons.left) {
             if (cancel) {
                 next = 9;
-                if (mouse.buttons & 1 != 0) scan = 1;
+                if (mouse.buttons.left) scan = 1;
             } else if (mouse.x > 399 and mouse.x < 601) {
                 const row = @divTrunc(mouse.y - 40, 40);
                 next = if (row < 9) row else self.selected;
 
-                if (row < 9 and mouse.buttons & 1 != 0) {
+                if (row < 9 and mouse.buttons.left) {
                     if (self.mode == .save) self.editing = true else scan = 28;
                 }
             }
@@ -142,8 +144,8 @@ pub const Control = struct {
         return value;
     }
 
-    pub fn takeResult(self: *const Control, buttons: u32) ?Action {
-        return if (self.presented and buttons == 0) self.result else null;
+    pub fn takeResult(self: *const Control, buttons: @import("../mouse_buttons.zig").MouseButtons) ?Action {
+        return if (self.presented and !buttons.any()) self.result else null;
     }
 };
 
@@ -458,7 +460,7 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .save, .frames = &.{
             .{
                 .key = .{ .scan = 0, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = false,
@@ -467,7 +469,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 28, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = true,
@@ -476,7 +478,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 30, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = true,
@@ -485,7 +487,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 14, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = true,
@@ -494,7 +496,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 48, .shift = true },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = true,
@@ -503,7 +505,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 28, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = false,
                 .editing = true,
@@ -515,7 +517,7 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .save, .frames = &.{
             .{
                 .key = .{ .scan = 0, .shift = false },
-                .mouse = .{ .x = 450, .y = 90, .buttons = 1 },
+                .mouse = .{ .x = 450, .y = 90, .buttons = .{ .left = true } },
                 .selected = 1,
                 .active = true,
                 .editing = true,
@@ -524,7 +526,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 0, .shift = false },
-                .mouse = .{ .x = 450, .y = 90, .buttons = 0 },
+                .mouse = .{ .x = 450, .y = 90, .buttons = .{} },
                 .selected = 1,
                 .active = true,
                 .editing = true,
@@ -533,7 +535,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 28, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = false,
                 .editing = true,
@@ -545,7 +547,7 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .save, .frames = &.{
             .{
                 .key = .{ .scan = 72, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 9,
                 .active = true,
                 .editing = false,
@@ -554,7 +556,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 15, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .editing = false,
@@ -563,7 +565,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 80, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = true,
                 .editing = false,
@@ -572,7 +574,7 @@ test "save and load menu frames and input match the reference" {
             },
             .{
                 .key = .{ .scan = 1, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = false,
                 .editing = false,
@@ -583,7 +585,7 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .load, .frames = &.{
             .{
                 .key = .{ .scan = 0, .shift = false },
-                .mouse = .{ .x = 450, .y = 90, .buttons = 1 },
+                .mouse = .{ .x = 450, .y = 90, .buttons = .{ .left = true } },
                 .selected = 1,
                 .active = false,
                 .slot = 0,
@@ -593,21 +595,21 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .load, .frames = &.{
             .{
                 .key = .{ .scan = 15, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 0,
                 .active = true,
                 .hash = "3bfe8c0fb9e896ec22a5e600f2a864f17ca02391c70ffaa6619ecded9dde4395",
             },
             .{
                 .key = .{ .scan = 80, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = true,
                 .hash = "3bfe8c0fb9e896ec22a5e600f2a864f17ca02391c70ffaa6619ecded9dde4395",
             },
             .{
                 .key = .{ .scan = 28, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = false,
                 .slot = 1,
@@ -617,21 +619,21 @@ test "save and load menu frames and input match the reference" {
         .{ .mode = .load, .frames = &.{
             .{
                 .key = .{ .scan = 80, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 1,
                 .active = true,
                 .hash = "3bfe8c0fb9e896ec22a5e600f2a864f17ca02391c70ffaa6619ecded9dde4395",
             },
             .{
                 .key = .{ .scan = 80, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 2,
                 .active = true,
                 .hash = "c07b25143f1645a21faa187b918b6253d2945ef2d5031bcfe175b7d6ebb55038",
             },
             .{
                 .key = .{ .scan = 28, .shift = false },
-                .mouse = .{ .x = 0, .y = 0, .buttons = 0 },
+                .mouse = .{ .x = 0, .y = 0, .buttons = .{} },
                 .selected = 2,
                 .active = false,
                 .hash = "204ea4be46cace7c893400a5a4b9387d7fcea95cca2b8a10d74b6d32d16c0e29",

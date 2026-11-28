@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
 const message = @import("message.zig");
 const router_module = @import("router.zig");
 const Router = router_module.Router;
@@ -93,7 +94,7 @@ test "router sends to and receives from other machines as the reference" {
         if (std.mem.eql(u8, kind, "post")) {
             const data = try std.fmt.hexToBytes(&buffer, op.get("bytes").?.string);
             driver.clear();
-            const posted = try router.post(int(op, "destination"), int(op, "number"), data);
+            const posted = try router.post(int(op, "destination"), bits.from(message.Number, int(op, "number")), data);
 
             try std.testing.expectEqual(int(op, "result"), @as(u32, switch (posted) {
                 .queued, .sent, .multiplexed => 0,
@@ -235,9 +236,9 @@ test "the router refuses network packets too short to hold what it reads" {
 
     var long: [2032]u8 = @splat(0);
 
-    try std.testing.expectError(error.MalformedNetworkMessage, router.post(0x001800, 0x418, &long));
+    try std.testing.expectError(error.MalformedNetworkMessage, router.post(0x001800, .{ .code = 0x418 }, &long));
     try std.testing.expectEqual(
         router_module.Posted.sent,
-        try router.post(0x001800, 0x418, long[0..2031]),
+        try router.post(0x001800, .{ .code = 0x418 }, long[0..2031]),
     );
 }

@@ -17,7 +17,7 @@ pub const Texture = struct {
     height: usize,
     pixels: []u8,
     height_shift: u5,
-    flags: u8,
+    flags: TextureFlags,
     animation: ?atx.Animation = null,
 
     pub fn deinit(self: Texture, allocator: std.mem.Allocator) void {
@@ -26,8 +26,17 @@ pub const Texture = struct {
     }
 
     pub fn isTransparent(self: Texture) bool {
-        return self.flags & 8 != 0;
+        return self.flags.transparent;
     }
+};
+
+pub const TextureFlags = packed struct(u8) {
+    unused_0: bool = false,
+    width_power_of_two: bool = false,
+    height_power_of_two: bool = false,
+    /// Has see-through pixels (colour 0).
+    transparent: bool = false,
+    unused_4: u4 = 0,
 };
 
 pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Texture {
@@ -84,13 +93,11 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Texture {
         rotated = cropped;
     }
 
-    var flags: u8 = 0;
-
-    if (std.mem.indexOfScalar(u8, rotated, 0) != null) flags |= 8;
-
-    if (std.math.isPowerOfTwo(width)) flags |= 2;
-
-    if (std.math.isPowerOfTwo(height)) flags |= 4;
+    const flags: TextureFlags = .{
+        .transparent = std.mem.indexOfScalar(u8, rotated, 0) != null,
+        .width_power_of_two = std.math.isPowerOfTwo(width),
+        .height_power_of_two = std.math.isPowerOfTwo(height),
+    };
 
     return .{
         .width = width,
@@ -265,7 +272,7 @@ test "TXTM rotation, bottom trim, and transparency flags match crop" {
     try std.testing.expectEqual(@as(usize, 2), texture.width);
     try std.testing.expectEqual(@as(usize, 2), texture.height);
     try std.testing.expectEqualSlices(u8, &.{ 3, 1, 4, 2 }, texture.pixels);
-    try std.testing.expectEqual(@as(u8, 6), texture.flags);
+    try std.testing.expectEqual(TextureFlags{ .width_power_of_two = true, .height_power_of_two = true }, texture.flags);
     try std.testing.expectEqual(@as(u5, 1), texture.height_shift);
 }
 
@@ -285,7 +292,7 @@ test "TXTM crop preserves final-row exclusion and width comparison quirks" {
     try std.testing.expectEqual(@as(usize, 4), texture.width);
     try std.testing.expectEqual(@as(usize, 2), texture.height);
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 9, 0, 0, 0, 0 }, texture.pixels);
-    try std.testing.expectEqual(@as(u8, 14), texture.flags);
+    try std.testing.expectEqual(TextureFlags{ .width_power_of_two = true, .height_power_of_two = true, .transparent = true }, texture.flags);
 }
 
 test "CD1 hideout textures and color maps match independent routine transcriptions" {
@@ -323,7 +330,7 @@ test "CD1 hideout textures and color maps match independent routine transcriptio
         std.mem.writeInt(u32, metadata[0..4], @intCast(texture.width), .little);
         std.mem.writeInt(u32, metadata[4..8], @intCast(texture.height), .little);
 
-        metadata[8] = texture.flags;
+        metadata[8] = @bitCast(texture.flags);
         metadata[9] = texture.height_shift;
 
         digest.update(&metadata);

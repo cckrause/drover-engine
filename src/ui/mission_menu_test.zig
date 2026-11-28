@@ -16,18 +16,18 @@ fn hashEquals(bytes: []const u8, expected: []const u8) !void {
 }
 
 test "popup keyboard and mouse ordering matches the reference" {
-    var control = menu.Control.init(.mission, .{ .x = 100, .y = 165, .buttons = 1 });
-    control.update(.{ .x = 100, .y = 165, .buttons = 1 }, .none, 61, 52);
+    var control = menu.Control.init(.mission, .{ .x = 100, .y = 165, .buttons = .{ .left = true } });
+    control.update(.{ .x = 100, .y = 165, .buttons = .{ .left = true } }, .none, 61, 52);
 
     try std.testing.expectEqual(@as(?i32, 2), control.result);
     try std.testing.expectEqualStrings("RIFLOUT.WAV", control.takeSound().?);
-    try std.testing.expect(control.takeResult(0) == null);
+    try std.testing.expect(control.takeResult(.{}) == null);
 
     control.presented = true;
 
-    try std.testing.expect(control.takeResult(1) == null);
-    try std.testing.expect(control.takeResult(4) == null);
-    try std.testing.expectEqual(@as(?i32, 2), control.takeResult(0));
+    try std.testing.expect(control.takeResult(.{ .left = true }) == null);
+    try std.testing.expect(control.takeResult(.{ .right = true }) == null);
+    try std.testing.expectEqual(@as(?i32, 2), control.takeResult(.{}));
 
     control = menu.Control.init(.mission, .{});
     control.update(.{}, .up, 61, 52);
@@ -52,7 +52,7 @@ test "popup keyboard and mouse ordering matches the reference" {
     try std.testing.expectEqual(@as(?i32, 1), control.result);
 
     control = menu.Control.init(.mission, .{});
-    control.update(.{ .x = -100, .y = 400, .buttons = 1 }, .escape, 61, 52);
+    control.update(.{ .x = -100, .y = 400, .buttons = .{ .left = true } }, .escape, 61, 52);
     try std.testing.expectEqual(@as(?i32, 6), control.result);
     control = menu.Control.init(.quit, .{});
     control.update(.{}, .escape, 228, 52);

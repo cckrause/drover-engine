@@ -6,27 +6,60 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
+
 const limits = @import("../memory/limits.zig");
 
 pub const instance_count = limits.current.sound_instances;
 pub const voice_count = limits.current.sound_voices;
 
-pub const Flags = struct {
-    pub const loop: u32 = 1;
+pub const Flags = packed struct(u32) {
+    loop: bool = false,
+    paused: bool = false,
+    /// Placed in the world: panned and faded by distance.
+    spatial: bool = false,
+    unused_3: bool = false,
+    ambient: bool = false,
+    unused_5: u11 = 0,
+    /// Played at the effects volume.
+    effects: bool = false,
+    /// Played at the speech volume instead.
+    speech: bool = false,
+    unused_18: u14 = 0,
 
-    pub const paused: u32 = 2;
+    pub const supported: Flags = .{
+        .loop = true,
+        .paused = true,
+        .spatial = true,
+        .ambient = true,
+        .effects = true,
+        .speech = true,
+    };
+};
 
-    pub const spatial: u32 = 4;
+pub const RequestFlags = packed struct(u32) {
+    loop: bool = false,
+    unused_1: bool = false,
+    /// Set on most requests; nothing reads it.
+    unused_2: bool = false,
+    unused_3: bool = false,
+    ignores_walls: bool = false,
+    unused_5: u26 = 0,
+    /// Accepted, but nothing reads it.
+    unused_31: bool = false,
 
-    pub const ambient: u32 = 0x10;
+    pub const default: RequestFlags = .{ .unused_2 = true };
 
-    pub const effects: u32 = 0x10000;
-
-    pub const speech: u32 = 0x20000;
+    pub const supported: RequestFlags = .{
+        .loop = true,
+        .unused_2 = true,
+        .ignores_walls = true,
+        .unused_31 = true,
+    };
 };
 
 pub const Params = struct {
-    flags: u32 = Flags.effects,
+    flags: Flags = .{ .effects = true },
     volume: i8 = 127,
     pan: i8 = 0,
     priority: i8 = 64,
@@ -136,7 +169,7 @@ pub const Engine = struct {
         self.generation +%= 1;
         selected.* = .{
             .active = true,
-            .playing = params.flags & Flags.paused == 0,
+            .playing = !params.flags.paused,
             .id = id,
             .asset = asset,
             .generation = self.generation,
@@ -183,15 +216,13 @@ pub const Engine = struct {
         voice.effective_volume = values.volume;
         voice.effective_pan = values.pan;
 
-        const changed = previous_flags ^ params.flags;
-
-        if (changed & Flags.loop != 0) {
-            if (previous_flags & Flags.paused == 0) voice.playing = false;
-            if (params.flags & Flags.paused != 0) return;
+        if (previous_flags.loop != params.flags.loop) {
+            if (!previous_flags.paused) voice.playing = false;
+            if (params.flags.paused) return;
             apply(voice);
             voice.playing = true;
-        } else if (changed & Flags.paused != 0) {
-            if (previous_flags & Flags.paused != 0) {
+        } else if (previous_flags.paused != params.flags.paused) {
+            if (previous_flags.paused) {
                 apply(voice);
                 voice.playing = true;
             } else voice.playing = false;
@@ -207,7 +238,7 @@ pub const Engine = struct {
         if (self.paused) return;
 
         for (&self.voices) |*voice| {
-            if (!voice.active or voice.params.flags & Flags.spatial == 0) continue;
+            if (!voice.active or !voice.params.flags.spatial) continue;
 
             const values = self.evaluate(voice.params);
 
@@ -258,9 +289,9 @@ pub const Engine = struct {
     }
 
     fn evaluate(self: *const Engine, params: Params) Spatial {
-        const group = if (params.flags & Flags.speech != 0) self.speech_volume else self.effects_volume;
+        const group = if (params.flags.speech) self.speech_volume else self.effects_volume;
         const volume = @divTrunc(group * @as(i32, params.volume), 127);
-        if (params.flags & Flags.spatial != 0)
+        if (params.flags.spatial)
             return spatial(
                 params.position,
                 self.listener,
@@ -354,26 +385,23 @@ pub fn gameListener(position: [3]f32, velocity: [3]f32, yaw: i16) Listener {
     };
 }
 
-pub fn gameParams(priority: i8, volume: i8, game_flags: u32, position: ?[3]f32) !Params {
-    if (game_flags & ~(1 | @as(
-        u32,
-        4,
-    ) | 0x10 | 0x80000000) != 0) return error.UnsupportedGameAudioFlags;
+pub fn gameParams(priority: i8, volume: i8, game_flags: RequestFlags, position: ?[3]f32) !Params {
+    if (bits.word(bits.without(game_flags, RequestFlags.supported)) != 0) return error.UnsupportedGameAudioFlags;
 
     var result: Params = .{ .priority = priority, .volume = volume };
 
-    if (game_flags & 1 != 0) result.flags |= Flags.loop;
+    if (game_flags.loop) result.flags.loop = true;
 
     if (position) |p| {
         result.position = p;
-        result.flags |= Flags.spatial;
+        result.flags.spatial = true;
     }
 
     return result;
 }
 
 fn validate(params: Params, sample_rate: u32) !void {
-    if (params.flags & ~(Flags.loop | Flags.paused | Flags.spatial | Flags.ambient | Flags.effects | Flags.speech) != 0) return error.UnsupportedAudioFlags;
+    if (bits.word(bits.without(params.flags, Flags.supported)) != 0) return error.UnsupportedAudioFlags;
     if (!std.math.isFinite(
         params.frequency_factor,
     ) or params.frequency_factor <= 0 or sample_rate == 0 or sample_rate > std.math.maxInt(
@@ -738,7 +766,7 @@ test "sound driver control application matches DirectSound calls" {
 
 test "driver lifecycle drops inaudible starts but retains distant looping voices" {
     var engine: Engine = .{};
-    var params = try gameParams(64, 127, 1, .{ 149, 0, 0 });
+    var params = try gameParams(64, 127, .{ .loop = true }, .{ 149, 0, 0 });
     const id = (try engine.start(23, 22050, params, 100)).?;
 
     try std.testing.expectEqual(@as(i32, -7000), engine.find(id).?.controls.volume_db);
@@ -751,12 +779,12 @@ test "driver lifecycle drops inaudible starts but retains distant looping voices
     params.volume = 0;
     try engine.adjust(id, params);
     try std.testing.expect(engine.find(id) == null);
-    const audible = (try engine.start(24, 11025, try gameParams(64, 127, 4, null), 102)).?;
+    const audible = (try engine.start(24, 11025, try gameParams(64, 127, .default, null), 102)).?;
     try std.testing.expectEqual(@as(u32, 3), audible);
     const original_controls = engine.find(audible).?.controls;
     try engine.adjust(audible, .{ .volume = 32, .pan = 100 });
     try std.testing.expectEqual(original_controls, engine.find(audible).?.controls);
-    try engine.adjust(audible, .{ .flags = Flags.effects | Flags.paused, .volume = 32 });
+    try engine.adjust(audible, .{ .flags = .{ .effects = true, .paused = true }, .volume = 32 });
     try std.testing.expect(!engine.find(audible).?.playing);
     try engine.adjust(audible, .{ .volume = 32 });
 
@@ -792,7 +820,7 @@ test "instance ids rotate and generation distinguishes reused buffers" {
     const first = (try engine.start(
         1,
         11025,
-        .{ .priority = 107, .flags = Flags.effects | Flags.loop },
+        .{ .priority = 107, .flags = .{ .effects = true, .loop = true } },
         0,
     )).?;
 
@@ -813,7 +841,7 @@ test "instance ids rotate and generation distinguishes reused buffers" {
 
     try std.testing.expectError(
         error.UnsupportedAudioFlags,
-        engine.start(1, 11025, .{ .flags = 0x8000 }, 1),
+        engine.start(1, 11025, .{ .flags = .{ .unused_5 = 0x400 } }, 1),
     );
 
     try std.testing.expectError(error.InvalidAudioFrequency, engine.start(1, 0, .{}, 1));
@@ -829,15 +857,15 @@ test "instance ids rotate and generation distinguishes reused buffers" {
 }
 
 test "game wrapper priority and spatial flags retain their separate meanings" {
-    const menu = try gameParams(64, 127, 4, null);
+    const menu = try gameParams(64, 127, .default, null);
 
     try std.testing.expectEqual(@as(i8, 64), menu.priority);
     try std.testing.expectEqual(@as(i8, 0), menu.pan);
-    try std.testing.expectEqual(Flags.effects, menu.flags);
+    try std.testing.expectEqual(Flags{ .effects = true }, menu.flags);
 
-    const world = try gameParams(1, 63, 0x11, .{ 1, 2, 3 });
+    const world = try gameParams(1, 63, .{ .loop = true, .ignores_walls = true }, .{ 1, 2, 3 });
 
-    try std.testing.expectEqual(Flags.effects | Flags.loop | Flags.spatial, world.flags);
+    try std.testing.expectEqual(Flags{ .effects = true, .loop = true, .spatial = true }, world.flags);
     try std.testing.expectEqual(@as(i8, 63), world.volume);
     try std.testing.expectEqual(
         @as(f32, -6.2831855),

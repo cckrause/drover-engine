@@ -12,6 +12,7 @@ const enemy_session = @import("session.zig");
 const Target = @import("../player/target.zig").Target;
 const Actor = @import("../render/objects.zig").Actor;
 const inventory = @import("../player/inventory.zig");
+const bits = @import("../util/bits.zig");
 
 const Snapshot = struct {
     health_bits: u32,
@@ -83,7 +84,7 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
         if (target.ai.stack) |saved| @as(u32, @bitCast(saved.damage.health)) else null,
     );
 
-    try std.testing.expectEqual(expected.flags, actor.flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
     try std.testing.expectEqual(expected.height_bits, @as(u32, @bitCast(actor.height)));
 
     const playback = target.playback;
@@ -97,7 +98,7 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
             playback.choreography,
             playback.next_frame,
             playback.frame,
-            playback.flags,
+            bits.word(playback.flags),
         },
     );
 

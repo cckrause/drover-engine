@@ -6,6 +6,7 @@
 
 const std = @import("std");
 
+const bits = @import("../util/bits.zig");
 const nwx = @import("../assets/nwx.zig");
 const stream = @import("stream.zig");
 
@@ -26,7 +27,7 @@ pub fn write(writer: *stream.Writer, instance: ?Instance) !void {
     try writer.integer(u32, value.playback.choreography);
     try writer.integer(u32, value.playback.next_frame);
     try writer.integer(u32, value.playback.frame);
-    try writer.integer(u32, value.playback.flags);
+    try writer.integer(u32, bits.word(value.playback.flags));
     try writer.boolean(value.playback.terminated);
     try writer.string(value.native);
 }
@@ -44,7 +45,7 @@ pub fn read(reader: *stream.Reader, allocator: std.mem.Allocator) !?Instance {
         .choreography = try reader.integer(u32),
         .next_frame = try reader.integer(u32),
         .frame = try reader.integer(u32),
-        .flags = try reader.integer(u32),
+        .flags = bits.from(nwx.PlaybackFlags, try reader.integer(u32)),
         .terminated = try reader.boolean(),
     };
 

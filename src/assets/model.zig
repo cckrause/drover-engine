@@ -8,6 +8,7 @@
 //! error here - there is no substitute texture.
 
 const std = @import("std");
+const bits = @import("../util/bits.zig");
 
 const lab = @import("lab.zig");
 const texture = @import("texture.zig");
@@ -26,6 +27,16 @@ pub const Polygon = struct {
     uv: [4]Vec2 = @splat(.{ .x = 0, .y = 0 }),
 };
 
+pub const ModelFlags = packed struct(u32) {
+    /// Set when a model loads; nothing reads it.
+    unused_0: bool = false,
+    /// Shaded per vertex, so the model carries vertex normals.
+    smooth: bool = false,
+    /// A VERTEX polygon replaced every other flag; the renderer refuses it.
+    vertex_colors: bool = false,
+    unused_3: u29 = 0,
+};
+
 pub const Model = struct {
     arena: std.heap.ArenaAllocator,
     vertices: []Vec3,
@@ -33,7 +44,7 @@ pub const Model = struct {
     face_normals: []Vec3,
     vertex_normals: []Vec3,
     textures: []texture.Texture,
-    flags: u32,
+    flags: ModelFlags,
     radius: f32,
     sort_mode: u32 = 0,
 
@@ -107,7 +118,7 @@ pub const Model = struct {
 
         const polygon_count = try bounded(try token(&polygon_header), polygon_capacity);
         const polygons = try a.alloc(Polygon, polygon_count);
-        var flags: u32 = 1;
+        var flags: ModelFlags = .{ .unused_0 = true };
 
         for (polygons) |*polygon| {
             var row = words(try lines.required());
@@ -142,15 +153,15 @@ pub const Model = struct {
             if (std.ascii.eqlIgnoreCase(mode, "FLAT")) {
                 polygon.mode = 0;
             } else if (std.ascii.eqlIgnoreCase(mode, "VERTEX")) {
-                flags = 4;
+                flags = .{ .vertex_colors = true };
             } else if (std.ascii.eqlIgnoreCase(mode, "TEXTURE")) {
                 polygon.mode = 2;
             } else if (std.ascii.eqlIgnoreCase(mode, "GOURAUD")) {
                 polygon.mode = 1;
-                flags |= 2;
+                flags.smooth = true;
             } else if (std.ascii.eqlIgnoreCase(mode, "GOURTEX")) {
                 polygon.mode = 3;
-                flags |= 2;
+                flags.smooth = true;
             } else if (std.ascii.eqlIgnoreCase(mode, "PLANE")) {
                 polygon.mode = 4;
             } else return error.UnsupportedModelShading;
@@ -215,7 +226,7 @@ pub const Model = struct {
             vertices[polygon.indices[0]],
         );
 
-        const vertex_normals = try a.alloc(Vec3, if (flags & 2 != 0) vertices.len else 0);
+        const vertex_normals = try a.alloc(Vec3, if (flags.smooth) vertices.len else 0);
 
         for (vertex_normals, 0..) |*normal, index| normal.* = vertexNormal(
             vertices,
@@ -321,11 +332,11 @@ pub fn boundingRadius(vertices: []const Vec3) f32 {
 }
 
 pub fn clampUv(value: f32) f32 {
-    var bits: u32 = @bitCast(value);
-    if (bits > 0x80000000) bits = 0;
-    if (@as(i32, @bitCast(bits)) > 0x3f7fffff) bits = 0x3f7ffffe;
+    var raw: u32 = @bitCast(value);
+    if (raw > 0x80000000) raw = 0;
+    if (@as(i32, @bitCast(raw)) > 0x3f7fffff) raw = 0x3f7ffffe;
 
-    return @bitCast(bits);
+    return @bitCast(raw);
 }
 
 fn loadTexture(
@@ -579,7 +590,7 @@ test "3DO CD1 models match the reference loader and normal bits" {
             &.{
                 @intCast(model.vertices.len),
                 @intCast(model.polygons.len),
-                model.flags,
+                bits.word(model.flags),
                 @bitCast(model.radius),
             },
         );

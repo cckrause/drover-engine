@@ -95,7 +95,7 @@ test "Hideout pickup session dispatches real canteen and ammunition contacts" {
 
     var packet: input.Packet = .{};
 
-    packet.entries[@intFromEnum(input.Slot.forward)] = .{ .value = 5120, .flags = input.absolute };
+    packet.entries[@intFromEnum(input.Slot.forward)] = .{ .value = 5120, .flags = .{ .absolute = true } };
 
     session.player = initial_player;
 

@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const lab = @import("../assets/lab.zig");
 const Item = @import("../assets/item.zig").Item;
@@ -15,6 +16,9 @@ const scene_module = @import("../render/scene.zig");
 const Target = @import("../player/target.zig").Target;
 const occlusion = @import("../audio/occlusion.zig");
 const controller = @import("controller.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const ProjectionActor = struct {
     position_bits: [3]u32,
@@ -25,7 +29,7 @@ const ProjectionActor = struct {
     scale_bits: [2]u32,
 };
 
-fn bits(value: f32) u32 {
+fn floatBits(value: f32) u32 {
     return @bitCast(value);
 }
 
@@ -100,37 +104,37 @@ test "Sanchez constructor template dormant clock and message gate" {
             try object_state.classify(&definition),
         );
 
-        try std.testing.expectEqual(@as(u32, 0x8000014b), state.flags);
-        try std.testing.expectEqual(@as(u32, 0x00200140), state.secondary_flags);
+        try std.testing.expectEqual(@as(u32, 0x8000014b), bits.word(state.flags));
+        try std.testing.expectEqual(@as(u32, 0x00200140), bits.word(state.secondary_flags));
         try std.testing.expectEqual(@as(f32, 6), state.height);
-        try std.testing.expectEqual(@as(u32, 0x4026db6e), bits(state.collision_radius));
+        try std.testing.expectEqual(@as(u32, 0x4026db6e), floatBits(state.collision_radius));
         try std.testing.expectEqual(@as(u32, 0), state.choreography | state.frame);
 
         for ([_]u32{ 0x100000, 0x200000, 0x800000 }, 0..) |difficulty, index| {
             var actor = state.actor(&costume);
-            var target = (try Target.load(a, &.{ objects, weapons }, &definition, difficulty)).?;
+            var target = (try Target.load(a, &.{ objects, weapons }, &definition, @as(Difficulty, @enumFromInt(difficulty)))).?;
 
             try std.testing.expect(target.sanchez);
-            try std.testing.expectEqual(health[item_index][index], bits(target.damage.health));
-            try std.testing.expectEqual(damage[item_index][index], bits(target.config.damage));
+            try std.testing.expectEqual(health[item_index][index], floatBits(target.damage.health));
+            try std.testing.expectEqual(damage[item_index][index], floatBits(target.config.damage));
             try std.testing.expectEqual(
                 ([_]u32{ 0x41666667, 0x41900000, 0x41c99999 })[index],
-                bits(target.config.walk_speed),
+                floatBits(target.config.walk_speed),
             );
 
             try std.testing.expectEqual(
                 ([_]u32{ 0x4199999a, 0x41c00000, 0x42066666 })[index],
-                bits(target.config.run_speed),
+                floatBits(target.config.run_speed),
             );
 
             try std.testing.expectEqual(
                 ([_]u32{ 0x41200000, 0x40700000, 0x40a00000 })[index],
-                bits(target.config.move_inaccuracy),
+                floatBits(target.config.move_inaccuracy),
             );
 
             try std.testing.expectEqual(
                 ([_]u32{ 0x40000000, 0x3f400000, 0x3f800000 })[index],
-                bits(target.config.weapon_inaccuracy),
+                floatBits(target.config.weapon_inaccuracy),
             );
 
             try std.testing.expectEqual(@as(i16, 0x1fd2), target.config.fov);
@@ -284,14 +288,14 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
         actor.source_index = 0;
         actor.position = projectionPoint(entry.actor.position_bits);
         actor.sector = case.player_config.sector;
-        actor.flags = entry.actor.flags;
+        bits.setWord(&actor.flags, entry.actor.flags);
         actor.height = @bitCast(entry.actor.height_bits);
         actor.collision_radius = @bitCast(entry.actor.radius_bits);
         actor.choreography = @intCast(entry.playback[3]);
         actor.frame = @intCast(entry.playback[5]);
         actor.angle_offset = @intCast(entry.playback[1]);
 
-        var target = (try Target.load(a, &.{ objects, weapons }, &definition, 0x100000)).?;
+        var target = (try Target.load(a, &.{ objects, weapons }, &definition, .good)).?;
 
         target.config.no_los_taunts = &.{};
         target.config.los_taunts = &.{};
@@ -333,8 +337,8 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
                 .height = @bitCast(entry.player_height_bits),
                 .radius = 1.5,
                 .yaw = entry.player_yaw,
-                .flags = entry.player_flags,
-                .secondary_flags = entry.player_secondary_flags,
+                .flags = bits.from(ActorFlags, entry.player_flags),
+                .secondary_flags = bits.from(ActorKind, entry.player_secondary_flags),
             },
             .visibility = &cache,
             .random = &random,
@@ -381,8 +385,8 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
             .sector = 0,
             .position = projectionPoint(initial.position_bits),
             .yaw = 0,
-            .flags = initial.flags,
-            .secondary_flags = 0,
+            .flags = bits.from(ActorFlags, initial.flags),
+            .secondary_flags = .{},
             .height = @bitCast(initial.height_bits),
             .collision_radius = @bitCast(initial.radius_bits),
             .scale_x = @bitCast(initial.scale_bits[0]),
@@ -414,13 +418,13 @@ test "hidden and active Sanchez projection reaches blood without stale operands"
             try std.testing.expect(!try blood.tick(&particle, &motion, world, 0.2));
             try std.testing.expectEqualDeep(case.position_bits, projectionBits(particle.position));
             try std.testing.expectEqualDeep(case.velocity_bits, projectionBits(motion.velocity));
-            try std.testing.expectEqual(case.floor_cache_bits, bits(motion.floor_cache));
+            try std.testing.expectEqual(case.floor_cache_bits, floatBits(motion.floor_cache));
         }
 
         if (std.mem.eql(u8, case.variant, "taunt")) {
             actor.position = projectionPoint(entry.actor.position_bits);
             actor.sector = if (ctx.player.?.sector == 0) 1 else 0;
-            actor.flags = entry.actor.flags;
+            bits.setWord(&actor.flags, entry.actor.flags);
             target.ai.taunt_at = 0;
             random = entry.random;
             shared.next_taunt = 0;
@@ -503,7 +507,7 @@ test "hidden Sanchez selected taunt sound updates projection by actual admission
         actor.source_index = 0;
         actor.position = projectionPoint(entry.position_bits);
 
-        var target = (try Target.load(a, &.{ objects, weapons }, &definition, 0x100000)).?;
+        var target = (try Target.load(a, &.{ objects, weapons }, &definition, .good)).?;
         target.ai.has_los = entry.has_los != 0;
         var sector = std.mem.zeroes(level_module.Sector);
         sector.vadjoin = -1;
@@ -549,8 +553,8 @@ test "hidden Sanchez selected taunt sound updates projection by actual admission
                 .height = 6,
                 .radius = 1.5,
                 .yaw = 0,
-                .flags = entry.player_flags,
-                .secondary_flags = 0x10,
+                .flags = bits.from(ActorFlags, entry.player_flags),
+                .secondary_flags = .{ .player = true },
             },
             .visibility = &cache,
             .random = &random,

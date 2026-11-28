@@ -42,13 +42,13 @@ pub fn locate(
     const source = level.sectors[hit.sector];
     const wall = sector.walls[hit.index];
     var result = Impact{ .position = hit.position, .mark = !moving_plane, .splash = false };
-    const ceiling = if (sector.flags & 0x80000000 != 0) impactHeight(
+    const ceiling = if (sector.flags.sloped_ceiling) impactHeight(
         sector.ceiling_slope orelse return error.MissingSceneSlope,
         hit.position,
     ) else source.ceiling.height;
 
     if (hit.position.y <= ceiling) {
-        const floor = if (sector.flags & 0x40000000 != 0) impactHeight(
+        const floor = if (sector.flags.sloped_floor) impactHeight(
             sector.floor_slope orelse return error.MissingSceneSlope,
             hit.position,
         ) else source.floor.height;
@@ -59,7 +59,7 @@ pub fn locate(
             result.position.x = f(@as(f64, @as(f32, 0.07)) * direction.sin + hit.position.x);
             result.position.z = f(@as(f64, @as(f32, 0.07)) * direction.cos + hit.position.z);
 
-            if (wall.runtime_flags & 0x04000000 != 0 or wall.flags & 0x40 != 0 or sector.flags & 4 != 0 or
+            if (wall.runtime_flags.moved_by_elevator or wall.flags.moves_with_sector or sector.flags.sky_ceiling_adjoin or
                 nonzero(
                     source.velocity.x,
                 ) or nonzero(source.velocity.y) or nonzero(source.velocity.z)) result.mark = false;
@@ -71,14 +71,14 @@ pub fn locate(
                 sector.floor_slope,
             );
 
-            if (sector.flags & 0x40 != 0) result.mark = false;
+            if (sector.flags.velocity_on_floor_only) result.mark = false;
 
-            if (source.vadjoin >= 0 and sector.flags & 0x80 == 0) {
+            if (source.vadjoin >= 0 and !sector.flags.underwater) {
                 result.mark = false;
                 result.splash = true;
             }
         }
-    } else if (sector.flags & 1 == 0) {
+    } else if (!sector.flags.sky_ceiling) {
         result.position = planeIntersection(
             origin,
             hit.position,
@@ -99,7 +99,7 @@ pub fn apply(
 ) !void {
     if (shot.kind != .bullet or !shot.impact_effect) return;
 
-    var runtime = session_module.scriptContext(session, effects, 0);
+    var runtime = session_module.scriptContext(session, effects, .{});
     var context = session_module.context(session, allocator, null, null);
 
     context.actors.runtime = &runtime;
@@ -137,7 +137,7 @@ pub fn apply(
                         .basename = "ricochet.wav",
                         .priority = 32,
                         .volume = 127,
-                        .flags = 4,
+                        .flags = .default,
                         .sector = hit.sector,
                         .position = impact.position,
                     },
@@ -209,7 +209,7 @@ fn spawnMark(session: anytype, sector: usize, position: Vec3) !void {
     );
 
     actor.position.y = f(@as(f64, position.y) - 0.0625);
-    actor.flags |= 0x2000;
+    actor.flags.water_splash = true;
 
     const index = try session_module.appendActor(session, actor, null);
 

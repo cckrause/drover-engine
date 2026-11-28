@@ -8,6 +8,7 @@
 //! of actors a session can hold, and a fuller list stops with its own error.
 
 const enemy = @import("../enemy/controller.zig");
+const MessageCode = @import("../message_code.zig").MessageCode;
 const inventory = @import("../player/inventory.zig");
 const shooting = @import("../player/shooting.zig");
 const FixedList = @import("../util/fixed_list.zig").FixedList;
@@ -36,7 +37,7 @@ pub const max_object_selections = 2 * (max_hit_groups + max_actor_messages);
 /// One stand-in for every other machine the router can hold.
 pub const max_remote_players = network_router.client_slots;
 
-pub const ActorMessage = struct { target: usize, code: u32, serial: u64 };
+pub const ActorMessage = struct { target: usize, code: MessageCode, serial: u64 };
 pub const PendingHits = FixedList(shooting.PendingHit, error{TooManyPendingHits});
 pub const ActorMessages = FixedList(ActorMessage, error{TooManyActorMessages});
 pub const RemotePlayers = FixedList(network_actors.RemotePlayer, error{TooManyRemotePlayers});

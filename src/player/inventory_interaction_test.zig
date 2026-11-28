@@ -7,6 +7,7 @@ const std = @import("std");
 
 const lab = @import("../assets/lab.zig");
 const input = @import("input.zig");
+const bits = @import("../util/bits.zig");
 const inventory_module = @import("inventory.zig");
 const Session = @import("../render/session.zig").Session;
 const campaign = @import("../campaign.zig");
@@ -150,12 +151,12 @@ test "inventory selection health use and drops match player/ execution" {
                 @intCast(
                     entry[0],
                 )
-            ] = .{ .value = @intCast(entry[1]), .flags = @intCast(entry[2]) };
+            ] = .{ .value = @intCast(entry[1]), .flags = bits.from(input.EntryFlags, @intCast(entry[2])) };
 
             effects.clearRetainingCapacity();
             inventory.browseInput(packet.get(.weapon));
 
-            if (packet.get(.drop).flags & input.pressed != 0) {
+            if (packet.get(.drop).flags.pressed) {
                 const live = session.?;
                 live.inventory = inventory;
 
@@ -193,14 +194,14 @@ test "inventory selection health use and drops match player/ execution" {
             var activation: [2]u32 = undefined;
             var activation_count: usize = 0;
 
-            if (packet.get(.use).flags & input.pressed != 0) {
+            if (packet.get(.use).flags.pressed) {
                 if (try inventory.useSelected(&effects)) |id| {
                     activation[activation_count] = id;
                     activation_count += 1;
                 }
             }
 
-            if (packet.get(.nudge).flags & input.pressed != 0) {
+            if (packet.get(.nudge).flags.pressed) {
                 activation[activation_count] = 0;
                 activation_count += 1;
             }

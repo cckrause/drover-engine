@@ -4,6 +4,7 @@
 //! whatever happens to be in that slot.
 
 const std = @import("std");
+const RequestFlags = @import("engine.zig").RequestFlags;
 
 const level = @import("../assets/level.zig");
 const Request = @import("request.zig").Request;
@@ -89,7 +90,7 @@ pub const Table = struct {
             .basename = self.entries[index].basename,
             .priority = 0x40,
             .volume = 0x7f,
-            .flags = 0,
+            .flags = .{},
             .sector = sector,
             .position = position,
         };
@@ -156,7 +157,7 @@ test "indexed sound list maps bottle WAX sound zero to BOTTLE.WAV" {
     try std.testing.expectEqualStrings("BOTTLE.WAV", request.basename);
     try std.testing.expectEqual(@as(?i32, 64), request.priority);
     try std.testing.expectEqual(@as(?i32, 127), request.volume);
-    try std.testing.expectEqual(@as(?u32, 0), request.flags);
+    try std.testing.expectEqual(@as(?RequestFlags, .{}), request.flags);
     try std.testing.expectEqual(@as(?usize, 7), request.sector);
     try std.testing.expectError(
         error.InvalidIndexedSoundIndex,

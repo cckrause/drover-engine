@@ -21,6 +21,7 @@ const stream = @import("stream.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const player_source = @import("../player/shooting.zig").local_player;
 const object_numbers = @import("../render/object_numbers.zig");
+const bits = @import("../util/bits.zig");
 
 /// Writes every module. Lists and records that exist only while writing come
 /// from a scratch arena freed before returning, also on failure, so saving
@@ -199,7 +200,7 @@ fn orderedActors(session: anytype, scratch: std.mem.Allocator, include_ephemeral
         if (removed) continue;
 
         if (slot) |actor| {
-            if (!include_ephemeral and actor.secondary_flags & 0x800000 != 0) continue;
+            if (!include_ephemeral and actor.secondary_flags.effect) continue;
             try sources.append(a, source);
         }
     }
@@ -391,7 +392,7 @@ fn readActors(
                     reader,
                     a,
                     &.{ session.object_archive, session.weapon_archive, session.system_archive },
-                    session.difficulty_mask >> 8,
+                    session.difficulty,
                     &session.enemy_shared,
                     refs,
                 );
@@ -443,14 +444,14 @@ fn restoreActor(
     var actor = try actor_save.hydrate(session, record);
     var source: usize = undefined;
 
-    if (actor.secondary_flags & 0x10 != 0) {
+    if (actor.secondary_flags.player) {
         if (has_player.*) return error.UnsupportedSavedMultiplePlayers;
 
         has_player.* = true;
         _ = session.allocateActorId();
         actor.birth_order = session.next_actor_order;
         session.next_actor_order += 1;
-        actor.secondary_flags |= 0x90;
+        actor.secondary_flags = bits.with(actor.secondary_flags, .{ .player = true, .takes_hits = true });
         session.player_actor = actor;
         source = player_source;
         session.player.position = actor.position;
@@ -494,7 +495,7 @@ fn restoreActor(
 
         session.actor_next_update[source] = @bitCast(record.next_update);
 
-        if (actor.flags & 0x400 != 0) session.general_slots[source] = .{
+        if (actor.flags.physics) session.general_slots[source] = .{
             .velocity = actor.velocity,
         };
 

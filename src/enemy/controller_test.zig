@@ -4,6 +4,7 @@
 //! installed (see testing/fixtures.zig).
 
 const std = @import("std");
+const Difficulty = @import("../difficulty.zig").Difficulty;
 
 const controller = @import("controller.zig");
 const Target = @import("../player/target.zig").Target;
@@ -17,6 +18,9 @@ const scene_module = @import("../render/scene.zig");
 const Actor = @import("../render/objects.zig").Actor;
 const audio = @import("../audio/runtime.zig");
 const object_state = @import("../render/object_state.zig");
+const bits = @import("../util/bits.zig");
+const ActorFlags = @import("../actor_flags.zig").ActorFlags;
+const ActorKind = @import("../actor_flags.zig").ActorKind;
 
 const Snapshot = struct {
     health_bits: u32,
@@ -144,7 +148,7 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
         actor.source_index = 0;
         actor.logic_name = item.function;
 
-        var target = (try Target.load(a, &.{ archive, weapon }, &item, case.difficulty)).?;
+        var target = (try Target.load(a, &.{ archive, weapon }, &item, @as(Difficulty, @enumFromInt(case.difficulty)))).?;
         target.playback.last_time = 1000;
 
         var cache = try occlusion.Cache.init(a, &level);
@@ -173,8 +177,8 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
                 .height = 6,
                 .radius = 1.5,
                 .yaw = 0,
-                .flags = 1,
-                .secondary_flags = 0x10,
+                .flags = .{ .active = true },
+                .secondary_flags = .{ .player = true },
             } else null,
             .visibility = &cache,
             .random = &random,
@@ -182,7 +186,7 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
             .elapsed_seconds = 0.016,
             .shared = &shared,
             .effects = &effects,
-            .difficulty = case.difficulty,
+            .difficulty = @enumFromInt(case.difficulty),
             .audio = sound,
         };
 
@@ -275,7 +279,7 @@ fn compare(path: []const u8, expected_hash: []const u8, living: bool) !void {
 
 fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32) !void {
     try std.testing.expectEqual(expected.health_bits, @as(u32, @bitCast(target.damage.health)));
-    try std.testing.expectEqual(expected.velocity_bits, bits(target.damage.velocity));
+    try std.testing.expectEqual(expected.velocity_bits, vectorBits(target.damage.velocity));
     try std.testing.expectEqual(expected.mode, target.mode);
     try std.testing.expectEqual(expected.previous_mode, target.previous_mode);
     try std.testing.expectEqual(expected.anger_bits, @as(u32, @bitCast(target.anger)));
@@ -295,7 +299,7 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
         if (target.ai.stack) |saved| @as(u32, @bitCast(saved.damage.health)) else null,
     );
 
-    try std.testing.expectEqual(expected.flags, actor.flags);
+    try std.testing.expectEqual(expected.flags, bits.word(actor.flags));
     try std.testing.expectEqual(expected.height_bits, @as(u32, @bitCast(actor.height)));
 
     const p = target.playback;
@@ -309,12 +313,12 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
             p.choreography,
             p.next_frame,
             p.frame,
-            p.flags,
+            bits.word(p.flags),
         },
     );
 
     try std.testing.expectEqual(expected.random, random);
-    try std.testing.expectEqual(expected.position_bits, bits(actor.position));
+    try std.testing.expectEqual(expected.position_bits, vectorBits(actor.position));
     try std.testing.expectEqual(expected.yaw, actor.yaw);
     try std.testing.expectEqual(expected.timer, target.ai.deadline);
     try std.testing.expectEqual(expected.destroy != 0, target.ai.remove);
@@ -331,8 +335,8 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
         );
 
         try std.testing.expectEqual(words[0x74 / 4], target.ai.physics.movement_mode);
-        try std.testing.expectEqual(words[0x60 / 4 ..][0..3].*, bits(target.ai.physics.goal));
-        try std.testing.expectEqual(words[0x118 / 4 ..][0..3].*, bits(target.ai.last_seen));
+        try std.testing.expectEqual(words[0x60 / 4 ..][0..3].*, vectorBits(target.ai.physics.goal));
+        try std.testing.expectEqual(words[0x118 / 4 ..][0..3].*, vectorBits(target.ai.last_seen));
         try std.testing.expectEqual(words[0x10c / 4], target.ai.previous_seen_at);
         try std.testing.expectEqual(words[0x110 / 4], target.ai.last_seen_at);
         try std.testing.expectEqual(words[0x134 / 4], target.ai.visible_until);
@@ -343,7 +347,7 @@ fn expectSnapshot(expected: Snapshot, target: Target, actor: Actor, random: u32)
     }
 }
 
-fn bits(v: level_module.Vec3) [3]u32 {
+fn vectorBits(v: level_module.Vec3) [3]u32 {
     return .{ @bitCast(v.x), @bitCast(v.y), @bitCast(v.z) };
 }
 
@@ -441,13 +445,13 @@ fn compareStack(path: []const u8) !void {
 
         actor.source_index = 0;
         actor.position = stackPoint(case.before.position_bits);
-        actor.flags = case.before.flags;
+        bits.setWord(&actor.flags, case.before.flags);
         actor.height = @bitCast(case.before.height_bits);
         actor.choreography = @intCast(case.before.playback[3]);
         actor.frame = @intCast(case.before.playback[5]);
         actor.angle_offset = @intCast(case.before.playback[1]);
 
-        var target = (try Target.load(a, &.{ archive, weapons }, &item, case.before.difficulty)).?;
+        var target = (try Target.load(a, &.{ archive, weapons }, &item, @as(Difficulty, @enumFromInt(case.before.difficulty)))).?;
 
         target.damage.velocity = stackPoint(case.before.velocity_bits);
         target.mode = case.before.mode;
@@ -525,8 +529,8 @@ fn compareStack(path: []const u8) !void {
                 .height = @bitCast(case.before.player_height_bits),
                 .radius = 1.5,
                 .yaw = case.before.player_yaw,
-                .flags = case.before.player_flags,
-                .secondary_flags = case.before.player_secondary_flags,
+                .flags = bits.from(ActorFlags, case.before.player_flags),
+                .secondary_flags = bits.from(ActorKind, case.before.player_secondary_flags),
             },
             .visibility = &cache,
             .random = &random,
@@ -534,7 +538,7 @@ fn compareStack(path: []const u8) !void {
             .elapsed_seconds = 0.2,
             .shared = &shared,
             .effects = &effects,
-            .difficulty = case.before.difficulty,
+            .difficulty = @enumFromInt(case.before.difficulty),
             .contact_residue = &residue,
             .contact_sector_events = false,
             .sanchez_sites = &sites,
@@ -566,8 +570,8 @@ fn compareStack(path: []const u8) !void {
                     .sector = 0,
                     .position = .{ .x = 2, .y = 10, .z = 5 },
                     .yaw = 0,
-                    .flags = 0,
-                    .secondary_flags = 0,
+                    .flags = .{},
+                    .secondary_flags = .{},
                     .scale_x = 1,
                     .scale_y = 1,
                     .height = 1,
@@ -699,7 +703,7 @@ test "enemy throw targeting matches the reference range perturbation and angles"
 
     for (corpus.cases, 0..) |case, index| {
         errdefer std.debug.print("reference throw aim {d}: {any}\n", .{ index, case });
-        var target = (try Target.load(a, &.{ archive, weapon }, &item, 0x100000)).?;
+        var target = (try Target.load(a, &.{ archive, weapon }, &item, .good)).?;
 
         target.ai.target = .player;
         target.config.throw_item = case.item;
@@ -726,8 +730,8 @@ test "enemy throw targeting matches the reference range perturbation and angles"
                 .height = 6,
                 .radius = 1.5,
                 .yaw = 0,
-                .flags = 1,
-                .secondary_flags = 0x10,
+                .flags = .{ .active = true },
+                .secondary_flags = .{ .player = true },
             },
             .visibility = &cache,
             .random = &random,
@@ -810,7 +814,7 @@ test "enemy impulses activation and hit results retain cached AI clock" {
         object.name = case.name;
 
         var actor = (try object_state.State.init(object, 0, &item, &costume)).actor(&costume);
-        var target = (try Target.load(a, &.{ archive, weapon }, &item, case.difficulty)).?;
+        var target = (try Target.load(a, &.{ archive, weapon }, &item, @as(Difficulty, @enumFromInt(case.difficulty)))).?;
 
         target.playback.last_time = 1000;
 
@@ -984,7 +988,7 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
         actor.source_index = 0;
         actor.logic_name = item.function;
 
-        var target = (try Target.load(a, &.{ archive, weapon }, &item, case.difficulty)).?;
+        var target = (try Target.load(a, &.{ archive, weapon }, &item, @as(Difficulty, @enumFromInt(case.difficulty)))).?;
         target.playback.last_time = 1000;
 
         var cache = try occlusion.Cache.init(a, &level);
@@ -1004,8 +1008,8 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
             .height = 6,
             .radius = 1.5,
             .yaw = 0,
-            .flags = if (case.dead_player) 0x4001 else 1,
-            .secondary_flags = case.sender,
+            .flags = if (case.dead_player) ActorFlags{ .active = true, .dead = true } else ActorFlags{ .active = true },
+            .secondary_flags = bits.from(ActorKind, case.sender),
         };
 
         var ctx = controller.Context{
@@ -1021,7 +1025,7 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
             .elapsed_seconds = 0.016,
             .shared = &shared,
             .effects = &effects,
-            .difficulty = case.difficulty,
+            .difficulty = @enumFromInt(case.difficulty),
             .hit_sender = player,
             .complete_level = .{ .context = &sink, .enqueue = Sink.complete },
             .reflected_hit = .{ .context = &sink, .enqueue = Sink.reflect },
@@ -1065,7 +1069,7 @@ test "special enemy factories boss callbacks civilian reflection and Sanchez mat
         try expectSnapshot(case.state orelse case.after.?, target, actor, random);
         const wanted = extra.state orelse extra.after.?;
 
-        try std.testing.expectEqual(wanted.secondary_flags, actor.secondary_flags);
+        try std.testing.expectEqual(wanted.secondary_flags, bits.word(actor.secondary_flags));
         try std.testing.expectEqual(wanted.special != 0, target.ai.special);
         try std.testing.expectEqual(wanted.taunt_at, target.ai.taunt_at);
         try std.testing.expectEqual(wanted.sub_timer, target.ai.sub_timer);
@@ -1201,7 +1205,7 @@ test "civilian NaN residue survives knife damage packing and visual accumulation
                 .speed_bits = @bitCast(damage.speed),
                 .yaw = damage.yaw,
                 .pitch = damage.pitch,
-                .position_bits = bits(pending.messagePosition()),
+                .position_bits = vectorBits(pending.messagePosition()),
                 .lateral_bits = @bitCast(damage.lateral),
                 .height_bits = @bitCast(damage.height),
             },
@@ -1210,7 +1214,7 @@ test "civilian NaN residue survives knife damage packing and visual accumulation
         for (case.visuals) |visual| {
             try std.testing.expectEqualStrings("blood", visual.kind);
             try std.testing.expectEqual(visual.count, @as(u32, @bitCast(pending.blood.count)));
-            try std.testing.expectEqualDeep(visual.position_bits, bits(pending.blood.average()));
+            try std.testing.expectEqualDeep(visual.position_bits, vectorBits(pending.blood.average()));
         }
     }
 }

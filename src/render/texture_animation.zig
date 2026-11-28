@@ -7,12 +7,14 @@
 
 const std = @import("std");
 
+const MessageCode = @import("../message_code.zig").MessageCode;
 const atx = @import("../assets/atx.zig");
 const lab = @import("../assets/lab.zig");
 const level_module = @import("../assets/level.zig");
 const texture = @import("../assets/texture.zig");
 const inventory = @import("../player/inventory.zig");
 const scene_module = @import("scene.zig");
+const bits = @import("../util/bits.zig");
 
 pub const Target = struct { sector: usize, wall: ?usize = null };
 
@@ -88,7 +90,7 @@ pub const Runtime = struct {
                             .target = .{ .sector = sector_index },
                             .slot = @intCast(slot),
                             .resource = @intCast(index),
-                            .state = .{ .flags = 1, .last_tick = now },
+                            .state = .{ .flags = .{ .on_sector = true }, .last_tick = now },
                         },
                     );
             }
@@ -109,7 +111,7 @@ pub const Runtime = struct {
                                 .target = .{ .sector = sector_index, .wall = wall_index },
                                 .slot = slot,
                                 .resource = @intCast(index),
-                                .state = .{ .flags = 2, .last_tick = now },
+                                .state = .{ .flags = .{ .on_wall = true }, .last_tick = now },
                             },
                         );
                 }
@@ -124,7 +126,7 @@ pub const Runtime = struct {
         level: *level_module.Level,
         scene: *scene_module.Scene,
         target: Target,
-        code: u32,
+        code: MessageCode,
         arg1: i32,
         now: u32,
         effects: *inventory.Effects,
@@ -157,7 +159,7 @@ pub const Runtime = struct {
         level: *level_module.Level,
         scene: *scene_module.Scene,
         index: usize,
-        code: u32,
+        code: MessageCode,
         arg1: i32,
         now: u32,
         effects: *inventory.Effects,
@@ -228,9 +230,9 @@ pub const Runtime = struct {
                 destination.* = program.textures[pc];
 
                 if (instance.target.wall) |index|
-                    scene.sectors[instance.target.sector].walls[index].runtime_flags |= 1
+                    scene.sectors[instance.target.sector].walls[index].runtime_flags.changed = true
                 else
-                    scene.sectors[instance.target.sector].runtime_flags |= 1;
+                    scene.sectors[instance.target.sector].runtime_flags.changed = true;
             },
             .sound => |pc| {
                 const position: level_module.Vec3 = if (instance.target.wall) |index| blk: {
@@ -263,7 +265,7 @@ pub const Runtime = struct {
                         .position = position,
                         .priority = 64,
                         .volume = 127,
-                        .flags = 4,
+                        .flags = .default,
                     },
                 });
             },
@@ -367,7 +369,7 @@ test "ATX states and spatial requests match shipped script execution" {
                 .target = .{ .sector = 410, .wall = if (case.wall) 1 else null },
                 .slot = if (case.wall) 1 else 0,
                 .resource = 0,
-                .state = .{ .flags = if (case.wall) 2 else 1 },
+                .state = .{ .flags = .{ .on_sector = !case.wall, .on_wall = case.wall } },
             },
         };
 
@@ -376,18 +378,21 @@ test "ATX states and spatial requests match shipped script execution" {
         const destination = if (case.wall) &level.sectors[410].walls[1].mid.texture else &level.sectors[410].floor.texture;
 
         destination.* = first.?;
-        const dirty = if (case.wall) &scene.sectors[410].walls[1].runtime_flags else &scene.sectors[410].runtime_flags;
+        const sector_state = &scene.sectors[410];
 
         for (case.samples) |sample| {
             events.clearRetainingCapacity();
             effects.clearRetainingCapacity();
 
-            dirty.* = 0x80000004;
+            if (case.wall)
+                bits.setWord(&sector_state.walls[1].runtime_flags, 0x80000004)
+            else
+                bits.setWord(&sector_state.runtime_flags, 0x80000004);
 
             if (sample.action.message) |code|
                 try instance.state.message(
                     animation,
-                    code,
+                    @enumFromInt(code),
                     sample.action.arg1,
                     sample.action.now,
                     &events,
@@ -401,9 +406,12 @@ test "ATX states and spatial requests match shipped script execution" {
             try std.testing.expectEqual(sample.pc, instance.state.pc);
             try std.testing.expectEqual(sample.displayed, instance.state.displayed);
             try std.testing.expectEqual(sample.last_tick, instance.state.last_tick);
-            try std.testing.expectEqual(sample.flags, instance.state.flags);
+            try std.testing.expectEqual(sample.flags, bits.word(instance.state.flags));
             try std.testing.expectEqual(sample.texture_pc, destination.*);
-            try std.testing.expectEqual(sample.runtime_flags, dirty.*);
+            try std.testing.expectEqual(
+                sample.runtime_flags,
+                if (case.wall) bits.word(sector_state.walls[1].runtime_flags) else bits.word(sector_state.runtime_flags),
+            );
             try std.testing.expectEqual(sample.events.len, events.items.len);
 
             for (sample.events, events.items) |expected, actual| {
@@ -426,7 +434,7 @@ test "ATX states and spatial requests match shipped script execution" {
 
                 try std.testing.expectEqual(expected.priority, request.priority.?);
                 try std.testing.expectEqual(expected.volume, request.volume.?);
-                try std.testing.expectEqual(expected.flags, request.flags.?);
+                try std.testing.expectEqual(expected.flags, bits.word(request.flags.?));
                 try std.testing.expect(expected.owner_sector and request.sector == 410);
             }
         }

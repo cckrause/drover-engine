@@ -88,7 +88,7 @@ test "first-person weapon views match the reference pixels" {
         node.slide = case.slide;
         node.playback.choreography = case.sequence;
         node.playback.frame = case.cursor;
-        node.playback.flags = if (case.paused) 2 else 1;
+        node.playback.flags = if (case.paused) .{ .held = true } else .{ .playing = true };
         hud.blend_table = blend;
 
         for (pixels, 0..) |*pixel, i| pixel.* = @truncate((i % 640) * 3 + (i / 640) * 5);
@@ -164,7 +164,7 @@ test "first-person weapon views match the reference pixels" {
     node.slide = 0x10000;
     node.playback.choreography = 20;
     node.playback.frame = 0;
-    node.playback.flags = 1;
+    node.playback.flags = .{ .playing = true };
 
     const scope_pixels = try a.alloc(u8, weapon.scope_size * weapon.scope_size);
 

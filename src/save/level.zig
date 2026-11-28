@@ -12,6 +12,7 @@ const object_numbers = @import("../render/object_numbers.zig");
 const scene = @import("../render/scene.zig");
 const sound = @import("sound.zig");
 const stream = @import("stream.zig");
+const bits = @import("../util/bits.zig");
 const Vec2 = asset.Vec2;
 const Vec3 = asset.Vec3;
 
@@ -28,10 +29,10 @@ pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
     try writer.string(session.level_name);
 
     for (session.level.sectors, session.scene.sectors, 0..) |*sector, *state, index| {
-        try writer.integer(u32, state.flags);
-        try writer.integer(u32, state.runtime_flags);
+        try writer.integer(u32, bits.word(state.flags));
+        try writer.integer(u32, bits.word(state.runtime_flags));
 
-        if (state.runtime_flags & 1 != 0) try writeSector(
+        if (state.runtime_flags.changed) try writeSector(
             writer,
             sector,
             state,
@@ -41,10 +42,10 @@ pub fn write(session: anytype, writer: *stream.Writer, audio: anytype) !void {
         );
 
         for (sector.walls, state.walls) |*wall, *wall_state| {
-            try writer.integer(u32, wall_state.flags);
-            try writer.integer(u32, wall_state.runtime_flags);
+            try writer.integer(u32, bits.word(wall_state.flags));
+            try writer.integer(u32, bits.word(wall_state.runtime_flags));
 
-            if (wall_state.runtime_flags & 1 != 0) try writeWall(
+            if (wall_state.runtime_flags.changed) try writeWall(
                 writer,
                 wall,
                 wall_state,
@@ -74,11 +75,11 @@ pub fn read(session: anytype, reader: *stream.Reader, audio: anytype) !?Music {
     const numbered = @hasField(@TypeOf(session.*), "actor_numbers");
 
     for (session.level.sectors, session.scene.sectors, 0..) |*sector, *state, index| {
-        state.flags = try reader.integer(u32);
+        state.flags = bits.from(scene.SectorFlags, try reader.integer(u32));
         sector.flags = state.flags;
-        state.runtime_flags = try reader.integer(u32);
+        state.runtime_flags = bits.from(scene.SectorRuntimeFlags, try reader.integer(u32));
 
-        if (state.runtime_flags & 1 != 0) {
+        if (state.runtime_flags.changed) {
             const restored = try readSector(reader, a, sector, state, session.level.sectors.len);
             @constCast(session.inf.base_vertices)[index] = restored.base_vertices;
 
@@ -92,11 +93,11 @@ pub fn read(session: anytype, reader: *stream.Reader, audio: anytype) !?Music {
         if (numbered) try object_numbers.restoreSector(session, index);
 
         for (sector.walls, state.walls, 0..) |*wall, *wall_state, wall_index| {
-            wall_state.flags = try reader.integer(u32);
+            wall_state.flags = bits.from(scene.WallFlags, try reader.integer(u32));
             wall.flags = wall_state.flags;
-            wall_state.runtime_flags = try reader.integer(u32);
+            wall_state.runtime_flags = bits.from(scene.WallRuntimeFlags, try reader.integer(u32));
 
-            if (wall_state.runtime_flags & 1 != 0) try readWall(
+            if (wall_state.runtime_flags.changed) try readWall(
                 reader,
                 wall,
                 wall_state,
@@ -136,9 +137,9 @@ pub fn writeSector(
     try writer.float(sector.friction);
     try writer.float(sector.gravity);
 
-    if (state.runtime_flags & 0x02000000 != 0) try writeVec3(writer, state.original_velocity);
+    if (state.runtime_flags.has_base_velocity) try writeVec3(writer, state.original_velocity);
 
-    if (state.runtime_flags & 0x04000000 != 0) try writeVec3(writer, sector.velocity);
+    if (state.runtime_flags.has_velocity) try writeVec3(writer, sector.velocity);
 
     try writer.float(sector.elasticity);
     try sound.write(writer, floor_sound);
@@ -153,17 +154,17 @@ pub fn writeSector(
     try writer.float(sector.ceiling.height);
     try writer.float(sector.floor.height);
 
-    if (state.flags & 0x80000000 != 0) try writeSlope(
+    if (state.flags.sloped_ceiling) try writeSlope(
         writer,
         state.ceiling_slope orelse return error.MissingSceneSlope,
     );
 
-    if (state.flags & 0x40000000 != 0) try writeSlope(
+    if (state.flags.sloped_floor) try writeSlope(
         writer,
         state.floor_slope orelse return error.MissingSceneSlope,
     );
 
-    if (state.runtime_flags & 0x01000000 != 0) {
+    if (state.runtime_flags.has_vertical_adjoin) {
         if (sector.vadjoin < 0) return error.InvalidSaveVerticalAdjoin;
         try writer.integer(i32, sector.vadjoin);
     }
@@ -200,9 +201,9 @@ pub fn readSector(
     sector.friction = try finite(reader);
     sector.gravity = try finite(reader);
 
-    if (state.runtime_flags & 0x02000000 != 0) state.original_velocity = try readVec3(reader);
+    if (state.runtime_flags.has_base_velocity) state.original_velocity = try readVec3(reader);
 
-    if (state.runtime_flags & 0x04000000 != 0) {
+    if (state.runtime_flags.has_velocity) {
         sector.velocity = try readVec3(reader);
         state.velocity_present = true;
     }
@@ -220,11 +221,11 @@ pub fn readSector(
     sector.ceiling.height = try finite(reader);
     sector.floor.height = try finite(reader);
 
-    if (state.flags & 0x80000000 != 0) state.ceiling_slope = try readSlope(reader);
+    if (state.flags.sloped_ceiling) state.ceiling_slope = try readSlope(reader);
 
-    if (state.flags & 0x40000000 != 0) state.floor_slope = try readSlope(reader);
+    if (state.flags.sloped_floor) state.floor_slope = try readSlope(reader);
 
-    if (state.runtime_flags & 0x01000000 != 0) {
+    if (state.runtime_flags.has_vertical_adjoin) {
         const ordinal = try reader.integer(u32);
         if (ordinal >= sector_count) return error.InvalidSaveVerticalAdjoin;
         sector.vadjoin = @intCast(ordinal);
@@ -249,7 +250,7 @@ pub fn readSector(
 
     for (base_vertices) |*vertex| vertex.* = try readVec2(reader);
 
-    state.runtime_flags |= 1;
+    state.runtime_flags.changed = true;
 
     return .{
         .base_vertices = base_vertices,
@@ -293,7 +294,7 @@ pub fn writeWall(
         if (ordinal >= 0) try writer.integer(i32, ordinal);
     }
 
-    try writer.integer(u32, state.render_flags);
+    try writer.integer(u32, bits.word(state.render_flags));
     try writer.integer(u32, wall.v1);
     try writer.integer(u32, wall.v2);
     try writer.boolean(true);
@@ -349,7 +350,7 @@ pub fn readWall(
         } else if (mirror != -1) return error.InvalidSaveWallMirror;
     }
 
-    state.render_flags = try reader.integer(u32);
+    state.render_flags = bits.from(scene.WallParts, try reader.integer(u32));
     wall.v1 = try reader.integer(u32);
     wall.v2 = try reader.integer(u32);
     if (!try reader.boolean() or try reader.integer(
@@ -368,7 +369,7 @@ pub fn readWall(
         state.base_vertices[1],
     }) |ordinal| if (ordinal >= level.sectors[own_sector].vertices.len) return error.InvalidSaveWallVertex;
 
-    state.runtime_flags |= 1;
+    state.runtime_flags.changed = true;
 }
 
 pub fn writeSlope(writer: *stream.Writer, slope: scene.Slope) !void {
