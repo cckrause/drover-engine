@@ -1,8 +1,8 @@
 //! Which actors are in which sector: a doubly linked membership list per
 //! sector, by stable actor index.
 //!
-//! Indices rather than pointers, so growing the actor storage does not
-//! break the links. The player is created after the level's actors but its
+//! Indices rather than pointers, so the links stay valid wherever the actor
+//! storage lives. The player is created after the level's actors but its
 //! state lives in src/player, not in an actor slot.
 
 const std = @import("std");
@@ -16,35 +16,41 @@ pub const Node = struct {
 };
 
 pub const Links = struct {
-    allocator: std.mem.Allocator,
+    /// Set when `init` made the arrays; null when they are borrowed.
+    allocator: ?std.mem.Allocator,
     heads: []?usize,
-    nodes: std.ArrayList(Node),
+    /// One node per actor slot. The owner may lengthen the slice within its
+    /// storage as slots are handed out.
+    nodes: []Node,
     player: Node = .{},
 
     pub fn init(allocator: std.mem.Allocator, sector_count: usize, actor_count: usize) !Links {
         const heads = try allocator.alloc(?usize, sector_count);
         errdefer allocator.free(heads);
 
-        @memset(heads, null);
-        var nodes: std.ArrayList(Node) = .empty;
-        try nodes.resize(allocator, actor_count);
+        const nodes = try allocator.alloc(Node, actor_count);
 
-        @memset(nodes.items, .{});
+        @memset(heads, null);
+        @memset(nodes, .{});
 
         return .{ .allocator = allocator, .heads = heads, .nodes = nodes };
     }
 
-    pub fn deinit(self: *Links) void {
-        self.allocator.free(self.heads);
-        self.nodes.deinit(self.allocator);
-        self.* = undefined;
+    /// Links over arrays the caller owns and keeps in place.
+    pub fn initBorrowed(heads: []?usize, nodes: []Node) Links {
+        @memset(heads, null);
+        @memset(nodes, .{});
+
+        return .{ .allocator = null, .heads = heads, .nodes = nodes };
     }
 
-    pub fn appendActor(self: *Links) !usize {
-        const source = self.nodes.items.len;
-        try self.nodes.append(self.allocator, .{});
+    pub fn deinit(self: *Links) void {
+        if (self.allocator) |allocator| {
+            allocator.free(self.heads);
+            allocator.free(self.nodes);
+        }
 
-        return source;
+        self.* = undefined;
     }
 
     pub fn first(self: *const Links, sector: usize) ?usize {
@@ -52,7 +58,7 @@ pub const Links = struct {
     }
 
     pub fn next(self: *const Links, source: usize) ?usize {
-        return if (source == player_id) self.player.next else self.nodes.items[source].next;
+        return if (source == player_id) self.player.next else self.nodes[source].next;
     }
 
     pub fn move(self: *Links, source: usize, sector: usize) void {
@@ -108,7 +114,7 @@ pub const Links = struct {
     }
 
     fn node(self: *Links, source: usize) *Node {
-        return if (source == player_id) &self.player else &self.nodes.items[source];
+        return if (source == player_id) &self.player else &self.nodes[source];
     }
 };
 
@@ -189,7 +195,7 @@ test "sector links retain reference equal-distance ray winners" {
 }
 
 test "actor removal preserves both sector links and dynamic source identity" {
-    var links = try Links.init(std.testing.allocator, 2, 3);
+    var links = try Links.init(std.testing.allocator, 2, 4);
     defer links.deinit();
 
     for (0..3) |source| links.move(source, 0);
@@ -198,14 +204,13 @@ test "actor removal preserves both sector links and dynamic source identity" {
     links.remove(1);
 
     try std.testing.expectEqual(@as(?usize, 0), links.next(2));
-    try std.testing.expectEqual(@as(?usize, 2), links.nodes.items[0].previous);
+    try std.testing.expectEqual(@as(?usize, 2), links.nodes[0].previous);
 
     links.remove(0);
     try std.testing.expectEqual(@as(?usize, null), links.next(2));
     links.remove(player_id);
     try std.testing.expectEqual(@as(?usize, 2), links.first(0));
-    const dynamic = try links.appendActor();
-    try std.testing.expectEqual(@as(usize, 3), dynamic);
+    const dynamic: usize = 3;
 
     links.move(dynamic, 0);
     links.move(2, 1);
@@ -213,7 +218,7 @@ test "actor removal preserves both sector links and dynamic source identity" {
     try std.testing.expectEqual(@as(?usize, dynamic), links.first(0));
     try std.testing.expectEqual(@as(?usize, null), links.next(dynamic));
     try std.testing.expectEqual(@as(?usize, 2), links.first(1));
-    try std.testing.expectEqual(@as(?usize, null), links.nodes.items[2].previous);
+    try std.testing.expectEqual(@as(?usize, null), links.nodes[2].previous);
 }
 
 test "deferred resource construction restores sector insertion order" {

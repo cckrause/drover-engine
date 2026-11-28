@@ -1,4 +1,4 @@
-//! Impacts that happen while impacts are being processed: nested state and the shared random stream survive the actor array growing.
+//! Impacts that happen while impacts are being processed: nested state and the shared random stream survive actors being added.
 //!
 //! Checked against generated reference fixtures; skips when they are not
 //! installed (see testing/fixtures.zig).
@@ -227,7 +227,7 @@ fn read(a: std.mem.Allocator, path: []const u8) ![]u8 {
     };
 }
 
-test "enemy rays preserve nested noise83 state and RNG through actor array growth" {
+test "enemy rays preserve nested noise83 state and RNG while actors are added" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -422,8 +422,9 @@ test "enemy rays preserve nested noise83 state and RNG through actor array growt
             session.syncActor(source);
 
             if (case_index == 0 and frame_index == 0) {
-                try std.testing.expect(old_actor_array != session.actor_slots.ptr);
-                try std.testing.expect(old_target_array != session.targets.ptr);
+                try std.testing.expect(session.actor_slots.len > first);
+                try std.testing.expect(old_actor_array == session.actor_slots.ptr);
+                try std.testing.expect(old_target_array == session.targets.ptr);
             }
 
             try expectState(

@@ -334,9 +334,10 @@ fn readActors(
     @memset(session.splash_slots, null);
     @memset(session.source_to_entry, null);
     @memset(session.actor_links.heads, null);
-    @memset(session.actor_links.nodes.items, .{});
+    @memset(session.actor_links.nodes, .{});
 
     session.actor_links.player = .{};
+    session.clearMadeActorSlots();
     session.actors = session.actor_storage[0..0];
     session.next_actor_id = 0;
     session.next_actor_order = 1;

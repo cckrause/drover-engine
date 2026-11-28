@@ -10,6 +10,7 @@ const message_store = @import("../network/message_store.zig");
 const router = @import("../network/router.zig");
 const MemoryBudget = @import("../platform/MemoryBudget.zig");
 const world = @import("../render/backends/software/world.zig");
+const actor_slots = @import("../render/actor_slots.zig");
 const session_queues = @import("../render/session_queues.zig");
 const inf = @import("../script/inf.zig");
 const pcm = @import("../video/audio.zig");
@@ -31,6 +32,10 @@ pub const software_frame_bytes: u64 = @sizeOf(world.Workspace);
 // session; two sessions overlap while a level changes.
 pub const session_queue_bytes: u64 = @sizeOf(session_queues.Storage) +
     inf.max_pending * @sizeOf(inf.Pending) + inf.max_effects * @sizeOf(inf.Effect);
+
+// Every actor slot's arrays and the made-order list, held inside each level
+// session; two sessions overlap while a level changes.
+pub const session_actor_bytes: u64 = @sizeOf(actor_slots.Storage) + @sizeOf(actor_slots.Made);
 
 // The router's message storage, allocated with each new game's router.
 pub const router_storage_bytes: u64 = message_store.MessageStore.storageBytes(

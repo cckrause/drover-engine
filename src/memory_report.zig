@@ -13,6 +13,7 @@ pub fn main() void {
             "movie input budget: {d} bytes; sound instances: {d}; voices: {d}\n" ++
             "software frame storage: {d} bytes\n" ++
             "session queue storage: {d} bytes per level session\n" ++
+            "actor slots: {d}, {d} bytes per level session\n" ++
             "network router storage: {d} bytes per game\n" ++
             "known storage floor: {d} bytes\n" ++
             "TODO: Reserve and enforce resource and movie input budgets separately.\n" ++
@@ -37,6 +38,8 @@ pub fn main() void {
             limits.current.sound_voices,
             layout.software_frame_bytes,
             layout.session_queue_bytes,
+            @import("render/actor_slots.zig").capacity,
+            layout.session_actor_bytes,
             layout.router_storage_bytes,
             layout.known_storage_bytes,
         },

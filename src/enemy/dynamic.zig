@@ -11,16 +11,19 @@ const inventory = @import("../player/inventory.zig");
 const network_actors = @import("../render/network_actors.zig");
 const blood = @import("blood.zig");
 const bubble = @import("bubble.zig");
+const max_walk = @import("../render/actor_slots.zig").capacity;
 const session_module = @import("session.zig");
 const bits = @import("../util/bits.zig");
 
 pub const SplashState = struct { selection_serial: ?u64 };
 
+/// Newest first. Actors made while this runs are not visited.
 pub fn animations(session: anytype) !void {
-    var index = session.actor_slots.len;
+    var cursor = session.made_actors.last;
 
-    while (index > session.objects.entries.len) {
-        index -= 1;
+    for (0..max_walk) |_| {
+        const index = cursor orelse break;
+        cursor = session.made_actors.before(index);
 
         if (session.removed_actors[index]) continue;
 
@@ -53,10 +56,14 @@ pub fn animations(session: anytype) !void {
 
         session.syncActor(index);
     }
+
+    // No slot is released during a walk, so the made order never holds
+    // more than every slot.
+    std.debug.assert(cursor == null);
 }
 
 pub fn firstActor(session: anytype) ?usize {
-    return nextActor(session, session.objects.entries.len);
+    return nextActor(session, session.made_actors.first);
 }
 
 pub fn tickBeforePlayer(
@@ -70,9 +77,14 @@ pub fn tickBeforePlayer(
 pub fn firstAfterPlayer(session: anytype) ?usize {
     var next = firstActor(session);
 
-    while (next) |index| : (next = nextActor(session, index + 1)) {
+    for (0..max_walk) |_| {
+        const index = next orelse return null;
         if (session.actor_slots[index].?.birth_order > session.player_actor.birth_order) return index;
+
+        next = nextActor(session, session.made_actors.after(index));
     }
+
+    std.debug.assert(next == null);
 
     return null;
 }
@@ -99,10 +111,19 @@ pub fn spawnSplash(session: anytype, effects: *inventory.Effects, request: blood
     try effects.append(.{ .sound = blood.splashSound(request) });
 }
 
-fn nextActor(session: anytype, start: usize) ?usize {
-    for (start..session.actor_slots.len) |index| {
+/// The first live actor at `start` or after it in the order actors were
+/// made.
+pub fn nextActor(session: anytype, start: ?usize) ?usize {
+    var cursor = start;
+
+    for (0..max_walk) |_| {
+        const index = cursor orelse return null;
         if (!session.removed_actors[index] and session.actor_slots[index] != null) return index;
+
+        cursor = session.made_actors.after(index);
     }
+
+    std.debug.assert(cursor == null);
 
     return null;
 }
@@ -116,10 +137,11 @@ fn run(
 ) !void {
     var next = first;
 
-    while (next) |index| {
+    for (0..max_walk) |_| {
+        const index = next orelse break;
         if (before) |order| if (session.actor_slots[index]) |actor| if (actor.birth_order > order) return;
 
-        next = nextActor(session, index + 1);
+        next = nextActor(session, session.made_actors.after(index));
 
         if (session.removed_actors[index]) continue;
 
@@ -232,6 +254,8 @@ fn run(
 
         if (removal_sector) try session_module.removeActor(session, index);
     }
+
+    std.debug.assert(next == null);
 }
 
 fn step(

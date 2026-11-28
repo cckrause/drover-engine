@@ -105,3 +105,56 @@ test "memory budget: Hideout plays twelve thousand frames of walking, shooting a
     try std.testing.expect(session.inventory.health != health);
     try std.testing.expect(session.actors.len > actors);
 }
+
+test "memory budget: Hideout hands blood's actor slots out again instead of taking new ones" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const data_path = "inputs/OUTLAWS_CD1/OUTLAWS/OUTLAWS.LAB";
+    const system_bytes = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        data_path,
+        a,
+        .limited(128 * 1024 * 1024),
+    ) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+
+    defer a.free(system_bytes);
+    const system = try lab.Archive.init(system_bytes);
+    var startup = try campaign.Startup.prepare(a, system, .good);
+    defer startup.deinit(a);
+
+    _ = try startup.levelForDiagnostics();
+
+    const session = try Session.open(a, @import("test_workspace.zig").get(), io, data_path, system, &startup);
+    defer session.deinit(a);
+
+    const slots_before = session.actor_slots.ptr;
+    var settled: ?usize = null;
+    var round: usize = 0;
+
+    // Each round's blood falls, lands and goes away before the next.
+    while (round < 40) : (round += 1) {
+        var drop: usize = 0;
+
+        while (drop < 20) : (drop += 1) {
+            var position = session.player.position;
+            position.y -= 4;
+            try session.spawnBlood(position);
+        }
+
+        var frame: usize = 0;
+
+        while (frame < 300) : (frame += 1) {
+            const packet: input.Packet = .{};
+            try session.advance(std.testing.failing_allocator, &packet, 16);
+        }
+
+        if (round == 1) settled = session.actor_slots.len;
+    }
+
+    try std.testing.expect(session.made_actors.free_count >= 20);
+    try std.testing.expectEqual(settled.?, session.actor_slots.len);
+    try std.testing.expect(session.actor_slots.ptr == slots_before);
+}

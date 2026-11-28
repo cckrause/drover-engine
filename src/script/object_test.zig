@@ -110,13 +110,13 @@ fn expectState(expected: Snapshot, session: *Session, source: usize) !void {
         try std.testing.expectEqual(@as(?usize, null), session.source_to_entry[source]);
         try std.testing.expectEqual(
             @as(?usize, null),
-            session.actor_links.nodes.items[source].sector,
+            session.actor_links.nodes[source].sector,
         );
     } else {
         try std.testing.expect(session.source_to_entry[source] != null);
         try std.testing.expectEqual(
             @as(?usize, actor.sector),
-            session.actor_links.nodes.items[source].sector,
+            session.actor_links.nodes[source].sector,
         );
     }
 }

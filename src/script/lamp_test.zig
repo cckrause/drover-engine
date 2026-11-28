@@ -1,4 +1,4 @@
-//! Shooting out a lamp: callback order, playback and the fragments it grows.
+//! Shooting out a lamp: callback order, playback and the fragments it adds.
 //!
 //! Checked against generated reference fixtures; skips when they are not
 //! installed (see testing/fixtures.zig).
@@ -29,7 +29,7 @@ fn read(a: std.mem.Allocator, path: []const u8) ![]u8 {
     };
 }
 
-test "shootable lamps retain callback order playback and synchronous fragment growth" {
+test "shootable lamps retain callback order playback and fragments added on the spot" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -263,6 +263,6 @@ test "shootable lamps retain callback order playback and synchronous fragment gr
             );
         }
 
-        try std.testing.expect(session.actor_slots.ptr != slots_before);
+        try std.testing.expect(session.actor_slots.ptr == slots_before);
     }
 }
