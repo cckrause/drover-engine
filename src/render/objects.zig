@@ -170,7 +170,7 @@ pub const Objects = struct {
 
         if (context.links) |links| {
             const entries = context.source_to_entry orelse return error.MissingActorEntryMap;
-            if (entries.len != links.nodes.items.len or links.heads.len != context.level.sectors.len) return error.InvalidActorEntryMap;
+            if (entries.len != links.nodes.len or links.heads.len != context.level.sectors.len) return error.InvalidActorEntryMap;
             self.transformed_sectors = sectors[0..context.level.sectors.len];
             @memset(self.transformed_sectors, false);
         } else {

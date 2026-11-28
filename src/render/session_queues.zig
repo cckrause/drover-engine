@@ -16,11 +16,8 @@ const network_router = @import("../network/router.zig");
 const object_logic = @import("../script/object.zig");
 const network_actors = @import("network_actors.zig");
 
-/// The most map objects in a shipped level (655, CANYON) plus the most
-/// actors made during play that were alive at once over the test suite
-/// (234).
-/// TODO: Use the session's actor slot capacity once actor slots are fixed.
-pub const actor_slots = 655 + 234;
+const actor_slots = @import("actor_slots.zig").capacity;
+
 /// Every actor and the player can be hit in the same frame.
 pub const hit_targets = actor_slots + 1;
 /// One group of hits for every target, and room for each delivered hit to

@@ -13,7 +13,6 @@ const engine = @import("../audio/engine.zig");
 const audio = @import("../audio/runtime.zig");
 const inventory = @import("../player/inventory.zig");
 const random = @import("../player/weapon.zig");
-const session_queues = @import("../render/session_queues.zig");
 const perception = @import("perception.zig");
 const enemy_session = @import("session.zig");
 const bits = @import("../util/bits.zig");
@@ -27,8 +26,7 @@ pub const PlayingSound = struct { record: usize, id: u32, generation: u64 };
 
 /// Every generated actor belongs to one generator, so all of them together
 /// never outnumber the actors a session can hold.
-/// TODO: Use the session's actor slot capacity once actor slots are fixed.
-pub const max_actor_children = session_queues.actor_slots;
+pub const max_actor_children = @import("../render/actor_slots.zig").capacity;
 /// A generated sound holds a sound instance until the next sound check sees
 /// it ended. Twice the pool leaves room for instances that end and start
 /// again before that check.

@@ -21,6 +21,7 @@ const object_state = @import("../render/object_state.zig");
 const object_logic = @import("../script/object.zig");
 const script_runtime = @import("../script/runtime.zig");
 const blood = @import("blood.zig");
+const dynamic = @import("dynamic.zig");
 pub const spawnItem = @import("item_spawn.zig").spawn;
 pub const model = @import("item_spawn.zig").model;
 pub const bareModel = @import("item_spawn.zig").bareModel;
@@ -201,12 +202,7 @@ pub fn run(
         ctx.contact_residue = &session.player.contact_residue;
         ctx.contact_successor_present = false;
 
-        for (source + 1..session.actor_slots.len) |candidate| {
-            if (!session.removed_actors[candidate] and session.actor_slots[candidate] != null) {
-                ctx.contact_successor_present = true;
-                break;
-            }
-        }
+        ctx.contact_successor_present = dynamic.nextActor(session, session.made_actors.after(source)) != null;
     }
 
     const target = if (session.targets[source]) |*value| value else return false;
@@ -712,87 +708,12 @@ pub fn networkCorpse(
 }
 
 pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !usize {
-    const a = session.arena.allocator();
-    const index = session.actor_slots.len;
-    const length = try std.math.add(usize, index, 1);
-    const actor_count = session.actors.len;
-    const fields = .{
-        "actor_slots",
-        "targets",
-        "pickup_slots",
-        "removed_actors",
-        "actor_next_update",
-        "actor_storage",
-        "source_to_entry",
-        "blood_slots",
-        "general_slots",
-        "splash_slots",
-    };
+    const index = try session.newActorSlot();
 
-    const has_transformed = @hasField(@TypeOf(session.*), "actor_transformed");
+    std.debug.assert(session.source_to_entry[index] == null);
+    std.debug.assert(session.actor_links.nodes[index].sector == null);
 
-    std.debug.assert(index <= session.actor_capacity);
-
-    if (length > session.actor_capacity) {
-        const capacity = try std.math.mul(usize, @max(session.actor_capacity, 1), 2);
-        var grown = .{
-            session.actor_slots,
-            session.targets,
-            session.pickup_slots,
-            session.removed_actors,
-            session.actor_next_update,
-            session.actor_storage,
-            session.source_to_entry,
-            session.blood_slots,
-            session.general_slots,
-            session.splash_slots,
-        };
-
-        inline for (fields, 0..) |field, i| grown[i] = try growActors(
-            a,
-            @field(session.*, field),
-            capacity,
-        );
-
-        if (@hasField(
-            @TypeOf(session.*),
-            "projectile_slots",
-        )) session.projectile_slots = try growActors(a, session.projectile_slots, capacity);
-
-        if (@hasField(
-            @TypeOf(session.*),
-            "actor_numbers",
-        )) session.actor_numbers = try growActors(a, session.actor_numbers, capacity);
-
-        if (has_transformed) session.actor_transformed = (try growActors(
-            a,
-            session.actor_transformed,
-            capacity,
-        )).ptr[0..capacity];
-
-        inline for (fields, 0..) |field, i| @field(session.*, field) = grown[i];
-
-        session.actor_capacity = capacity;
-    }
-
-    session.actors = session.actor_storage[0..actor_count];
-    std.debug.assert(try session.actor_links.appendActor() == index);
-
-    inline for (fields) |field| {
-        const slice = &@field(session.*, field);
-        slice.* = slice.ptr[0..length];
-    }
-
-    if (@hasField(
-        @TypeOf(session.*),
-        "projectile_slots",
-    )) session.projectile_slots = session.projectile_slots.ptr[0..length];
-
-    if (@hasField(@TypeOf(session.*), "actor_numbers")) {
-        session.actor_numbers = session.actor_numbers.ptr[0..length];
-        session.actor_numbers[index] = 0;
-    }
-
+    session.actor_numbers[index] = 0;
     session.source_to_entry[index] = null;
     session.actor_slots[index] = actor;
     session.actor_slots[index].?.logic_id = session.allocateActorId();
@@ -811,9 +732,7 @@ pub fn appendActor(session: anytype, actor: Actor, pickup: ?inventory.Pickup) !u
     } else null;
 
     session.splash_slots[index] = null;
-
-    if (@hasField(@TypeOf(session.*), "projectile_slots")) session.projectile_slots[index] = null;
-
+    session.projectile_slots[index] = null;
     session.syncActor(index);
 
     return index;
@@ -846,11 +765,4 @@ fn execute(phase: Phase, target: *Target, actor: *Actor, ctx: *controller.Contex
     }
 
     return false;
-}
-
-fn growActors(a: std.mem.Allocator, old: anytype, capacity: usize) !@TypeOf(old) {
-    const result = try a.alloc(std.meta.Elem(@TypeOf(old)), capacity);
-    @memcpy(result[0..old.len], old);
-
-    return result[0..old.len];
 }

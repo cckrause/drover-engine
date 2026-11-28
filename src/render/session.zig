@@ -77,6 +77,7 @@ const object_numbers = @import("object_numbers.zig");
 const object_state = @import("object_state.zig");
 const object_render = @import("objects.zig");
 const scene_module = @import("scene.zig");
+const actor_slots = @import("actor_slots.zig");
 const session_queues = @import("session_queues.zig");
 const texture_animation = @import("texture_animation.zig");
 const weapon_render = @import("weapon.zig");
@@ -184,6 +185,9 @@ pub const Session = struct {
     pickup_effects: inventory_module.Effects,
     /// Backs the hit, actor message and effect lists above; never moves.
     queue_storage: session_queues.Storage,
+    /// Backs every per-actor slice above; never moves.
+    actor_slot_storage: actor_slots.Storage,
+    made_actors: actor_slots.Made,
     look: player_input.LookState,
     palette: [256]u32,
     palette_index: u8 = 0,
@@ -215,7 +219,6 @@ pub const Session = struct {
     depth_map: [128]u8,
     blend_table: [4096]u8,
     actors: []object_render.Actor,
-    actor_capacity: usize,
     actor_storage: []object_render.Actor,
     /// The object pass's view-space position of each live actor, kept with
     /// the actor arrays so drawing a frame allocates nothing.
@@ -875,6 +878,7 @@ pub const Session = struct {
 
         try self.loadEnemies(allocator);
         self.inf.effects.clearRetainingCapacity();
+        self.freeUnusedActorSlots();
 
         var animation_effects_buffer: inventory_module.EffectBuffer = undefined;
         var animation_effects = inventory_module.Effects.init(&animation_effects_buffer);
@@ -2403,6 +2407,181 @@ pub const Session = struct {
         }
     }
 
+    /// A slot for an actor made during play: the one freed last if there is
+    /// one, otherwise the next unused one.
+    pub fn newActorSlot(self: *Session) !usize {
+        const slot = self.made_actors.takeFree() orelse blk: {
+            const count = self.actor_slots.len;
+            if (count == actor_slots.capacity) return error.ActorSlotsFull;
+
+            self.setActorSlotCount(count + 1);
+            self.source_to_entry[count] = null;
+            self.actor_links.nodes[count] = .{};
+
+            break :blk count;
+        };
+
+        std.debug.assert(slot >= self.objects.entries.len and slot < self.actor_slots.len);
+        self.made_actors.append(slot);
+
+        return slot;
+    }
+
+    /// Forgets every actor made during play; the map's slots stay.
+    pub fn clearMadeActorSlots(self: *Session) void {
+        std.debug.assert(self.actor_slots.len >= self.objects.entries.len);
+
+        self.made_actors = .{};
+        self.setActorSlotCount(self.objects.entries.len);
+
+        std.debug.assert(self.made_actors.first == null);
+    }
+
+    /// Points every per-actor slice at the fixed storage, one empty slot per
+    /// map object.
+    fn openActorSlots(self: *Session) !void {
+        const count = self.objects.entries.len;
+        if (count > actor_slots.capacity) return error.TooManyLevelObjects;
+        if (self.level.sectors.len > world.max_level_sectors) return error.TooManyLevelSectors;
+
+        const storage = &self.actor_slot_storage;
+
+        self.made_actors = .{};
+        self.actor_storage = &storage.drawn;
+        self.actor_transformed = &storage.transformed;
+        self.actors = storage.drawn[0..0];
+        self.actor_links = actor_links.Links.initBorrowed(
+            storage.sector_heads[0..self.level.sectors.len],
+            storage.links[0..count],
+        );
+
+        self.setActorSlotCount(count);
+        std.debug.assert(self.made_actors.free_count == 0);
+
+        @memset(self.actor_slots, null);
+        @memset(self.source_to_entry, null);
+        @memset(self.targets, null);
+        @memset(self.pickup_slots, null);
+        @memset(self.projectile_slots, null);
+        @memset(self.actor_next_update, 0);
+        @memset(self.actor_numbers, 0);
+        @memset(self.blood_slots, null);
+        @memset(self.general_slots, null);
+        @memset(self.splash_slots, null);
+
+        std.debug.assert(self.actor_slots.len == count);
+    }
+
+    fn setActorSlotCount(self: *Session, count: usize) void {
+        std.debug.assert(count <= actor_slots.capacity);
+        std.debug.assert(count >= self.objects.entries.len);
+
+        const storage = &self.actor_slot_storage;
+
+        self.actor_slots = storage.actors[0..count];
+        self.source_to_entry = storage.drawn_index[0..count];
+        self.removed_actors = storage.removed[0..count];
+        self.targets = storage.targets[0..count];
+        self.pickup_slots = storage.pickups[0..count];
+        self.projectile_slots = storage.projectiles[0..count];
+        self.actor_next_update = storage.next_update[0..count];
+        self.actor_numbers = storage.numbers[0..count];
+        self.blood_slots = storage.blood[0..count];
+        self.general_slots = storage.general[0..count];
+        self.splash_slots = storage.splash[0..count];
+        self.actor_links.nodes = storage.links[0..count];
+    }
+
+    /// Hands back the slots of actors made during play that are gone and
+    /// that nothing points at any more. Runs between frames, so no walk over
+    /// the made order is under way.
+    fn freeUnusedActorSlots(self: *Session) void {
+        var held: [actor_slots.capacity]bool = @splat(false);
+        self.markHeldActorSlots(&held);
+
+        var cursor = self.made_actors.first;
+
+        for (0..actor_slots.capacity) |_| {
+            const slot = cursor orelse break;
+            cursor = self.made_actors.after(slot);
+
+            if (!self.removed_actors[slot] and self.actor_slots[slot] != null) continue;
+            if (held[slot]) continue;
+
+            std.debug.assert(slot >= self.objects.entries.len);
+
+            self.removed_actors[slot] = true;
+            self.syncActor(slot);
+            self.actor_slots[slot] = null;
+            self.targets[slot] = null;
+            self.pickup_slots[slot] = null;
+            self.projectile_slots[slot] = null;
+            self.blood_slots[slot] = null;
+            self.general_slots[slot] = null;
+            self.splash_slots[slot] = null;
+            self.actor_next_update[slot] = 0;
+            self.made_actors.release(slot);
+        }
+
+        std.debug.assert(cursor == null);
+        std.debug.assert(self.made_actors.free_count <= self.actor_slots.len - self.objects.entries.len);
+    }
+
+    /// Everything that can still name a slot after its actor is gone. A slot
+    /// also stays while it still owns an object number or a pickup sound,
+    /// which are given back on their own schedule.
+    fn markHeldActorSlots(self: *const Session, held: *[actor_slots.capacity]bool) void {
+        std.debug.assert(self.actor_slots.len <= held.len);
+        std.debug.assert(self.actor_numbers.len == self.actor_slots.len);
+
+        for (self.actor_slots, self.removed_actors, 0..) |slot, removed, source| {
+            if (self.actor_numbers[source] != 0) held[source] = true;
+            if (self.pickup_slots[source]) |pickup| if (pickup.sound != null) {
+                held[source] = true;
+            };
+
+            if (removed) continue;
+
+            const actor = slot orelse continue;
+            hold(held, actor.child_source);
+            if (self.projectile_slots[source]) |state| hold(held, state.descriptor.owner);
+        }
+
+        hold(held, self.player_actor.child_source);
+        for (self.pending_hits.items) |hit| holdHit(held, hit);
+        for (self.queued_hits.items) |hit| holdHit(held, hit);
+        for (self.actor_messages.items) |message| hold(held, message.target);
+        for (self.generators.actorChildren()) |child| hold(held, child.source);
+        for (self.corpse_sources) |source| hold(held, source);
+        for (self.remote_players.items) |remote| hold(held, remote.source);
+        for (self.impact_state.marks) |mark| hold(held, mark);
+        for (self.object_logic.selections.items) |selection| hold(held, selection.source);
+        for (self.enemy_effects.items) |effect| hold(held, effect.fire.source);
+        for (self.enemy_native_effects.items) |effect| holdEffect(held, effect);
+        for (self.pickup_effects.items) |effect| holdEffect(held, effect);
+        for (self.inf.pending.items) |pending| if (pending == .actor_impulse) {
+            hold(held, pending.actor_impulse.contact.source_index);
+        };
+
+        hold(held, self.weapon_state.held_projectile);
+        hold(held, self.projectile_blast_sender);
+    }
+
+    /// Player and placeholder sources lie past the slots and are ignored.
+    fn hold(held: *[actor_slots.capacity]bool, source: ?usize) void {
+        const value = source orelse return;
+        if (value < held.len) held[value] = true;
+    }
+
+    fn holdHit(held: *[actor_slots.capacity]bool, hit: shooting.PendingHit) void {
+        hold(held, hit.target);
+        hold(held, hit.sender);
+    }
+
+    fn holdEffect(held: *[actor_slots.capacity]bool, effect: inventory_module.Effect) void {
+        if (effect == .sound) hold(held, effect.sound.source);
+    }
+
     pub fn collisionActors(self: *Session) collision.Actors {
         return .{
             .entries = self.actors,
@@ -2647,7 +2826,7 @@ pub const Session = struct {
 
         const geometry_class_count = geometry_classes.classes.items.len;
 
-        self.removed_actors = try a.alloc(bool, self.objects.entries.len);
+        try self.openActorSlots();
         @memset(self.removed_actors, restoring);
 
         if (!restoring) for (self.objects.entries, 0..) |object, source| {
@@ -2819,10 +2998,6 @@ pub const Session = struct {
         };
 
         self.aim_count = 0;
-        self.targets = try a.alloc(?target_module.Target, self.objects.entries.len);
-
-        @memset(self.targets, null);
-
         self.enemy_visibility = try occlusion.Cache.init(a, &self.level);
         self.enemy_shared = .{
             .next_shot = persistent.enemy_next_shot,
@@ -2841,14 +3016,6 @@ pub const Session = struct {
         self.corpse_pool = .{};
         self.corpse_sources = @splat(null);
         self.enemy_selection_serial = 0;
-        self.blood_slots = try a.alloc(?blood.State, self.objects.entries.len);
-
-        @memset(self.blood_slots, null);
-        self.general_slots = try a.alloc(?blood.State, self.objects.entries.len);
-        @memset(self.general_slots, null);
-        self.splash_slots = try a.alloc(?enemy_dynamic.SplashState, self.objects.entries.len);
-        @memset(self.splash_slots, null);
-
         self.player_link_order = self.objects.entries.len + 1;
         self.actor_link_serial = self.player_link_order + 1;
         self.pending_hits = .init(&self.queue_storage.hits[0]);
@@ -2955,35 +3122,7 @@ pub const Session = struct {
         );
 
         self.difficulty = startup.difficulty;
-        self.actor_capacity = self.objects.entries.len;
-        self.actor_storage = try a.alloc(object_render.Actor, self.actor_capacity);
-        self.actor_transformed = try a.alloc(level_module.Vec3, self.actor_capacity);
-        self.actors = self.actor_storage[0..0];
-        self.actor_slots = try a.alloc(?object_render.Actor, self.objects.entries.len);
-
-        @memset(self.actor_slots, null);
-        self.actor_numbers = try a.alloc(u32, self.objects.entries.len);
-        @memset(self.actor_numbers, 0);
-
         self.player_number = 0;
-        self.source_to_entry = try a.alloc(?usize, self.objects.entries.len);
-
-        @memset(self.source_to_entry, null);
-
-        self.actor_links = try actor_links.Links.init(
-            a,
-            self.level.sectors.len,
-            self.objects.entries.len,
-        );
-
-        self.pickup_slots = try a.alloc(?inventory_module.Pickup, self.objects.entries.len);
-        self.projectile_slots = try a.alloc(?projectile.State, self.objects.entries.len);
-
-        @memset(self.projectile_slots, null);
-        @memset(self.pickup_slots, null);
-
-        self.actor_next_update = try a.alloc(i32, self.objects.entries.len);
-        @memset(self.actor_next_update, 0);
         self.loaded_actor_sectors = try a.alloc(bool, self.level.sectors.len);
         @memset(self.loaded_actor_sectors, false);
 
